@@ -2,3 +2,4 @@ bin/ring
 bin/ring.c
 litac_lsp.log
 .pkgs/liburing/v0.0.2/.litac_pkg
+.pkgs/
