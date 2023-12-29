@@ -1,0 +1,16 @@
+import "std/string_view"
+import "std/array"
+
+import "http_header"
+
+/**
+    The parsed out request
+*/
+public struct HttpRequest {
+    method: StringView
+    path: StringView
+    version: StringView
+
+    headers: Array<HttpHeader>
+    body: StringView
+}

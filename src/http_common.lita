@@ -1,0 +1,18 @@
+
+
+/** Standard max URL length */
+public const MAX_URL_LENGTH_DEFAULT = 8_000;
+
+@asStr
+public enum Status {
+    OK,
+    ERROR_UNABLE_TO_CREATE_SERVER_SOCKET,
+    ERROR_CREATING_ADDRESS,
+    ERROR_SOCKET_BIND,
+    ERROR_SOCKET_LISTEN,
+
+    ERROR_REQUEST_PATH_NOT_ALLOWED,
+    ERROR_INVALID_REQUEST_PATH,
+
+    ERROR_IO_ERROR,
+}

@@ -1,0 +1,30 @@
+
+{
+    "name" : "ring",
+    "version" : "0.0.1",
+    "type" : "executable",
+    "repo" : "",
+
+    "build_command" : {
+        "default" : {
+            "default" : {
+                "default" : {
+                    "cc" : "gcc",
+                    "cc_options" : "-g -std=gnu99 %input% -o %output% -D_CRT_SECURE_NO_WARNINGS",
+                    "lita_options" : [
+                        "-verbose"
+                    ]
+                }
+            }
+        }
+    },
+
+    "dependencies": [
+        {
+            "name" : "liburing",
+            "version" : "v0.0.2",
+            "repo" : "file:///home/tony/projects/libio_uring"
+        }
+    ],
+
+}

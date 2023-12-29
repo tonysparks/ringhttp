@@ -1,0 +1,295 @@
+import "std/net"
+import "std/libc"
+import "std/thread"
+import "std/thread/thread_pool"
+import "std/mem"
+import "std/mem/bucket_allocator"
+import "std/mem/thread_safe_allocator"
+import "std/string_buffer"
+import "std/string_view"
+import "std/array"
+import "std/io"
+import "std/libc/signal"
+
+import "http_connection"
+import "http_parser"
+import "http_common"
+import "http_request"
+import "http_response"
+import "http_header"
+import "http_file"
+
+public struct HttpServer {
+    config: using *HttpConfig
+
+    safeAllocator: ThreadSafeAllocator
+
+    serverSocket: Socket
+    threadPool: ThreadPool
+
+    connections: HttpConnections
+}
+
+public struct HttpConfig {
+    allocator: *const Allocator //= defaultAllocator
+    port: u16 = 8080_u16
+
+    minThreads: i32 = 1
+    maxThreads: i32 = 32
+
+    // maximum client HTTP request size in bytes
+    maxHttpRequestSizeInBytes: usize = 10 * MiB
+
+    // the bucket size for the bucket memory allocator for request allocator
+    requestBucketSizeInBytes: usize = 2 * MiB
+
+    // static file directory
+    fileServerPath: *const char = "/static/"
+}
+
+
+
+public func (this: *HttpServer) addRequestListener() {
+
+}
+
+public func (this: *HttpServer) start(config: *HttpConfig) : Status {
+    this.config = config
+
+    this.close()
+
+    this.safeAllocator.init(config.allocator)
+
+    this.threadPool.init(config.minThreads, config.maxThreads, config.allocator)
+    this.threadPool.start()
+
+    if(!this.serverSocket.create()) {
+        return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
+    }
+
+    defer this.serverSocket.close()
+
+    var enableReuse = 1
+    this.serverSocket.setSocketOpt(SocketOption.SO_REUSEADDR, &enableReuse, sizeof(:i32))
+
+    if(!FromPort(config.port, &this.serverSocket.address)) {
+        return Status.ERROR_CREATING_ADDRESS
+    }
+
+
+    if(!this.serverSocket.bind()) {
+        return Status.ERROR_SOCKET_BIND
+    }
+
+    if(!this.serverSocket.listen()) {
+        return Status.ERROR_SOCKET_LISTEN
+    }
+
+    while(true) {
+        printf("Waiting for connection...")
+        var clientSocket: Socket;
+        if(!this.serverSocket.accept(&clientSocket)) {
+            continue;
+        }
+
+        // TODO: Convert to non-blocking reads
+        // pool onto worker threads
+        // this.connections.add(
+        //     this.allocator,
+        //     clientSocket
+        // )
+
+        // For now do request per thread
+
+        var context = new<ThreadContext>(this.allocator)
+        context.server = this
+        context.requestAllocator.init(this.safeAllocator, this.requestBucketSizeInBytes)
+
+        context.client.socket = clientSocket
+        context.client.writeBuffer.init(1024, context.requestAllocator.allocator)
+        context.client.readBuffer.init(this.maxHttpRequestSizeInBytes as (i32), context.requestAllocator.allocator)
+
+
+        var address = clientSocket.socketAddress()
+        printf("Client %s:%d connected!\n", address.address(), address.port())
+        this.threadPool.submit(RequestThread, context)
+    }
+
+    return Status.OK
+}
+
+
+public func (this: *HttpServer) close() {
+    this.serverSocket.close()
+    this.threadPool.destroy()
+    this.safeAllocator.free()
+}
+
+struct ThreadContext {
+    server: *HttpServer
+    client: HttpConnection
+    requestAllocator: BucketAllocator
+}
+
+func signal_handler(signo: i32) {
+    fprintf(stderr, "caught signal SIGPIPE for %d\n", signo)
+}
+
+func RequestThread(arg: *void) : TaskStatus {
+    signal(SIGPIPE, signal_handler)
+
+    var context = arg as (*ThreadContext)
+    defer context.server.allocator.free(context)
+    defer context.client.free()
+    defer context.requestAllocator.free()
+
+
+    var client = &context.client
+    var buffer = &client.readBuffer
+
+    var iteration = 1;
+
+    var bytesReceived: i64;
+    do
+    {
+        // should we increase the buffer??
+        /*if(buffer.length >= buffer.capacity) {
+            // TODO:
+            printf("exhausted buffer\n")
+            break
+        }*/
+
+        // reset the buffer...
+        buffer.clear()
+
+        bytesReceived = client.socket.read(&buffer.buffer[buffer.length], buffer.capacity - buffer.length);
+        if(bytesReceived > 0) {
+            buffer.length += bytesReceived as (i32)
+        }
+        else {
+            // client closed out the socket
+            goto end;
+        }
+
+        // printf("%.*s\n", buffer.length, buffer.buffer)
+
+        // Handle the request data
+        var response = HttpResponse{};
+        response.init(context.requestAllocator.allocator)
+
+        var parser = HttpParser{}
+        parser.init(defaultAllocator)
+
+        var input = StringViewInit(buffer.buffer, buffer.length)
+
+        var request: HttpRequest;
+        var ok = parser.parse(input, &request)
+        if(ok != ParseStatus.OK) {
+            response.status = 400
+            response.headers.add(HttpHeaderFrom("Content-Type", "text/plain"))
+            response.body.appendStr("Bad Request: Invalid HTTP protocol input")
+            client.send(&response)
+        }
+        else {
+            //printf("Handling: %.*s %.*s\n", request.method.length, request.method.buffer, request.path.length, request.path.buffer)
+
+            // determine if this is a file request
+            if(request.path.startsWith(context.server.fileServerPath)) {
+                response.fileResponse(context.server.fileServerPath, request.path)
+                client.send(&response)
+
+                /*var file: File;
+                defer file.close()
+
+                if(response.fromFile(context.server.fileServerPath, request.path, &file) == Status.OK) {
+                    if(client.sendFile(response, &file) != Status.OK) {
+                        response.clear()
+                        response.status = 500
+                        response.headers.add(HttpHeaderFrom("Content-Type", "text/plain"))
+                        //response.body.appendStr("Bad Request: Invalid HTTP protocol input")
+                        client.send(&response)
+                    }
+                }*/
+            }
+            else {
+                // TODO: Request matching
+                response.status = 200
+                response.headers.add(HttpHeaderFrom("Content-Type", "text/plain"))
+                response.body.append("%d You did it: %.*s\n", iteration, request.path.length, request.path.buffer)
+                for(var i = 0; i < request.headers.size(); i += 1) {
+                    var header = request.headers.get(i)
+                    response.body.append("%.*s: %.*s\n",
+                        header.name.length, header.name.buffer,
+                        header.values.length, header.values.buffer
+                    )
+                }
+                client.send(&response)
+            }
+        }
+
+        iteration += 1
+    }
+    while(bytesReceived > 0);
+
+end:
+    // client disconnected
+    client.socket.close()
+
+    return TaskStatus.OK
+}
+
+/*
+var serverSocket:Socket;
+    if(!serverSocket.create()) {
+        printf("Unable to create socket!\n")
+        return;
+    }
+
+    defer serverSocket.close();
+
+
+    assert(FromPort(8083_u16, &serverSocket.address))
+    var addr = serverSocket.address
+
+    if(!serverSocket.bind()) {
+        printf("Unable to bind to address: %s:%d -> errono: %d\n", addr.address, addr.port, errno)
+        perror("bind")
+        return;
+    }
+
+
+    if(!serverSocket.listen()) {
+        printf("Unable to listen on address: %s:%d\n", addr.address, addr.port)
+        return;
+    }
+
+    printf("Listening on port: %d\n", addr.port)
+
+    const BUFFER_SIZE = 1024;
+    var buffer:[BUFFER_SIZE]char;
+
+    while(true) {
+        var clientSocket: Socket;
+        defer clientSocket.close();
+
+        if(!serverSocket.accept(&clientSocket)) {
+            printf("Failed to connect client\n")
+            perror("accept")
+            continue;
+        }
+        printf("Client connected!\n")
+
+        var bytesReceived: i64;
+        do {
+            bytesReceived = clientSocket.read(buffer, BUFFER_SIZE);
+            if(bytesReceived > 0) {
+                printf("Received '%.*s'\n", bytesReceived as (i32), buffer)
+
+                var echo = "Server says: ";
+                clientSocket.write(echo as (*void), strlen(echo))
+                clientSocket.write(buffer, bytesReceived)
+            }
+        }
+        while(bytesReceived > 0);
+    }
+    */

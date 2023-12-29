@@ -1,0 +1,13 @@
+import "std/string_view"
+
+public struct HttpHeader {
+    name: StringView
+    values: StringView
+}
+
+public func HttpHeaderFrom(name: *const char, values: *const char) : HttpHeader {
+    return HttpHeader {
+        .name = StringViewInit(name),
+        .values = StringViewInit(values)
+    }
+}

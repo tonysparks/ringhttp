@@ -1,0 +1,161 @@
+
+import "std/libc"
+//import "std/io"
+import "std/mem"
+import "liburing"
+
+import "http_server"
+import "http_common"
+
+@include("<sys/stat.h>", "<fcntl.h>");
+
+
+func main(len: i32, args: **char) : i32 {
+    var config = HttpConfig {
+        .allocator = defaultAllocator,
+        .port = 8080_u16,
+    }
+
+    printf("Listening on port: %d\n", config.port)
+    var server = HttpServer{};
+    var status = server.start(&config)
+    defer server.close()
+
+    if(status != Status.OK) {
+        printf("error starting server: %s\n", StatusAsStr(status))
+        return 1;
+    }
+
+    return 0;
+}
+
+/*
+
+const QUEUE_DEPTH = 4
+const BLOCK_SIZE = 1024
+
+struct FileInfo {
+    file: File
+    fileSize: usize
+    iovecs: []iovec
+}
+
+func main(len: i32, args: **char) : i32 {
+    if(len < 2) {
+        fprintf(stderr, "Usage: %s [file name] <[file name] ...>\n", args[0])
+        return 1;
+    }
+
+    var ring: io_uring;
+    var result = io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
+
+    for(var i = 1; i < len; i+=1) {
+        var result = submitReadRequest(args[i], &ring, defaultAllocator)
+        if(result != 0) {
+            fprintf(stderr, "Error reading file: %s\n", args[i])
+            return 1;
+        }
+
+        result = waitAndWrite(&ring)
+        if(result != 0) {
+            fprintf(stderr, "Error outputing file: %s\n", args[i])
+            return 1
+        }
+    }
+
+    io_uring_queue_exit(&ring)
+    return 0
+}
+
+func waitAndWrite(ring: *io_uring) : i32 {
+    var cqe: *io_uring_cqe;
+
+    // wait for the read requests to complete
+    if(cqeWait(ring, &cqe)) {
+        return 1
+    }
+
+    var fileInfo = io_uring_cqe_get_data(cqe) as (*FileInfo)
+    defer fileInfo.file.close()
+
+    var blocks = (fileInfo.fileSize / BLOCK_SIZE) as (i32)
+    if(fileInfo.fileSize % BLOCK_SIZE) blocks += 1
+
+    // mark the read requests completeed
+    io_uring_cqe_seen(ring, cqe)
+
+    // now submit the write requests to stdout
+    var fd = fileno(stdout)
+    var sqe = io_uring_get_sqe(ring)
+    io_uring_prep_writev(sqe, fd, fileInfo.iovecs, blocks, 0)
+    io_uring_sqe_set_data(sqe, fileInfo)
+    io_uring_submit(ring)
+
+    // wait for the write requests to complete
+    if(cqeWait(ring, &cqe)) {
+        return 1
+    }
+
+    io_uring_cqe_seen(ring, cqe)
+    return 0
+}
+
+func cqeWait(ring: *io_uring, cqe: **io_uring_cqe) : i32 {
+    var result = io_uring_wait_cqe(ring, cqe)
+    if(result < 0) {
+        perror("io_uring_wait_cqe")
+        return 1;
+    }
+
+    if((*cqe).res < 0) {
+        fprintf(stderr, "Async readv failed.\n")
+        return 1;
+    }
+    return 0
+}
+
+func submitReadRequest(
+    filename: *const char,
+    ring: *io_uring,
+    allocator: *const Allocator) : i32 {
+
+    var file: File{}
+    if(file.open(filename, FileOpenOp.READ_ONLY) != FileStatus.Ok) {
+        return -1;
+    }
+
+
+    var handle = file.handle()
+    var fileSize = file.length()
+
+    var bytesRemaining = fileSize
+    var currentBlock = 0
+    var blocks = (fileSize / BLOCK_SIZE) as (i32)
+    if(fileSize % BLOCK_SIZE) blocks += 1
+
+    var fileInfo = allocator.alloc(sizeof(:FileInfo) + (sizeof(:iovec) * blocks)) as (*FileInfo)
+    var buffer = allocator.alloc(sizeof(:char) * blocks * BLOCK_SIZE)
+
+    while(bytesRemaining) {
+        var bytesToRead = MIN(bytesRemaining, BLOCK_SIZE)
+
+        fileInfo.iovecs[currentBlock].iov_base = buffer
+        fileInfo.iovecs[currentBlock].iov_len = bytesToRead
+
+        currentBlock += 1
+        bytesRemaining -= bytesToRead
+        buffer += BLOCK_SIZE
+    }
+
+    fileInfo.fileSize = fileSize
+    fileInfo.file = file
+
+    // make the read request for each block(iovec) of the file
+    var sqe = io_uring_get_sqe(ring)
+    io_uring_prep_readv(sqe, handle, fileInfo.iovecs, blocks, 0)
+    io_uring_sqe_set_data(sqe, fileInfo)
+    io_uring_submit(ring)
+
+    return 0
+}
+*/

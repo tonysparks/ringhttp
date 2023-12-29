@@ -1,0 +1,174 @@
+import "std/mem"
+import "std/string_view"
+import "std/string_buffer"
+import "std/string"
+import "std/io"
+import "std/system"
+import "std/libc"
+
+import "std/array"
+import "http_header"
+import "http_common"
+
+
+public const STATUS_CODES = [512]*const char {
+    // 1xx Informational
+    [100] = "Continue",
+    [101] = "Switching Protocols",
+    [102] = "Processing",
+    [103] = "Early Hints",
+
+    // 2xx Success
+    [200] = "OK",
+    [201] = "Created",
+    [202] = "Accepted",
+    [203] = "Non-Authoritative Information",
+    [204] = "No Content",
+    [205] = "Reset Content",
+    [206] = "Partial Content",
+    [207] = "Multi-Status",
+    [208] = "Already Reported",
+    [226] = "IM Used",
+
+    // 3xx Redirection
+    [300] = "Multiple Choices",
+    [301] = "Moved Permanently",
+    [302] = "Found (or Moved Temporarily)",
+    [303] = "See Other",
+    [304] = "Not Modified",
+    [305] = "Use Proxy (deprecated)",
+    [307] = "Temporary Redirect",
+    [308] = "Permanent Redirect",
+
+    // 4xx Client Errors
+    [400] = "Bad Request",
+    [401] = "Unauthorized",
+    [402] = "Payment Required",
+    [403] = "Forbidden",
+    [404] = "Not Found",
+    [405] = "Method Not Allowed",
+    [406] = "Not Acceptable",
+    [407] = "Proxy Authentication Required",
+    [408] = "Request Timeout",
+    [409] = "Conflict",
+    [410] = "Gone",
+    [411] = "Length Required",
+    [412] = "Precondition Failed",
+    [413] = "Payload Too Large",
+    [414] = "URI Too Long",
+    [415] = "Unsupported Media Type",
+    [416] = "Range Not Satisfiable",
+    [417] = "Expectation Failed",
+    [418] = "I'm a teapot",
+    [421] = "Misdirected Request",
+    [422] = "Unprocessable Entity",
+    [423] = "Locked",
+    [424] = "Failed Dependency",
+    [426] = "Upgrade Required",
+    [428] = "Precondition Required",
+    [429] = "Too Many Requests",
+    [431] = "Request Header Fields Too Large",
+    [451] = "Unavailable For Legal Reasons",
+
+    // 5xx Server Errors
+    [500] = "Internal Server Error",
+    [501] = "Not Implemented",
+    [502] = "Bad Gateway",
+    [503] = "Service Unavailable",
+    [504] = "Gateway Timeout",
+    [505] = "HTTP Version Not Supported",
+    [506] = "Variant Also Negotiates",
+    [507] = "Insufficient Storage",
+    [508] = "Loop Detected",
+    [510] = "Not Extended",
+    [511] = "Network Authentication Required",
+}
+
+public struct HttpResponse {
+    status: i32
+    headers: Array<HttpHeader>
+    body: StringBuffer
+}
+
+public func (this: *HttpResponse) init(allocator: *const Allocator) {
+    this.status = 500
+    this.headers.init(16, allocator)
+    this.body.init(1024, allocator)
+}
+
+public func (this: *HttpResponse) free() {
+    this.headers.free()
+    this.body.free()
+}
+
+public func (this: *HttpResponse) clear() {
+    this.status = 0
+    this.headers.clear()
+    this.body.clear()
+}
+
+public func (this: *HttpResponse) fileResponse(fileServerPath: *const char, path: StringView) : Status {
+    if(path.contains("..") || path.length >= MAX_PATH) {
+        this.status = 403
+        return Status.ERROR_REQUEST_PATH_NOT_ALLOWED
+    }
+
+    var buffer = [MAX_PATH]char{}
+    var filepath = StringInit(buffer, MAX_PATH, 0)
+    filepath.format("%s%.*s", CurrentWorkingPath(), path.length, path.buffer)
+
+    var file: File;
+    var fileStatus = file.open(filepath.cStr(), FileOpenOp.READ_ONLY)
+    if(fileStatus != FileStatus.Ok) {
+        this.status = 500
+        if(fileStatus == FileStatus.IOError) {
+            return Status.ERROR_IO_ERROR
+        }
+        if(fileStatus == FileStatus.FileNotFoundError) {
+            this.status = 404
+        }
+        return Status.ERROR_INVALID_REQUEST_PATH
+    }
+
+    // TODO: Write directly to socket!
+    // TODO: use io_uring
+    var length = file.length()
+    this.body.reserve(length as (i32))
+
+    if(file.readBytes(this.body.buffer, this.body.capacity) != FileStatus.Ok) {
+        this.status = 500
+        return Status.ERROR_IO_ERROR
+    }
+
+    this.body.length += file.position() as (i32)
+
+    this.status = 200
+    return Status.OK
+}
+
+
+public func (this: *HttpResponse) fromFile(fileServerPath: *const char, path: StringView, file: *File) : Status {
+    if(path.contains("..") || path.length >= MAX_PATH) {
+        this.status = 403
+        return Status.ERROR_REQUEST_PATH_NOT_ALLOWED
+    }
+
+    var buffer = [MAX_PATH]char{}
+    var filepath = StringInit(buffer, MAX_PATH, 0)
+    filepath.format("%s%.*s", CurrentWorkingPath(), path.length, path.buffer)
+
+    var fileStatus = file.open(filepath.cStr(), FileOpenOp.READ_ONLY)
+    if(fileStatus != FileStatus.Ok) {
+        this.status = 500
+        if(fileStatus == FileStatus.IOError) {
+            return Status.ERROR_IO_ERROR
+        }
+        if(fileStatus == FileStatus.FileNotFoundError) {
+            this.status = 404
+        }
+        return Status.ERROR_INVALID_REQUEST_PATH
+    }
+
+    this.status = 200
+    return Status.OK
+}

@@ -1,0 +1,150 @@
+import "std/string"
+import "std/string_view"
+import "std/array"
+import "std/mem"
+import "std/libc"
+import "std/assert"
+
+import "http_header"
+import "http_request"
+import "http_common"
+
+public enum ParseStatus {
+    OK,
+    ERROR_INVALID_REQUEST_LINE,
+    ERROR_INVALID_HEADERS_SECTION,
+}
+
+public struct HttpParser {
+    allocator: *const Allocator
+    request: HttpRequest
+}
+
+public func (this: *HttpParser) init(allocator: *const Allocator) {
+    this.allocator = allocator
+}
+
+public func (this: *HttpParser) parse(input: StringView, result: *HttpRequest) :  ParseStatus {
+    var index = input.indexOf("\r\n", 2)
+    if(index < 0) {
+        return ParseStatus.ERROR_INVALID_REQUEST_LINE
+    }
+
+    // The Request Line (Method Path Http/Version)
+    var requestLine = input.substring(0, index)
+
+    var methodIndex = requestLine.indexOf(" ", 1)
+    if(methodIndex < 0) {
+        return ParseStatus.ERROR_INVALID_REQUEST_LINE
+    }
+
+    var pathIndex = requestLine.indexOfAt(" ", 1, methodIndex + 1)
+    if(pathIndex < 0) {
+        return ParseStatus.ERROR_INVALID_REQUEST_LINE
+    }
+
+    result.method = requestLine.substring(0, methodIndex)
+    result.path = requestLine.substring(methodIndex + 1, pathIndex)
+    result.version = requestLine.substring(pathIndex + 1, index)
+
+    var parseResult = this.parseHeaders(input.substring(index + 2), result)
+    if(parseResult != ParseStatus.OK) {
+        return parseResult
+    }
+
+    return ParseStatus.OK
+}
+
+
+func (this: *HttpParser) parseHeaders(input: StringView, result: *HttpRequest) : ParseStatus {
+    var rawHeadersIndex = input.indexOf("\r\n\r\n", 4)
+    if(rawHeadersIndex < 0) {
+        return ParseStatus.ERROR_INVALID_HEADERS_SECTION
+    }
+
+    // there are no headers
+    if(rawHeadersIndex < 1) {
+        return ParseStatus.OK
+    }
+
+    rawHeadersIndex += 2
+
+    result.headers.init(16, this.allocator)
+
+    var rawHeaders = input.substring(0, rawHeadersIndex)
+    var current = 0
+    while(current < rawHeaders.length) {
+        var headerIndex = rawHeaders.indexOfAt("\r\n", 2, current)
+        if(headerIndex < 0) {
+            return ParseStatus.ERROR_INVALID_HEADERS_SECTION
+        }
+
+        var nameStartIndex = -1
+        var nameEndIndex = -1
+
+        var valueStartIndex = -1
+
+        var i = current
+        while(i < headerIndex) {
+            defer i+=1
+
+            var c = rawHeaders.buffer[i]
+
+            if(isspace(c)) {
+                continue;
+            }
+
+            if(nameStartIndex < 0) {
+                nameStartIndex = i
+            }
+
+            if(nameEndIndex > -1 && valueStartIndex < 0) {
+                valueStartIndex = i
+            }
+
+            if(c == ':' && nameEndIndex < 0) {
+                nameEndIndex = i
+            }
+        }
+
+        result.headers.add(HttpHeader{
+            .name = rawHeaders.substring(nameStartIndex, nameEndIndex),
+            .values = rawHeaders.substring(valueStartIndex, headerIndex)
+        })
+
+        current = headerIndex + 2
+    }
+
+    return ParseStatus.OK
+}
+
+@test
+func testParse() {
+    var result: HttpRequest;
+
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    var input = StringViewInit(
+"GET /this/is/path HTTP/1.1\r\nContent-Type: application/json\r\nOrigin: example.com\r\nAgent:Some other Stuff/And some thingds end.\r\n\r\n"
+);
+
+    var ok = parser.parse(input, &result)
+    assert(ok == ParseStatus.OK)
+
+
+    printf("Raw: %.*s\nMethod: '%.*s' Path: '%.*s' Version: '%.*s'\n",
+        input.length, input.buffer,
+        result.method.length, result.method.buffer,
+        result.path.length, result.path.buffer,
+        result.version.length, result.version.buffer
+    )
+
+    for(var i = 0; i < result.headers.size(); i+=1) {
+        var header = result.headers.getPtr(i)
+        printf("Name: '%.*s' Values: '%.*s'\n",
+            header.name.length, header.name.buffer,
+            header.values.length, header.values.buffer
+        )
+    }
+}

@@ -1,0 +1,81 @@
+import "std/mem"
+import "std/string_view"
+import "std/string_buffer"
+import "std/string"
+import "std/io"
+import "std/system"
+import "std/libc"
+import "std/net"
+import "std/assert"
+
+import "std/array"
+import "http_header"
+import "http_common"
+import "http_response"
+import "http_connection"
+
+#if OS == "WINDOWS"
+    typedef i64 as off_t;
+
+    // Keep litaC compiler happy
+    func sendfile(out_fd: i32, in_fd: i32, offset: *off_t, count: usize) : i64 {
+        assert(false)
+        return -1;
+    }
+#else
+    @include("<sys/sendfile.h>");
+
+    @foreign
+    typedef i64 as off_t;
+
+    @foreign
+    func sendfile(out_fd: i32, in_fd: i32, offset: *off_t, count: usize) : i64;
+#end
+
+
+public func SendFile(
+    connection: *HttpConnection,
+    response: *HttpResponse,
+    file: *File) : Status {
+#if OS == "WINDOWS"
+    var length = file.length()
+    //response.body.reserve(length as (i32))
+    connection.writeBuffer.reserve(length as (i32))
+
+    //if(file.readBytes(response.body.buffer, response.body.capacity) != FileStatus.Ok) {
+    if(file.readBytes(
+            &connection.writeBuffer.buffer[connection.writeBuffer.length],
+             connection.writeBuffer.capacity - connection.writeBuffer.length) != FileStatus.Ok) {
+        response.status = 500
+        return Status.ERROR_IO_ERROR
+    }
+
+    response.body.length += file.position() as (i32)
+    response.status = 200
+
+    connection.socket.write(connection.writeBuffer.buffer, connection.writeBuffer.length)
+    //connection.socket.write(response.body.buffer, response.body.length)
+    return Status.OK
+#else
+    var fileSize = file.length()
+    var offset: off_t = 0;
+    var result = 0_i64
+
+    connection.socket.write(connection.writeBuffer.buffer, connection.writeBuffer.length, SocketFlags.MSG_MORE)
+    do {
+
+        result = sendfile(connection.socket.handle(), file.handle(), &offset, fileSize)
+        if(result >= fileSize) {
+            break;
+        }
+    }
+    while (result > 0);
+
+    if(result < 0) {
+        response.status = 500
+        return Status.ERROR_IO_ERROR
+    }
+    response.status = 200
+    return Status.OK
+#end
+}
