@@ -11,6 +11,8 @@ import "std/array"
 import "std/io"
 import "std/libc/signal"
 
+import "liburing"
+
 import "http_connection"
 import "http_parser"
 import "http_common"
@@ -19,7 +21,11 @@ import "http_response"
 import "http_header"
 import "http_file"
 
+import "http_engine"
+
 public struct HttpServer {
+    engine: HttpRingEngine
+    /*
     config: using *HttpConfig
 
     safeAllocator: ThreadSafeAllocator
@@ -27,7 +33,10 @@ public struct HttpServer {
     serverSocket: Socket
     threadPool: ThreadPool
 
-    connections: HttpConnections
+    // connections: HttpConnections
+
+    ring: io_uring
+    */
 }
 
 public struct HttpConfig {
@@ -45,10 +54,22 @@ public struct HttpConfig {
 
     // static file directory
     fileServerPath: *const char = "/static/"
+
+
+    // io_uring queue depth
+    ioQueueDepth: i32 = 32
 }
 
 
+public func (this: *HttpServer) start(config: *HttpConfig) : Status {
+    return this.engine.listen(config)
+}
 
+public func (this: *HttpServer) close() {
+    this.engine.close()
+}
+
+/*
 public func (this: *HttpServer) addRequestListener() {
 
 }
@@ -59,6 +80,8 @@ public func (this: *HttpServer) start(config: *HttpConfig) : Status {
     this.close()
 
     this.safeAllocator.init(config.allocator)
+
+    io_uring_queue_init(config.ioQueueDepth, &this.ring, 0);
 
     this.threadPool.init(config.minThreads, config.maxThreads, config.allocator)
     this.threadPool.start()
@@ -111,8 +134,9 @@ public func (this: *HttpServer) start(config: *HttpConfig) : Status {
 
 
         var address = clientSocket.socketAddress()
-        printf("Client %s:%d connected!\n", address.address(), address.port())
         this.threadPool.submit(RequestThread, context)
+
+        printf("Client %s:%d connected!\n", address.address(), address.port())
     }
 
     return Status.OK
@@ -123,6 +147,10 @@ public func (this: *HttpServer) close() {
     this.serverSocket.close()
     this.threadPool.destroy()
     this.safeAllocator.free()
+
+    if(this.ring.ring_fd > 0) {
+        io_uring_queue_exit(&this.ring)
+    }
 }
 
 struct ThreadContext {
@@ -152,13 +180,6 @@ func RequestThread(arg: *void) : TaskStatus {
     var bytesReceived: i64;
     do
     {
-        // should we increase the buffer??
-        /*if(buffer.length >= buffer.capacity) {
-            // TODO:
-            printf("exhausted buffer\n")
-            break
-        }*/
-
         // reset the buffer...
         buffer.clear()
 
@@ -195,21 +216,25 @@ func RequestThread(arg: *void) : TaskStatus {
 
             // determine if this is a file request
             if(request.path.startsWith(context.server.fileServerPath)) {
-                response.fileResponse(context.server.fileServerPath, request.path)
-                client.send(&response)
+                var useSendFile = true
+                if(!useSendFile) {
+                    response.fileResponse(context.server.fileServerPath, request.path)
+                    client.send(&response)
+                }
+                else {
+                    var file: File;
+                    defer file.close()
 
-                /*var file: File;
-                defer file.close()
-
-                if(response.fromFile(context.server.fileServerPath, request.path, &file) == Status.OK) {
-                    if(client.sendFile(response, &file) != Status.OK) {
-                        response.clear()
-                        response.status = 500
-                        response.headers.add(HttpHeaderFrom("Content-Type", "text/plain"))
-                        //response.body.appendStr("Bad Request: Invalid HTTP protocol input")
-                        client.send(&response)
+                    if(response.fromFile(context.server.fileServerPath, request.path, &file) == Status.OK) {
+                        if(client.sendFile(response, &file) != Status.OK) {
+                            response.clear()
+                            response.status = 500
+                            response.headers.add(HttpHeaderFrom("Content-Type", "text/plain"))
+                            //response.body.appendStr("Bad Request: Invalid HTTP protocol input")
+                            client.send(&response)
+                        }
                     }
-                }*/
+                }
             }
             else {
                 // TODO: Request matching
@@ -237,59 +262,4 @@ end:
 
     return TaskStatus.OK
 }
-
-/*
-var serverSocket:Socket;
-    if(!serverSocket.create()) {
-        printf("Unable to create socket!\n")
-        return;
-    }
-
-    defer serverSocket.close();
-
-
-    assert(FromPort(8083_u16, &serverSocket.address))
-    var addr = serverSocket.address
-
-    if(!serverSocket.bind()) {
-        printf("Unable to bind to address: %s:%d -> errono: %d\n", addr.address, addr.port, errno)
-        perror("bind")
-        return;
-    }
-
-
-    if(!serverSocket.listen()) {
-        printf("Unable to listen on address: %s:%d\n", addr.address, addr.port)
-        return;
-    }
-
-    printf("Listening on port: %d\n", addr.port)
-
-    const BUFFER_SIZE = 1024;
-    var buffer:[BUFFER_SIZE]char;
-
-    while(true) {
-        var clientSocket: Socket;
-        defer clientSocket.close();
-
-        if(!serverSocket.accept(&clientSocket)) {
-            printf("Failed to connect client\n")
-            perror("accept")
-            continue;
-        }
-        printf("Client connected!\n")
-
-        var bytesReceived: i64;
-        do {
-            bytesReceived = clientSocket.read(buffer, BUFFER_SIZE);
-            if(bytesReceived > 0) {
-                printf("Received '%.*s'\n", bytesReceived as (i32), buffer)
-
-                var echo = "Server says: ";
-                clientSocket.write(echo as (*void), strlen(echo))
-                clientSocket.write(buffer, bytesReceived)
-            }
-        }
-        while(bytesReceived > 0);
-    }
-    */
+*/

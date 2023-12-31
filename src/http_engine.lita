@@ -1,0 +1,578 @@
+import "std/net"
+import "std/libc"
+import "std/thread"
+import "std/mem"
+import "std/mem/bucket_allocator"
+import "std/mem/thread_safe_allocator"
+import "std/string_buffer"
+import "std/string_view"
+import "std/array"
+import "std/io"
+import "std/libc/signal"
+import "std/atomic"
+import "std/assert"
+
+// posix specific
+import "std/net/posix_socket"
+import "pipe_posix"
+
+import "liburing"
+
+import "http_connection"
+import "http_parser"
+import "http_common"
+import "http_request"
+import "http_response"
+import "http_header"
+import "http_file"
+import "http_server"
+
+import "log"
+
+public struct HttpRingEngine {
+    config: using *HttpConfig
+    safeAllocator: ThreadSafeAllocator
+    serverSocket: Socket
+
+    // IO Uring for socket Accepts
+    accept: io_uring
+
+    workers: Array<WorkerThread>
+
+    distribution: u64
+
+    isRunning: Atomic<bool>
+
+}
+
+func myerror(str: *const char) {
+    perror(str)
+    errno = 0
+}
+
+struct WorkerThread {
+    thread: Thread
+    ring: io_uring
+}
+
+// TODO: shutdown hook??
+struct HttpThreadContext {
+    engine: *HttpRingEngine
+
+    // Allocator for each request on this thread
+    requestAllocator: BucketAllocator
+
+    // the uring to handle async http request/responses
+    ring: *io_uring
+}
+
+enum RequestState {
+    CONNECTED,
+    READ_REQUEST_LINE,
+    WRITTEN_HTTP_RESPONSE,
+    WRITTEN_FILE,
+}
+
+struct Request {
+    connection: HttpConnection
+    response: HttpResponse
+    state: RequestState
+
+    // for file transmission
+    pipes: [2]i32
+}
+
+func (this: *Request) free() {
+    this.connection.free()
+    this.response.free()
+
+    if(this.pipes[0] > 0) {
+        close(this.pipes[0])
+    }
+
+    if(this.pipes[1] > 0) {
+        close(this.pipes[1])
+    }
+}
+
+
+func (this: *HttpRingEngine) createThreadContext(ring: *io_uring) : *HttpThreadContext {
+    var context = new<HttpThreadContext>(this.safeAllocator)
+    context.engine = this
+    context.ring = ring
+    context.requestAllocator.init(this.safeAllocator, this.requestBucketSizeInBytes)
+
+    if(io_uring_queue_init(this.ioQueueDepth, ring, 0) < 0) {
+        myerror("io_uring_queue_init")
+    }
+    return context
+}
+
+public func (this: *HttpRingEngine) listen(config: *HttpConfig) : Status {
+    this.config = config
+
+    this.close()
+
+    this.distribution = 0_u64
+    this.isRunning.init(true)
+
+    this.safeAllocator.init(config.allocator)
+
+    this.workers.init(config.maxThreads, config.allocator)
+    for(var i = 0; i < config.maxThreads; i+=1) {
+        this.workers.add(WorkerThread{
+            .thread = Thread{}
+        })
+        var worker = this.workers.getPtr(i)
+
+        var context = this.createThreadContext(&worker.ring)
+        var thread = &worker.thread
+
+        var status = thread.create(RequestThread, context)
+        if(status != ThreadStatus.SUCCESS) {
+            Error("Failed to create thread: %s\n", ThreadStatusAsStr(status))
+        }
+    }
+
+    io_uring_queue_init(config.ioQueueDepth, &this.accept, 0);
+
+    if(!this.serverSocket.create()) {
+        return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
+    }
+
+    defer this.serverSocket.close()
+
+    var enableReuse = 1
+    this.serverSocket.setSocketOpt(SocketOption.SO_REUSEADDR, &enableReuse, sizeof(:i32))
+
+    if(!FromPort(config.port, &this.serverSocket.address)) {
+        return Status.ERROR_CREATING_ADDRESS
+    }
+
+    if(!this.serverSocket.bind()) {
+        return Status.ERROR_SOCKET_BIND
+    }
+
+    if(!this.serverSocket.listen()) {
+        return Status.ERROR_SOCKET_LISTEN
+    }
+
+    var clientAddr: sockaddr_in;
+    var clientAddrLen = sizeof(clientAddr) as (socklen_t);
+
+    // prime the pump, dispatch a request for socket accepts
+    this.queueAcceptRequest(&clientAddr, &clientAddrLen)
+
+    var cqe: *io_uring_cqe = null;
+
+    while(true) {
+        var result = io_uring_wait_cqe(&this.accept, &cqe);
+
+        // mark this accept event as seen
+        defer if(cqe) io_uring_cqe_seen(&this.accept, cqe)
+
+        if(result < 0) {
+            // TODO
+            printf("Error accepting socket\n")
+            continue
+        }
+        else if(!cqe || cqe.res < 0) {
+            // TODO
+            printf("Error accepting socket.res\n")
+            continue
+        }
+        Info("Client Connected: %d\n", cqe.res)
+
+        var request = io_uring_cqe_get_data(cqe) as (*Request)
+
+        // queue up another accept
+        this.queueAcceptRequest(&clientAddr, &clientAddrLen)
+
+        // queue up delegation of handling the http request
+        this.queueReadHttpRequest(cqe.res, request)
+    }
+
+    return Status.OK
+}
+
+
+public func (this: *HttpRingEngine) close() {
+    this.isRunning.set(false)
+
+    for(var i = 0; i < this.workers.size(); i+=1) {
+        var worker = this.workers.getPtr(i)
+
+        // wait for the thread to complete
+        worker.thread.join()
+
+        // close out the io buffers
+        io_uring_queue_exit(&worker.ring)
+    }
+
+    this.serverSocket.close()
+    this.safeAllocator.free()
+
+    if(this.accept.ring_fd > 0) {
+        io_uring_queue_exit(&this.accept)
+    }
+}
+
+
+
+func (this: *HttpRingEngine) queueAcceptRequest(clientAddr: *sockaddr_in, clientAddrLen: *socklen_t) {
+    var sqe = io_uring_get_sqe(&this.accept)
+
+    io_uring_prep_accept(
+        sqe,
+        this.serverSocket.handle(),
+        clientAddr as (*sockaddr),
+        clientAddrLen,
+        0
+    )
+
+    // TODO: Move to pool!!
+    // This is terrible!!
+    var request = new<Request>(this.config.allocator)
+    request.state = RequestState.CONNECTED
+    request.connection.init(this.config.allocator)
+
+    io_uring_sqe_set_data(sqe, request)
+    io_uring_submit(&this.accept)
+
+    myerror("Accept")
+}
+
+func (this: *HttpRingEngine) getRing() : *io_uring {
+    assert(this.workers.size() > 0)
+
+    this.distribution += 1
+    var index = (this.distribution % this.workers.size()) as (i32)
+    var worker = this.workers.getPtr(index)
+    return &worker.ring
+}
+
+func (this: *HttpRingEngine) queueReadHttpRequest(clientSocket: i32, request: *Request) {
+    request.state = RequestState.READ_REQUEST_LINE
+
+    Info("Reading HTTPRequest(%d)\n", clientSocket)
+    var connection = &request.connection
+    connection.socket.socket = clientSocket
+    // create the request
+    var ring = this.getRing()
+    assert(ring != null)
+
+    var sqe = io_uring_get_sqe(ring)
+
+    // bind the client socket to the connection buffer
+    io_uring_prep_read(
+        sqe,
+        clientSocket,
+        connection.buffer,
+        MAX_REQUEST_LINE_SIZE,
+        0
+    )
+
+    // submit to the queue
+    io_uring_sqe_set_data(sqe, request)
+    io_uring_submit(ring)
+
+    myerror("ReadHttpRequest")
+}
+
+func (this: *HttpRingEngine) queueWriteHttpResponse(
+    ring: *io_uring,
+    request: *Request,
+    moreContents: bool = false) {
+
+    request.state = RequestState.WRITTEN_HTTP_RESPONSE
+
+    var connection = &request.connection
+    var response = &request.response
+
+    connection.bufferContents(response)
+
+    var iov = iovec {
+        .iov_base = connection.writeBuffer.buffer,
+        .iov_len  = connection.writeBuffer.length,
+    }
+
+    Info("Writing Http Response (%d): \n%.*s\n",
+        connection.handle(),
+        connection.writeBuffer.length, connection.writeBuffer.buffer)
+
+    var msg = msghdr {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    }
+
+    // move the file directly to the socket
+    var sqe = io_uring_get_sqe(ring)
+    io_uring_prep_sendmsg(
+        sqe,
+        connection.handle(),
+        &msg,
+        moreContents ? SocketFlags.MSG_MORE : 0
+    )
+    if(moreContents) {
+        sqe.flags |= IOSQE_IO_LINK
+    }
+
+    // submit to the queue
+    io_uring_sqe_set_data(sqe, request)
+    io_uring_submit(ring)
+
+    myerror("WriteHttpResponse")
+}
+
+func (this: *HttpRingEngine) queueWriteHttpFileResponse(
+    ring: *io_uring,
+    request: *Request) {
+
+    request.state = RequestState.WRITTEN_FILE
+
+    var response = &request.response
+    var connection = &request.connection
+
+    var fileFd = response.fileHandle
+    var fileSize = response.fileSize
+    var socketFd = connection.handle()
+
+    Info("Writing File: %d (%zu) to Socket: %d\n", fileFd, fileSize, socketFd)
+
+    // create pipes so we can splice the file to the socket
+    if(pipe2(request.pipes, O_CLOEXEC | O_NONBLOCK) < 0) {
+        // TODO handle errors!
+        Error("Error creating pipes!")
+    }
+
+    // move the file to the pipe
+    {
+        var sqe = io_uring_get_sqe(ring)
+        io_uring_prep_splice(
+            sqe,
+            response.fileHandle,
+            0_i64,
+            request.pipes[1],
+            -1_i64,
+            response.fileSize as (u32),
+            0
+        )
+        sqe.flags |= IOSQE_IO_LINK
+
+        // submit to the queue
+        io_uring_sqe_set_data(sqe, request)
+        io_uring_submit(ring)
+    }
+
+    // move the pipe to the socket
+    {
+        var sqe = io_uring_get_sqe(ring)
+        io_uring_prep_splice(
+            sqe,
+            request.pipes[0],
+            -1_i64,
+            connection.handle(),
+            -1_i64,
+            response.fileSize as (u32),
+            0
+        )
+
+        // submit to the queue
+        io_uring_sqe_set_data(sqe, request)
+        io_uring_submit(ring)
+    }
+
+    myerror("WriteHttpFileResponse")
+}
+
+
+
+func (this: *HttpRingEngine) handleHttpRequest(
+    ring: *io_uring,
+    requestAllocator: *const Allocator,
+    request: *Request,
+    bytesRead: i32) : Status {
+
+    var connection = &request.connection
+
+    var buffer = connection.buffer
+    var length = bytesRead
+    Info("Handling HTTP Request: %.*s\n", length, buffer)
+
+    var parser = HttpParser{}
+    parser.init(requestAllocator)
+
+    var input = StringViewInit(buffer, length)
+
+    var httpRequest: HttpRequest;
+    var ok = parser.parse(input, &httpRequest)
+    if(ok != ParseStatus.OK) {
+        return Status.ERROR_PARSING_HTTP_REQUEST
+    }
+
+    switch(httpRequest.method.length) {
+        case 3: {
+            // GET
+            if(httpRequest.method.equalsIgnoreCase("GET", httpRequest.method.length)) {
+
+                // determine if this is a file request
+                if(httpRequest.path.startsWith(this.fileServerPath)) {
+                    Info("Writing out file!\n")
+                    var file: File;
+                    var fileStatus = OpenFile(this.fileServerPath, httpRequest.path, &file)
+                    if(fileStatus != Status.OK) {
+                        return fileStatus
+                    }
+
+                    var response = &request.response;
+                    response.status = 200
+                    response.type = ResponseType.FILE
+                    // TODO add mime type info..
+                    response.fileHandle = file.handle()
+                    response.fileSize = file.length()
+
+                    this.queueWriteHttpResponse(ring, request, true)
+                    this.queueWriteHttpFileResponse(ring, request)
+                    myerror("File Write")
+                    Info("File written out: %d => %zu!\n", response.fileHandle, response.fileSize)
+                    return Status.OK
+                }
+                else {
+                    // TODO: Scan request handlers..
+                    Info("Get request for: %.*s\n", httpRequest.path.length, httpRequest.path.buffer)
+                }
+            }
+            // PUT
+            else if(httpRequest.method.equalsIgnoreCase("PUT", httpRequest.method.length)) {
+            }
+            break;
+        }
+        case 4: {
+            // HEAD
+            // POST
+            return Status.ERROR_UNSUPPORTED_METHOD
+        }
+        case 5: {
+            // TRACE
+            // PATCH
+            return Status.ERROR_UNSUPPORTED_METHOD
+        }
+        case 6: {
+            // DELETE
+            return Status.ERROR_UNSUPPORTED_METHOD
+        }
+        case 7: {
+            // OPTIONS
+            // CONNECT
+            return Status.ERROR_UNSUPPORTED_METHOD
+        }
+        default: {
+            return Status.ERROR_UNSUPPORTED_METHOD
+        }
+    }
+
+    return Status.ERROR_UNSUPPORTED_METHOD
+}
+
+
+func signal_handler(signo: i32) {
+    fprintf(stderr, "caught signal SIGPIPE for %d\n", signo)
+}
+
+func RequestThread(args: *void) : i32 {
+    // signal(SIGPIPE, signal_handler)
+    Info("Running WorkerThread\n")
+    var ctx = args as (*HttpThreadContext)
+    var this = ctx.engine
+    var ring = ctx.ring
+    var allocator = &ctx.requestAllocator.allocator
+
+    //io_uring_queue_init(this.ioQueueDepth, ring, 0);
+
+    // Read queued up http requests for this thread
+    var cqe: *io_uring_cqe;
+
+    myerror("Worker Thread")
+
+    while(this.isRunning.get()) {
+        var result = io_uring_wait_cqe(ring, &cqe);
+
+        // mark this accept event as seen
+        defer if(cqe) io_uring_cqe_seen(ring, cqe)
+
+        if(result < 0) {
+            // TODO
+            printf("Error reading worker socket\n")
+            continue
+        }
+        else if(!cqe || cqe.res < 0) {
+            // TODO
+            printf("Error reading worker socket.res\n")
+            continue
+        }
+
+        Info("Received CQE!\n")
+
+        assert(cqe != null)
+
+        var request = io_uring_cqe_get_data(cqe) as (*Request)
+        assert(request != null)
+
+        switch(request.state) {
+
+            // The connection was established, and we've read
+            // the client socket contents for the HTTP request line
+            case RequestState.READ_REQUEST_LINE: {
+                var bytesRead = cqe.res
+                Info("READ_REQUEST_LINE: %d\n", bytesRead)
+
+                // queue up delegation of handling the http response
+                var status = this.handleHttpRequest(
+                    ring,
+                    allocator,
+                    request,
+                    bytesRead
+                )
+
+                if(status != Status.OK) {
+                    Error("HTTP Request Bad Status %s\n", StatusAsStr(status))
+                    // TODO: Send a 5xx??
+                    var response = &request.response;
+                    response.status = 500
+                    response.type = ResponseType.BODY
+                    // TODO add mime type info..
+                    response.body.init(1024, allocator)
+                    response.body.append("Error handling the request.")
+
+                    this.queueWriteHttpResponse(ring, request)
+                }
+
+                break
+            }
+
+            // The connection request was parsed, we have dispatched
+            // an http response to the client socket
+            case RequestState.WRITTEN_HTTP_RESPONSE: {
+                Info("WRITTEN_HTTP_RESPONSE\n")
+                request.free()
+                break
+            }
+
+            // A file was written out, now we can safely clean
+            // up the request + file
+            case RequestState.WRITTEN_FILE: {
+                Info("WRITTEN_FILE_RESPONSE\n")
+                request.free()
+                break
+            }
+            default: {
+                assert(false)
+                break;
+            }
+        }
+    }
+
+    // TODO: Should delete in engine.destroy??
+    io_uring_queue_exit(ring)
+    return 0
+}

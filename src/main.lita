@@ -7,6 +7,8 @@ import "liburing"
 import "http_server"
 import "http_common"
 
+import "log"
+
 @include("<sys/stat.h>", "<fcntl.h>");
 
 
@@ -14,15 +16,18 @@ func main(len: i32, args: **char) : i32 {
     var config = HttpConfig {
         .allocator = defaultAllocator,
         .port = 8080_u16,
+        .maxThreads = 1,
     }
 
-    printf("Listening on port: %d\n", config.port)
+    LogInit("./ring.log")
+
+    Info("Listening on port: %d\n", config.port)
     var server = HttpServer{};
     var status = server.start(&config)
     defer server.close()
 
     if(status != Status.OK) {
-        printf("error starting server: %s\n", StatusAsStr(status))
+        Error("error starting server: %s\n", StatusAsStr(status))
         return 1;
     }
 
