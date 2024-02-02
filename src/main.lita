@@ -1,16 +1,36 @@
 
 import "std/libc"
 //import "std/io"
+import "std/string_buffer"
 import "std/mem"
 import "liburing"
 
 import "http_server"
 import "http_common"
 
+import "http_request"
+import "http_response"
+
 import "log"
 
 @include("<sys/stat.h>", "<fcntl.h>");
 
+func RequestHandler(context: *RequestHandlerContext) : i32 {
+    var req = context.request
+    var res = context.response
+
+    Info("In Request Handler: %.*s\n", req.path.length, req.path.buffer)
+
+
+    res.status = 200
+    res.type = ResponseType.BODY
+
+    // TODO add mime type info..
+    res.body.init(1024, context.allocator)
+    res.body.append("Hello World!")
+
+    return 1
+}
 
 func main(len: i32, args: **char) : i32 {
     var config = HttpConfig {
@@ -24,6 +44,8 @@ func main(len: i32, args: **char) : i32 {
 
     Info("Listening on port: %d\n", config.port)
     var server = HttpServer{};
+
+    server.requestHandler(RequestHandler)
     var status = server.start(&config)
     defer server.close()
 

@@ -51,6 +51,8 @@ public struct HttpRingEngine {
 
     submissions: u32
 
+    requestHandler: RequestHandler
+
 }
 
 func myerror(str: *const char) {
@@ -491,6 +493,56 @@ func (this: *HttpRingEngine) handleHttpRequest(
         return Status.ERROR_PARSING_HTTP_REQUEST
     }
 
+
+    if(httpRequest.method.equalsIgnoreCase("GET", httpRequest.method.length)) {
+
+        // determine if this is a file request
+        if(httpRequest.path.startsWith(this.fileServerPath)) {
+            Info("Begin Writing out file for socket: %d!\n", connection.handle())
+            var file: File;
+            var fileStatus = OpenFile(this.fileServerPath, httpRequest.path, &file)
+            if(fileStatus != Status.OK) {
+                return fileStatus
+            }
+
+            var response = &request.response;
+            response.status = 200
+            response.type = ResponseType.FILE
+            // TODO add mime type info..
+            response.fileHandle = file.handle()
+            response.fileSize = file.length()
+
+            this.queueWriteHttpResponse(ring, request, true)
+            this.queueWriteHttpFileResponse(ring, request)
+            myerror("File Write")
+            Info("File written out to socket: %d for file %d (%zu bytes)!\n", connection.handle(), response.fileHandle, response.fileSize)
+            return Status.OK
+        }
+    }
+
+    var requestContext = RequestHandlerContext {
+        .allocator = requestAllocator,
+        .request = &httpRequest,
+        .response = &request.response
+    }
+
+    if(!this.requestHandler(&requestContext)) {
+        Error("Internal Error handling request: %.*s %.*s\n",
+            httpRequest.method.length, httpRequest.method.buffer,
+            httpRequest.path.length, httpRequest.path.buffer)
+
+        var response = &request.response;
+        response.status = 500
+        response.type = ResponseType.BODY
+
+        // TODO add mime type info..
+        response.body.init(1024, requestAllocator)
+        response.body.append("Internal Error handling the request.")
+    }
+
+    this.queueWriteHttpResponse(ring, request)
+
+/*
     switch(httpRequest.method.length) {
         case 3: {
             // GET
@@ -551,7 +603,7 @@ func (this: *HttpRingEngine) handleHttpRequest(
             return Status.ERROR_UNSUPPORTED_METHOD
         }
     }
-
+*/
     Info("Done handle HTTP Request for socket: %d\n", connection.handle())
     return Status.ERROR_UNSUPPORTED_METHOD
 }

@@ -60,6 +60,18 @@ public struct HttpConfig {
     ioQueueDepth: i32 = 32
 }
 
+public typedef func(*RequestHandlerContext) : i32 as RequestHandler;
+
+public struct RequestHandlerContext {
+    allocator: *const Allocator
+    request: *HttpRequest
+    response: *HttpResponse
+}
+
+public func (this: *HttpServer) requestHandler(handler: RequestHandler) {
+    this.engine.requestHandler = handler
+}
+
 
 public func (this: *HttpServer) start(config: *HttpConfig) : Status {
     return this.engine.listen(config)
