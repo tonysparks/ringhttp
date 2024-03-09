@@ -66,10 +66,12 @@ public struct RequestHandlerContext {
     allocator: *const Allocator
     request: *HttpRequest
     response: *HttpResponse
+    userData: *void
 }
 
-public func (this: *HttpServer) requestHandler(handler: RequestHandler) {
+public func (this: *HttpServer) requestHandler(handler: RequestHandler, userData: *void = null) {
     this.engine.requestHandler = handler
+    this.engine.requestHandlerUserData = userData
 }
 
 

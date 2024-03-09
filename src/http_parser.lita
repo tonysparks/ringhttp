@@ -13,6 +13,9 @@ public enum ParseStatus {
     OK,
     ERROR_INVALID_REQUEST_LINE,
     ERROR_INVALID_HEADERS_SECTION,
+
+    ERROR_INVALID_TEMPLATE_NAME_START,
+    ERROR_INVALID_TEMPLATE_NAME_END,
 }
 
 public struct HttpParser {
@@ -43,7 +46,8 @@ public func (this: *HttpParser) parse(input: StringView, result: *HttpRequest) :
         return ParseStatus.ERROR_INVALID_REQUEST_LINE
     }
 
-    result.method = requestLine.substring(0, methodIndex)
+    var method = requestLine.substring(0, methodIndex)
+    result.method = ToHttpMethod(&method)
     result.path = requestLine.substring(methodIndex + 1, pathIndex)
     result.version = requestLine.substring(pathIndex + 1, index)
 
@@ -55,6 +59,67 @@ public func (this: *HttpParser) parse(input: StringView, result: *HttpRequest) :
     return ParseStatus.OK
 }
 
+func ToHttpMethod(method: *StringView) : HttpMethod {
+    switch(method.length) {
+        case 3: {
+            // GET
+            if(method.equalsIgnoreCase("GET", method.length)) {
+                return HttpMethod.GET
+            }
+            // PUT
+            else if(method.equalsIgnoreCase("PUT", method.length)) {
+                return HttpMethod.PUT
+            }
+            break;
+        }
+        case 4: {
+            // HEAD
+            if(method.equalsIgnoreCase("HEAD", method.length)) {
+                return HttpMethod.HEAD
+            }
+            // POST
+            else if(method.equalsIgnoreCase("POST", method.length)) {
+                return HttpMethod.POST
+            }
+            break;
+        }
+        case 5: {
+            // TRACE
+            if(method.equalsIgnoreCase("TRACE", method.length)) {
+                return HttpMethod.TRACE
+            }
+            // PATCH
+            else if(method.equalsIgnoreCase("PATCH", method.length)) {
+                return HttpMethod.PATCH
+            }
+            break;
+        }
+        case 6: {
+            // DELETE
+            if(method.equalsIgnoreCase("DELETE", method.length)) {
+                return HttpMethod.DELETE
+            }
+            break;
+        }
+        case 7: {
+            // OPTIONS
+            if(method.equalsIgnoreCase("OPTIONS", method.length)) {
+                return HttpMethod.OPTIONS
+            }
+            // CONNECT
+            else if(method.equalsIgnoreCase("CONNECT", method.length)) {
+                return HttpMethod.CONNECT
+            }
+            break;
+        }
+        default: {
+            break;
+        }
+    }
+
+    return HttpMethod.INVALID
+
+}
 
 func (this: *HttpParser) parseHeaders(input: StringView, result: *HttpRequest) : ParseStatus {
     var rawHeadersIndex = input.indexOf("\r\n\r\n", 4)
@@ -133,9 +198,9 @@ func testParse() {
     assert(ok == ParseStatus.OK)
 
 
-    printf("Raw: %.*s\nMethod: '%.*s' Path: '%.*s' Version: '%.*s'\n",
+    printf("Raw: %.*s\nMethod: '%s' Path: '%.*s' Version: '%.*s'\n",
         input.length, input.buffer,
-        result.method.length, result.method.buffer,
+        HttpMethodAsStr(result.method),
         result.path.length, result.path.buffer,
         result.version.length, result.version.buffer
     )

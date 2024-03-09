@@ -1,0 +1,24 @@
+
+public struct Router {
+    // list of of path templates and matching controllers
+}
+
+public struct RouteMatch {
+    template: *HttpPathTemplate
+    controller: *HttpController
+}
+
+public func (this: *Router) register(
+    method: HttpMethod,
+    route: *const char,
+    controller: *HttpController) {
+
+}
+
+public func (this: *Router) match(
+    path: *StringView,
+    result: *RouteMatch
+) : bool {
+
+    return false
+}

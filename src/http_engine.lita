@@ -52,6 +52,7 @@ public struct HttpRingEngine {
     submissions: u32
 
     requestHandler: RequestHandler
+    requestHandlerUserData: *void
 
 }
 
@@ -328,8 +329,7 @@ func (this: *HttpRingEngine) queueReadHttpRequest(clientSocket: i32, request: *R
 
 func (this: *HttpRingEngine) queueWriteHttpResponse(
     ring: *io_uring,
-    request: *Request,
-    moreContents: bool = false) {
+    request: *Request) {
 
     request.state = RequestState.WRITTEN_HTTP_RESPONSE
     request.submissions += 1
@@ -352,6 +352,8 @@ func (this: *HttpRingEngine) queueWriteHttpResponse(
         .msg_iov = &iov,
         .msg_iovlen = 1,
     }
+
+    var moreContents = response.type == ResponseType.FILE
 
     // move the file directly to the socket
     var sqe = io_uring_get_sqe(ring)
@@ -383,6 +385,10 @@ func (this: *HttpRingEngine) queueWriteHttpResponse(
 
     Info("Done Writing Http Response for socket: %d\n", connection.handle())
     myerror("WriteHttpResponse")
+
+    if(moreContents) {
+        this.queueWriteHttpFileResponse(ring, request)
+    }
 }
 
 func (this: *HttpRingEngine) queueWriteHttpFileResponse(
@@ -494,7 +500,7 @@ func (this: *HttpRingEngine) handleHttpRequest(
     }
 
 
-    if(httpRequest.method.equalsIgnoreCase("GET", httpRequest.method.length)) {
+    if(httpRequest.method == HttpMethod.GET) {
 
         // determine if this is a file request
         if(httpRequest.path.startsWith(this.fileServerPath)) {
@@ -512,8 +518,7 @@ func (this: *HttpRingEngine) handleHttpRequest(
             response.fileHandle = file.handle()
             response.fileSize = file.length()
 
-            this.queueWriteHttpResponse(ring, request, true)
-            this.queueWriteHttpFileResponse(ring, request)
+            this.queueWriteHttpResponse(ring, request)
             myerror("File Write")
             Info("File written out to socket: %d for file %d (%zu bytes)!\n", connection.handle(), response.fileHandle, response.fileSize)
             return Status.OK
@@ -523,12 +528,13 @@ func (this: *HttpRingEngine) handleHttpRequest(
     var requestContext = RequestHandlerContext {
         .allocator = requestAllocator,
         .request = &httpRequest,
-        .response = &request.response
+        .response = &request.response,
+        .userData = this.requestHandlerUserData
     }
 
     if(!this.requestHandler(&requestContext)) {
-        Error("Internal Error handling request: %.*s %.*s\n",
-            httpRequest.method.length, httpRequest.method.buffer,
+        Error("Internal Error handling request: %s %.*s\n",
+            HttpMethodAsStr(httpRequest.method),
             httpRequest.path.length, httpRequest.path.buffer)
 
         var response = &request.response;
@@ -542,68 +548,6 @@ func (this: *HttpRingEngine) handleHttpRequest(
 
     this.queueWriteHttpResponse(ring, request)
 
-/*
-    switch(httpRequest.method.length) {
-        case 3: {
-            // GET
-            if(httpRequest.method.equalsIgnoreCase("GET", httpRequest.method.length)) {
-
-                // determine if this is a file request
-                if(httpRequest.path.startsWith(this.fileServerPath)) {
-                    Info("Begin Writing out file for socket: %d!\n", connection.handle())
-                    var file: File;
-                    var fileStatus = OpenFile(this.fileServerPath, httpRequest.path, &file)
-                    if(fileStatus != Status.OK) {
-                        return fileStatus
-                    }
-
-                    var response = &request.response;
-                    response.status = 200
-                    response.type = ResponseType.FILE
-                    // TODO add mime type info..
-                    response.fileHandle = file.handle()
-                    response.fileSize = file.length()
-
-                    this.queueWriteHttpResponse(ring, request, true)
-                    this.queueWriteHttpFileResponse(ring, request)
-                    myerror("File Write")
-                    Info("File written out to socket: %d for file %d (%zu bytes)!\n", connection.handle(), response.fileHandle, response.fileSize)
-                    return Status.OK
-                }
-                else {
-                    // TODO: Scan request handlers..
-                    Info("Get request for: %.*s for socket: %d\n", httpRequest.path.length, httpRequest.path.buffer, connection.handle())
-                }
-            }
-            // PUT
-            else if(httpRequest.method.equalsIgnoreCase("PUT", httpRequest.method.length)) {
-            }
-            break;
-        }
-        case 4: {
-            // HEAD
-            // POST
-            return Status.ERROR_UNSUPPORTED_METHOD
-        }
-        case 5: {
-            // TRACE
-            // PATCH
-            return Status.ERROR_UNSUPPORTED_METHOD
-        }
-        case 6: {
-            // DELETE
-            return Status.ERROR_UNSUPPORTED_METHOD
-        }
-        case 7: {
-            // OPTIONS
-            // CONNECT
-            return Status.ERROR_UNSUPPORTED_METHOD
-        }
-        default: {
-            return Status.ERROR_UNSUPPORTED_METHOD
-        }
-    }
-*/
     Info("Done handle HTTP Request for socket: %d\n", connection.handle())
     return Status.ERROR_UNSUPPORTED_METHOD
 }

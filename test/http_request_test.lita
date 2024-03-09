@@ -1,0 +1,177 @@
+import "std/string_view"
+import "std/string_buffer"
+import "std/string"
+import "std/array"
+import "std/libc"
+import "std/assert"
+
+import "http_request"
+import "http_parser"
+
+func testQueryParsingUrl(url: *const char, expected: *const char) {
+    var request = HttpRequest {}
+    request.path = StringViewInit(url)
+
+    var result = HttpQuery{}
+    result.params.init()
+
+    request.parseQuery(&result)
+
+    var sb = StringBufferInit()
+    for(var i = 0; i < result.params.size(); i+=1) {
+        var param = result.params.getPtr(i)
+        printf("Name: '%.*s' -> '%.*s'\n",
+            param.name.length,
+            param.name.buffer,
+            param.value.length,
+            param.value.buffer)
+
+        sb.append("'%.*s'->'%.*s'\n",
+            param.name.length,
+            param.name.buffer,
+            param.value.length,
+            param.value.buffer)
+    }
+    printf("\n")
+
+    var expectedView = StringViewInit(expected)
+    assert(expectedView.equals(sb.cStr()))
+}
+
+@test
+func testQueryParsing() {
+    testQueryParsingUrl("http://google.com", "")
+    testQueryParsingUrl("http://google.com?", "")
+    testQueryParsingUrl("http://google.com?query=this&name=value&yes=1", "'query'->'this'\n'name'->'value'\n'yes'->'1'\n")
+    testQueryParsingUrl("http://google.com?query&name=value&yes=1", "'query'->''\n'name'->'value'\n'yes'->'1'\n")
+    testQueryParsingUrl("http://google.com?query=this&name&yes=1", "'query'->'this'\n'name'->''\n'yes'->'1'\n")
+    testQueryParsingUrl("http://google.com?query=this&name=value&yes", "'query'->'this'\n'name'->'value'\n'yes'->''\n")
+    testQueryParsingUrl("http://google.com?query=this&name&yes", "'query'->'this'\n'name'->''\n'yes'->''\n")
+    testQueryParsingUrl("http://google.com?query&name=value&yes", "'query'->''\n'name'->'value'\n'yes'->''\n")
+    testQueryParsingUrl("http://google.com?query&name&yes=1", "'query'->''\n'name'->''\n'yes'->'1'\n")
+    testQueryParsingUrl("http://google.com?query&name&yes", "'query'->''\n'name'->''\n'yes'->''\n")
+}
+
+func assertPathParsing(
+    turl: *const char,
+    url: *const char,
+    expected: *const char,
+    templateStatus: ParseStatus = ParseStatus.OK,
+    valueStatus: ParseStatus = ParseStatus.OK
+) {
+    var template = HttpPathTemplate{}
+
+    var pathTemplate = StringViewInit(turl)
+    var status = ParsePathTemplate(&pathTemplate, &template)
+    assert(status == templateStatus)
+
+    if(templateStatus != ParseStatus.OK) {
+        return;
+    }
+
+    var path = StringViewInit(url)
+    var values = HttpPathValues{}
+    status = ParsePathValues(&template, &path, &values)
+    assert(status == valueStatus)
+
+    if(valueStatus != ParseStatus.OK) {
+        return;
+    }
+
+    assert(values.numberOfEntries == template.numberOfEntries)
+
+    var sb = StringBufferInit()
+    for(var i = 0; i < template.numberOfEntries; i+=1) {
+        var entry = &template.entries[i]
+        var value = &values.entries[i]
+
+        sb.append("'%.*s'@%d='%.*s';",
+            entry.name.length, entry.name.buffer,
+            entry.index,
+            value.length, value.buffer
+        )
+    }
+    printf("%s\n", sb.cStr())
+
+    assert(StringEqual(sb.cStr(), expected))
+}
+
+@test
+func testPathParsing() {
+    assertPathParsing(
+        "/{userId}/resources/{resourceId}",
+        "/1234/resources/ABC",
+        "'userId'@1='1234';'resourceId'@11='ABC';"
+    )
+    assertPathParsing(
+        "/",
+        "/1234/resources/ABC",
+        ""
+    )
+
+    assertPathParsing(
+        "/{userId}/resources/{resourceId}/",
+        "/1234/resources/ABCD",
+        "'userId'@1='1234';'resourceId'@11='ABCD';"
+    )
+
+    assertPathParsing(
+        "/{userId}/resources/{resourceId}/x",
+        "/1234/resources/ABC",
+        "'userId'@1='1234';'resourceId'@11='ABC';"
+    )
+
+    assertPathParsing(
+        "/{}/resources/{resourceId}",
+        "/1234/resources/ABC",
+        "''@1='1234';'resourceId'@11='ABC';"
+    )
+
+    assertPathParsing(
+        "/{userId}",
+        "/1234/resources/ABC",
+        "'userId'@1='1234';"
+    )
+
+    assertPathParsing(
+        "",
+        "/1234/resources/ABC",
+        ""
+    )
+
+    assertPathParsing(
+        "{userId}",
+        "/1234/resources/ABC",
+        "'userId'@0='';"
+    )
+
+    assertPathParsing(
+        "/{userId}/resources/{resourceId}",
+        "/",
+        "",
+        ParseStatus.OK,
+        ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START
+    )
+
+    assertPathParsing(
+        "/{userId/resources/{resourceId}",
+        "/1234/resources/ABC",
+        "",
+        ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START,
+        ParseStatus.OK
+    )
+
+    assertPathParsing(
+        "/userId}/resources/{resourceId}",
+        "/1234/resources/ABC",
+        "",
+        ParseStatus.ERROR_INVALID_TEMPLATE_NAME_END,
+        ParseStatus.OK
+    )
+
+    assertPathParsing(
+        "/{userId}",
+        "/1234?jorb",
+        "'userId'@1='1234';"
+    )
+}

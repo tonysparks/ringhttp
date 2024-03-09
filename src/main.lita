@@ -1,7 +1,8 @@
 
 import "std/libc"
-//import "std/io"
+import "std/array"
 import "std/string_buffer"
+import "std/string_view"
 import "std/mem"
 import "liburing"
 
@@ -10,6 +11,7 @@ import "http_common"
 
 import "http_request"
 import "http_response"
+import "http_parser"
 
 import "log"
 
@@ -21,15 +23,75 @@ func RequestHandler(context: *RequestHandlerContext) : i32 {
 
     Info("In Request Handler: %.*s\n", req.path.length, req.path.buffer)
 
+    var routes = context.userData as (*Routes)
 
-    res.status = 200
+printf("Path: %.*s\n", req.path.length, req.path.buffer)
+
+    if(req.path.startsWith("/echo")) {
+        var query = HttpQueryInit(context.allocator)
+        req.parseQuery(&query)
+
+        res.status = 200
+        res.type = ResponseType.BODY
+        res.body.init(1024, context.allocator)
+        res.body.append("{ \"query\": {")
+        for(var i = 0; i < query.params.size(); i+=1) {
+            var param = query.params.getPtr(i)
+            if(i > 0) res.body.append(",")
+
+            res.body.append("\"%.*s\": \"%.*s\"",
+                param.name.length, param.name.buffer,
+                param.value.length, param.value.buffer
+            )
+        }
+        res.body.append("}}")
+        return 1;
+    }
+    else if(req.path.startsWith("/path")) {
+        var values = HttpPathValues{}
+
+        var status = ParsePathValues(&routes.path, req.path, &values)
+        if(status != ParseStatus.OK) {
+            res.status = 400
+            res.type = ResponseType.BODY
+            res.body.init(1024, context.allocator)
+            res.body.append("invalid path values")
+            return 1;
+        }
+
+        res.status = 200
+        res.type = ResponseType.BODY
+        res.body.init(1024, context.allocator)
+        res.body.append("{ \"path_values\": {")
+        for(var i = 0; i < values.numberOfEntries; i+=1) {
+            var entry = &routes.path.entries[i]
+            var value = &values.entries[i]
+
+            if(i > 0) res.body.append(",")
+
+            res.body.append("\"%.*s\": \"%.*s\"",
+                entry.name.length, entry.name.buffer,
+                value.length, value.buffer
+            )
+        }
+        res.body.append("}}")
+        return 1;
+    }
+
+    res.status = 404
     res.type = ResponseType.BODY
 
     // TODO add mime type info..
     res.body.init(1024, context.allocator)
-    res.body.append("Hello World!")
+    res.body.append("resource not found")
 
+end:
     return 1
+}
+
+struct Routes {
+    echo: HttpPathTemplate
+    path: HttpPathTemplate
 }
 
 func main(len: i32, args: **char) : i32 {
@@ -45,7 +107,11 @@ func main(len: i32, args: **char) : i32 {
     Info("Listening on port: %d\n", config.port)
     var server = HttpServer{};
 
-    server.requestHandler(RequestHandler)
+    var routes = Routes{}
+    ParsePathTemplateStr("/echo", &routes.echo)
+    ParsePathTemplateStr("/path/{id}", &routes.path)
+
+    server.requestHandler(RequestHandler, &routes)
     var status = server.start(&config)
     defer server.close()
 
