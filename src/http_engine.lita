@@ -51,9 +51,7 @@ public struct HttpRingEngine {
 
     submissions: u32
 
-    requestHandler: RequestHandler
-    requestHandlerUserData: *void
-
+    callback: HttpCallback
 }
 
 func myerror(str: *const char) {
@@ -529,10 +527,11 @@ func (this: *HttpRingEngine) handleHttpRequest(
         .allocator = requestAllocator,
         .request = &httpRequest,
         .response = &request.response,
-        .userData = this.requestHandlerUserData
+        //.userData = this.requestHandlerUserData
     }
 
-    if(!this.requestHandler(&requestContext)) {
+    //if(!this.requestHandler(&requestContext)) {
+    if(!this.callback.handleRequest(&requestContext)) {
         Error("Internal Error handling request: %s %.*s\n",
             HttpMethodAsStr(httpRequest.method),
             httpRequest.path.length, httpRequest.path.buffer)

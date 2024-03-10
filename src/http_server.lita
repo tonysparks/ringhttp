@@ -25,18 +25,11 @@ import "http_engine"
 
 public struct HttpServer {
     engine: HttpRingEngine
-    /*
-    config: using *HttpConfig
+}
 
-    safeAllocator: ThreadSafeAllocator
-
-    serverSocket: Socket
-    threadPool: ThreadPool
-
-    // connections: HttpConnections
-
-    ring: io_uring
-    */
+public trait HttpCallback {
+    handleRequest: func(*RequestHandlerContext) : i32;
+    handleError: func(*RequestHandlerContext, Status) : i32;
 }
 
 public struct HttpConfig {
@@ -60,18 +53,17 @@ public struct HttpConfig {
     ioQueueDepth: i32 = 32
 }
 
-public typedef func(*RequestHandlerContext) : i32 as RequestHandler;
+//public typedef func(*RequestHandlerContext) : i32 as RequestHandler;
 
 public struct RequestHandlerContext {
     allocator: *const Allocator
     request: *HttpRequest
     response: *HttpResponse
-    userData: *void
+    //userData: *void
 }
 
-public func (this: *HttpServer) requestHandler(handler: RequestHandler, userData: *void = null) {
-    this.engine.requestHandler = handler
-    this.engine.requestHandlerUserData = userData
+public func (this: *HttpServer) callbackHandler(callback: HttpCallback) {
+    this.engine.callback = callback
 }
 
 
@@ -82,198 +74,3 @@ public func (this: *HttpServer) start(config: *HttpConfig) : Status {
 public func (this: *HttpServer) close() {
     this.engine.close()
 }
-
-/*
-public func (this: *HttpServer) addRequestListener() {
-
-}
-
-public func (this: *HttpServer) start(config: *HttpConfig) : Status {
-    this.config = config
-
-    this.close()
-
-    this.safeAllocator.init(config.allocator)
-
-    io_uring_queue_init(config.ioQueueDepth, &this.ring, 0);
-
-    this.threadPool.init(config.minThreads, config.maxThreads, config.allocator)
-    this.threadPool.start()
-
-    if(!this.serverSocket.create()) {
-        return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
-    }
-
-    defer this.serverSocket.close()
-
-    var enableReuse = 1
-    this.serverSocket.setSocketOpt(SocketOption.SO_REUSEADDR, &enableReuse, sizeof(:i32))
-
-    if(!FromPort(config.port, &this.serverSocket.address)) {
-        return Status.ERROR_CREATING_ADDRESS
-    }
-
-
-    if(!this.serverSocket.bind()) {
-        return Status.ERROR_SOCKET_BIND
-    }
-
-    if(!this.serverSocket.listen()) {
-        return Status.ERROR_SOCKET_LISTEN
-    }
-
-    while(true) {
-        printf("Waiting for connection...")
-        var clientSocket: Socket;
-        if(!this.serverSocket.accept(&clientSocket)) {
-            continue;
-        }
-
-        // TODO: Convert to non-blocking reads
-        // pool onto worker threads
-        // this.connections.add(
-        //     this.allocator,
-        //     clientSocket
-        // )
-
-        // For now do request per thread
-
-        var context = new<ThreadContext>(this.allocator)
-        context.server = this
-        context.requestAllocator.init(this.safeAllocator, this.requestBucketSizeInBytes)
-
-        context.client.socket = clientSocket
-        context.client.writeBuffer.init(1024, context.requestAllocator.allocator)
-        context.client.readBuffer.init(this.maxHttpRequestSizeInBytes as (i32), context.requestAllocator.allocator)
-
-
-        var address = clientSocket.socketAddress()
-        this.threadPool.submit(RequestThread, context)
-
-        printf("Client %s:%d connected!\n", address.address(), address.port())
-    }
-
-    return Status.OK
-}
-
-
-public func (this: *HttpServer) close() {
-    this.serverSocket.close()
-    this.threadPool.destroy()
-    this.safeAllocator.free()
-
-    if(this.ring.ring_fd > 0) {
-        io_uring_queue_exit(&this.ring)
-    }
-}
-
-struct ThreadContext {
-    server: *HttpServer
-    client: HttpConnection
-    requestAllocator: BucketAllocator
-}
-
-func signal_handler(signo: i32) {
-    fprintf(stderr, "caught signal SIGPIPE for %d\n", signo)
-}
-
-func RequestThread(arg: *void) : TaskStatus {
-    signal(SIGPIPE, signal_handler)
-
-    var context = arg as (*ThreadContext)
-    defer context.server.allocator.free(context)
-    defer context.client.free()
-    defer context.requestAllocator.free()
-
-
-    var client = &context.client
-    var buffer = &client.readBuffer
-
-    var iteration = 1;
-
-    var bytesReceived: i64;
-    do
-    {
-        // reset the buffer...
-        buffer.clear()
-
-        bytesReceived = client.socket.read(&buffer.buffer[buffer.length], buffer.capacity - buffer.length);
-        if(bytesReceived > 0) {
-            buffer.length += bytesReceived as (i32)
-        }
-        else {
-            // client closed out the socket
-            goto end;
-        }
-
-        // printf("%.*s\n", buffer.length, buffer.buffer)
-
-        // Handle the request data
-        var response = HttpResponse{};
-        response.init(context.requestAllocator.allocator)
-
-        var parser = HttpParser{}
-        parser.init(defaultAllocator)
-
-        var input = StringViewInit(buffer.buffer, buffer.length)
-
-        var request: HttpRequest;
-        var ok = parser.parse(input, &request)
-        if(ok != ParseStatus.OK) {
-            response.status = 400
-            response.headers.add(HttpHeaderFrom("Content-Type", "text/plain"))
-            response.body.appendStr("Bad Request: Invalid HTTP protocol input")
-            client.send(&response)
-        }
-        else {
-            //printf("Handling: %.*s %.*s\n", request.method.length, request.method.buffer, request.path.length, request.path.buffer)
-
-            // determine if this is a file request
-            if(request.path.startsWith(context.server.fileServerPath)) {
-                var useSendFile = true
-                if(!useSendFile) {
-                    response.fileResponse(context.server.fileServerPath, request.path)
-                    client.send(&response)
-                }
-                else {
-                    var file: File;
-                    defer file.close()
-
-                    if(response.fromFile(context.server.fileServerPath, request.path, &file) == Status.OK) {
-                        if(client.sendFile(response, &file) != Status.OK) {
-                            response.clear()
-                            response.status = 500
-                            response.headers.add(HttpHeaderFrom("Content-Type", "text/plain"))
-                            //response.body.appendStr("Bad Request: Invalid HTTP protocol input")
-                            client.send(&response)
-                        }
-                    }
-                }
-            }
-            else {
-                // TODO: Request matching
-                response.status = 200
-                response.headers.add(HttpHeaderFrom("Content-Type", "text/plain"))
-                response.body.append("%d You did it: %.*s\n", iteration, request.path.length, request.path.buffer)
-                for(var i = 0; i < request.headers.size(); i += 1) {
-                    var header = request.headers.get(i)
-                    response.body.append("%.*s: %.*s\n",
-                        header.name.length, header.name.buffer,
-                        header.values.length, header.values.buffer
-                    )
-                }
-                client.send(&response)
-            }
-        }
-
-        iteration += 1
-    }
-    while(bytesReceived > 0);
-
-end:
-    // client disconnected
-    client.socket.close()
-
-    return TaskStatus.OK
-}
-*/
