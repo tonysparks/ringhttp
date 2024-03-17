@@ -4,21 +4,14 @@ import "std/array"
 import "std/string_buffer"
 import "std/string_view"
 import "std/mem"
-import "liburing"
 
-import "http_server"
-import "http_common"
-
-import "http_request"
-import "http_response"
-import "http_parser"
-
+import "http_ring"
 import "log"
 
-//@include("<sys/stat.h>", "<fcntl.h>");
+
 
 func (this: *ServerHandler) handleRequest(context: *RequestHandlerContext) : i32 {
-    var req = context.request
+    /*var req = context.request
     var res = context.response
 
     Info("In Request Handler: %.*s\n", req.path.length, req.path.buffer)
@@ -82,7 +75,7 @@ func (this: *ServerHandler) handleRequest(context: *RequestHandlerContext) : i32
     res.body.init(1024, context.allocator)
     res.body.append("resource not found")
 
-end:
+end:*/
     return 1
 }
 
@@ -92,9 +85,60 @@ func (this: *ServerHandler) handleError(context: *RequestHandlerContext, status:
 }
 
 struct ServerHandler {
-    echo: HttpPathTemplate
-    path: HttpPathTemplate
 }
+
+func EchoRequestHandler(context: *RequestHandlerContext) : i32 {
+    var req = context.request
+    var res = context.response
+
+    var query = HttpQueryInit(context.allocator)
+    req.parseQuery(&query)
+
+    res.status = 200
+    res.type = ResponseType.BODY
+    res.body.init(1024, context.allocator)
+    res.body.append("{ \"query\": {")
+
+    for(var i = 0; i < query.params.size(); i+=1) {
+        var param = query.params.getPtr(i)
+        if(i > 0) res.body.append(",")
+
+        res.body.append("\"%.*s\": \"%.*s\"",
+            param.name.length, param.name.buffer,
+            param.value.length, param.value.buffer
+        )
+    }
+    res.body.append("}}")
+    return 1
+}
+
+func PathRequestHandler(context: *RequestHandlerContext) : i32 {
+    Info("In Path Controller!\n")
+    var req = context.request
+    var res = context.response
+    var match = context.match
+
+    var values = match.values
+
+    res.status = 200
+    res.type = ResponseType.BODY
+    res.body.init(1024, context.allocator)
+    res.body.append("{ \"path_values\": {")
+    for(var i = 0; i < values.numberOfEntries; i+=1) {
+        var entry = match.template.entries[i]
+        var value = &values.entries[i]
+
+        if(i > 0) res.body.append(",")
+
+        res.body.append("\"%.*s\": \"%.*s\"",
+            entry.name.length, entry.name.buffer,
+            value.length, value.buffer
+        )
+    }
+    res.body.append("}}")
+    return 1;
+}
+
 
 func main(len: i32, args: **char) : i32 {
     var config = HttpConfig {
@@ -108,13 +152,30 @@ func main(len: i32, args: **char) : i32 {
 
     Info("Listening on port: %d\n", config.port)
     var server = HttpServer{};
+    server.init(&config)
 
-    var routes = ServerHandler{}
-    ParsePathTemplateStr("/echo", &routes.echo)
-    ParsePathTemplateStr("/path/{id}", &routes.path)
+    var handler = ServerHandler{}
+    server.callbackHandler(&handler)
 
-    server.callbackHandler(&routes)
-    var status = server.start(&config)
+    server.requestHandler(
+        HttpMethod.GET,
+        "/echo",
+        HttpController {
+            .userData = &handler,
+            .callback = EchoRequestHandler
+        }
+    )
+
+    server.requestHandler(
+        HttpMethod.GET,
+        "/path/{id}",
+        HttpController {
+            .userData = &handler,
+            .callback = PathRequestHandler
+        }
+    )
+
+    var status = server.start()
     defer server.close()
 
     if(status != Status.OK) {
