@@ -58,10 +58,10 @@ public struct HttpConfig {
 
 
 public func (this: *HttpServer) errorHandler(errorHandler: HttpErrorHandler) {
-    this.engine.errorHandler(errorHandler)
+    this.engine.setErrorHandler(errorHandler)
 }
 
-public func (this: *HttpServer) requestHandler(
+public func (this: *HttpServer) addRequestHandler(
     method: HttpMethod,
     path: *const char,
     controller: HttpController) : Status {

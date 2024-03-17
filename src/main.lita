@@ -9,74 +9,7 @@ import "http_ring"
 import "log"
 
 
-
-func (this: *ServerHandler) handleRequest(context: *RequestHandlerContext) : i32 {
-    /*var req = context.request
-    var res = context.response
-
-    Info("In Request Handler: %.*s\n", req.path.length, req.path.buffer)
-    printf("Path: %.*s\n", req.path.length, req.path.buffer)
-
-    if(req.path.startsWith("/echo")) {
-        var query = HttpQueryInit(context.allocator)
-        req.parseQuery(&query)
-
-        res.status = 200
-        res.type = ResponseType.BODY
-        res.body.init(1024, context.allocator)
-        res.body.append("{ \"query\": {")
-        for(var i = 0; i < query.params.size(); i+=1) {
-            var param = query.params.getPtr(i)
-            if(i > 0) res.body.append(",")
-
-            res.body.append("\"%.*s\": \"%.*s\"",
-                param.name.length, param.name.buffer,
-                param.value.length, param.value.buffer
-            )
-        }
-        res.body.append("}}")
-        return 1;
-    }
-    else if(req.path.startsWith("/path")) {
-        var values = HttpPathValues{}
-
-        var status = ParsePathValues(&this.path, req.path, &values)
-        if(status != ParseStatus.OK) {
-            res.status = 400
-            res.type = ResponseType.BODY
-            res.body.init(1024, context.allocator)
-            res.body.append("invalid path values")
-            return 1;
-        }
-
-        res.status = 200
-        res.type = ResponseType.BODY
-        res.body.init(1024, context.allocator)
-        res.body.append("{ \"path_values\": {")
-        for(var i = 0; i < values.numberOfEntries; i+=1) {
-            var entry = &this.path.entries[i]
-            var value = &values.entries[i]
-
-            if(i > 0) res.body.append(",")
-
-            res.body.append("\"%.*s\": \"%.*s\"",
-                entry.name.length, entry.name.buffer,
-                value.length, value.buffer
-            )
-        }
-        res.body.append("}}")
-        return 1;
-    }
-
-    res.status = 404
-    res.type = ResponseType.BODY
-
-    // TODO add mime type info..
-    res.body.init(1024, context.allocator)
-    res.body.append("resource not found")
-
-end:*/
-    return 1
+struct ServerHandler {
 }
 
 func (this: *ServerHandler) handleError(context: *RequestHandlerContext, status: Status) : i32 {
@@ -84,8 +17,6 @@ func (this: *ServerHandler) handleError(context: *RequestHandlerContext, status:
     return 1
 }
 
-struct ServerHandler {
-}
 
 func EchoRequestHandler(context: *RequestHandlerContext) : i32 {
     var req = context.request
@@ -113,7 +44,6 @@ func EchoRequestHandler(context: *RequestHandlerContext) : i32 {
 }
 
 func PathRequestHandler(context: *RequestHandlerContext) : i32 {
-    Info("In Path Controller!\n")
     var req = context.request
     var res = context.response
     var match = context.match
@@ -155,9 +85,9 @@ func main(len: i32, args: **char) : i32 {
     server.init(&config)
 
     var handler = ServerHandler{}
-    server.callbackHandler(&handler)
+    server.errorHandler(&handler)
 
-    server.requestHandler(
+    server.addRequestHandler(
         HttpMethod.GET,
         "/echo",
         HttpController {
@@ -166,7 +96,7 @@ func main(len: i32, args: **char) : i32 {
         }
     )
 
-    server.requestHandler(
+    server.addRequestHandler(
         HttpMethod.GET,
         "/path/{id}",
         HttpController {

@@ -150,7 +150,7 @@ internal func (this: *HttpRingEngine) addRequestHandler(
     return Status.OK
 }
 
-internal func (this: *HttpRingEngine) errorHandler(errorHandler: HttpErrorHandler) {
+internal func (this: *HttpRingEngine) setErrorHandler(errorHandler: HttpErrorHandler) {
     this.errorHandler = errorHandler
 }
 
