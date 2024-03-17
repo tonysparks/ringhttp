@@ -26,13 +26,14 @@ import "http_response"
 import "http_header"
 import "http_file"
 import "http_server"
+import "http_router"
 
 import "log"
 
 @foreign
 func strerror(errnum: i32) : *const char;
 
-public struct HttpRingEngine {
+internal struct HttpRingEngine {
     config: using *HttpConfig
     safeAllocator: ThreadSafeAllocator
     serverSocket: Socket
@@ -51,7 +52,10 @@ public struct HttpRingEngine {
 
     submissions: u32
 
-    callback: HttpCallback
+    router: Router
+
+    errorHandler: HttpErrorHandler
+    filterHandlers: Array<HttpFilterHandler>
 }
 
 func myerror(str: *const char) {
@@ -123,18 +127,44 @@ func (this: *HttpRingEngine) createThreadContext(ring: *io_uring) : *HttpThreadC
     return context
 }
 
-public func (this: *HttpRingEngine) listen(config: *HttpConfig) : Status {
+internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
     this.config = config
+    this.distribution = 0_u64
 
+    this.safeAllocator.init(config.allocator)
+    this.router.init(config.allocator)
+    this.workers.init(config.maxThreads, config.allocator)
+
+    this.filterHandlers.init(32, config.allocator)
+}
+
+internal func (this: *HttpRingEngine) addRequestHandler(
+    method: HttpMethod,
+    path: *const char,
+    controller: *HttpController
+) : Status {
+    if(!this.router.register(method, path, controller)) {
+        return Status.ERROR_UNABLE_TO_REGISTER_HANDLER
+    }
+
+    return Status.OK
+}
+
+internal func (this: *HttpRingEngine) errorHandler(errorHandler: HttpErrorHandler) {
+    this.errorHandler = errorHandler
+}
+
+internal func (this: *HttpRingEngine) addFilterHandler() {
+    // TODO - add in router
+}
+
+internal func (this: *HttpRingEngine) listen() : Status {
     this.close()
 
     this.distribution = 0_u64
     this.isRunning.init(true)
 
-    this.safeAllocator.init(config.allocator)
-
-    this.workers.init(config.maxThreads, config.allocator)
-    for(var i = 0; i < config.maxThreads; i+=1) {
+    for(var i = 0; i < this.config.maxThreads; i+=1) {
         this.workers.add(WorkerThread{
             .thread = Thread{}
         })
@@ -149,7 +179,7 @@ public func (this: *HttpRingEngine) listen(config: *HttpConfig) : Status {
         }*/
     }
 
-    io_uring_queue_init(config.ioQueueDepth, &this.accept, 0/*IORING_SETUP_SQPOLL*/);
+    io_uring_queue_init(this.config.ioQueueDepth, &this.accept, 0/*IORING_SETUP_SQPOLL*/);
 
     if(!this.serverSocket.create()) {
         return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
@@ -160,7 +190,7 @@ public func (this: *HttpRingEngine) listen(config: *HttpConfig) : Status {
     var enableReuse = 1
     this.serverSocket.setSocketOpt(SocketOption.SO_REUSEADDR, &enableReuse, sizeof(:i32))
 
-    if(!FromPort(config.port, &this.serverSocket.address)) {
+    if(!FromPort(this.config.port, &this.serverSocket.address)) {
         return Status.ERROR_CREATING_ADDRESS
     }
 
@@ -220,7 +250,7 @@ public func (this: *HttpRingEngine) listen(config: *HttpConfig) : Status {
 }
 
 
-public func (this: *HttpRingEngine) close() {
+internal func (this: *HttpRingEngine) close() {
     this.isRunning.set(false)
 
     for(var i = 0; i < this.workers.size(); i+=1) {
@@ -232,6 +262,8 @@ public func (this: *HttpRingEngine) close() {
         // close out the io buffers
         io_uring_queue_exit(&worker.ring)
     }
+
+    this.filterHandlers.free()
 
     this.serverSocket.close()
     this.safeAllocator.free()
@@ -523,26 +555,28 @@ func (this: *HttpRingEngine) handleHttpRequest(
         }
     }
 
-    var requestContext = RequestHandlerContext {
-        .allocator = requestAllocator,
-        .request = &httpRequest,
-        .response = &request.response,
-        //.userData = this.requestHandlerUserData
+
+    var requestMatch: RouteMatch;
+    if(!this.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
+        serverError(&httpRequest, &request.response, requestAllocator)
     }
+    else {
 
-    //if(!this.requestHandler(&requestContext)) {
-    if(!this.callback.handleRequest(&requestContext)) {
-        Error("Internal Error handling request: %s %.*s\n",
-            HttpMethodAsStr(httpRequest.method),
-            httpRequest.path.length, httpRequest.path.buffer)
+        var controller = requestMatch.controller
+        Info("Found a match: %.*s\n", requestMatch.template.template.length, requestMatch.template.template.buffer)
 
-        var response = &request.response;
-        response.status = 500
-        response.type = ResponseType.BODY
 
-        // TODO add mime type info..
-        response.body.init(1024, requestAllocator)
-        response.body.append("Internal Error handling the request.")
+        var requestContext = RequestHandlerContext {
+            .allocator = requestAllocator,
+            .request = &httpRequest,
+            .response = &request.response,
+            .userData = controller.userData,
+            .match = &requestMatch
+        }
+
+        if(controller.callback(&requestContext) != 1) {
+            serverError(&httpRequest, &request.response, requestAllocator)
+        }
     }
 
     this.queueWriteHttpResponse(ring, request)
@@ -551,6 +585,33 @@ func (this: *HttpRingEngine) handleHttpRequest(
     return Status.ERROR_UNSUPPORTED_METHOD
 }
 
+func serverError(request: *HttpRequest, response: *HttpResponse, requestAllocator: *const Allocator) {
+    Error("Internal Error handling request: %s %.*s\n",
+        HttpMethodAsStr(request.method),
+        request.path.length, request.path.buffer
+    )
+
+    response.status = 500
+    response.type = ResponseType.BODY
+
+    // TODO add mime type info..
+    response.body.init(1024, requestAllocator)
+    response.body.append("Internal Error handling the request.")
+}
+
+func server404(request: *HttpRequest, response: *HttpResponse, requestAllocator: *const Allocator) {
+    Error("Could not find match for request: %s %.*s\n",
+        HttpMethodAsStr(request.method),
+        request.path.length, request.path.buffer
+    )
+
+    response.status = 404
+    response.type = ResponseType.BODY
+
+    // TODO add mime type info..
+    response.body.init(1024, requestAllocator)
+    response.body.append("No route bound.")
+}
 
 func signal_handler(signo: i32) {
     Error("caught signal SIGPIPE for %d\n", signo)

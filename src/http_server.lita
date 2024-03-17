@@ -20,16 +20,19 @@ import "http_request"
 import "http_response"
 import "http_header"
 import "http_file"
-
 import "http_engine"
+import "http_router"
 
 public struct HttpServer {
     engine: HttpRingEngine
 }
 
-public trait HttpCallback {
-    handleRequest: func(*RequestHandlerContext) : i32;
+public trait HttpErrorHandler {
     handleError: func(*RequestHandlerContext, Status) : i32;
+}
+
+public trait HttpFilterHandler {
+    handleFilter: func(*RequestHandlerContext, *HttpFilterHandler) : i32;
 }
 
 public struct HttpConfig {
@@ -53,22 +56,30 @@ public struct HttpConfig {
     ioQueueDepth: i32 = 32
 }
 
-//public typedef func(*RequestHandlerContext) : i32 as RequestHandler;
 
-public struct RequestHandlerContext {
-    allocator: *const Allocator
-    request: *HttpRequest
-    response: *HttpResponse
-    //userData: *void
+public func (this: *HttpServer) errorHandler(errorHandler: HttpErrorHandler) {
+    this.engine.errorHandler(errorHandler)
 }
 
-public func (this: *HttpServer) callbackHandler(callback: HttpCallback) {
-    this.engine.callback = callback
+public func (this: *HttpServer) requestHandler(
+    method: HttpMethod,
+    path: *const char,
+    controller: HttpController) : Status {
+
+    if(!this.engine.router.register(method, path, controller)) {
+        return Status.ERROR_UNABLE_TO_REGISTER_HANDLER
+    }
+
+    return Status.OK
 }
 
+public func (this: *HttpServer) init(config: *HttpConfig) : Status {
+    this.engine.init(config)
+    return Status.OK
+}
 
-public func (this: *HttpServer) start(config: *HttpConfig) : Status {
-    return this.engine.listen(config)
+public func (this: *HttpServer) start() : Status {
+    return this.engine.listen()
 }
 
 public func (this: *HttpServer) close() {
