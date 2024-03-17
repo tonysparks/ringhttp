@@ -1,0 +1,163 @@
+import "std/array"
+import "std/string_view"
+import "std/assert"
+import "std/libc"
+import "std/mem"
+
+import "http_request"
+import "http_common"
+import "http_header"
+import "http_parser"
+
+// TODO
+struct HttpController {}
+
+public const MAX_METHODS = 10
+
+public struct Router {
+    methods: [MAX_METHODS]Array<Route>
+}
+
+public struct RouteMatch {
+    template: *HttpPathTemplate
+    controller: *HttpController
+    values: *HttpPathValues
+}
+
+struct Route {
+    template: HttpPathTemplate
+    controller: *HttpController
+}
+
+public func (this: *Router) init(allocator: *const Allocator) {
+    for(var i = 0; i < MAX_METHODS; i+=1) {
+        this.methods[i].init(128, allocator)
+    }
+}
+
+public func (this: *Router) free() {
+    for(var i = 0; i < MAX_METHODS; i+=1) {
+        this.methods[i].free()
+    }
+}
+
+public func (this: *Router) register(
+    method: HttpMethod,
+    route: *const char,
+    controller: *HttpController) : bool {
+
+    var template: HttpPathTemplate;
+    if(ParsePathTemplateStr(route, &template) != ParseStatus.OK) {
+        return false
+    }
+
+
+    this.methods[method].add(Route {
+        .template = template,
+        .controller = controller
+    })
+
+    return true
+}
+
+public func (this: *Router) match(
+    method: HttpMethod,
+    path: *StringView,
+    result: *RouteMatch
+) : bool {
+    var routes = &this.methods[method]
+
+    // TODO: Do something much smarter here...
+    //  Trie? Radix?
+
+    for(var i = 0; i < routes.size(); i+=1) {
+        var route = routes.getPtr(i)
+
+        if(CheckMatch(&route.template, path)) {
+            result.template = &route.template
+            result.controller = route.controller
+
+            return ParsePathValues(&route.template, path, result.values) == ParseStatus.OK
+        }
+    }
+
+    return false
+}
+
+func CheckMatch(route: *HttpPathTemplate, path: *StringView) : bool {
+
+    var numberOfEntries = 0
+    var index = 0
+    var i = 0
+
+    while(index < route.template.length) {
+        if(i >= path.length) {
+            return false
+        }
+
+        var a = route.template.buffer[index]
+        if(a == '{') {
+
+            // eat the value
+            while(i < path.length) {
+                var b = path.buffer[i]
+                if(b == '/') {
+                    break
+                }
+
+                i+=1
+            }
+
+            // skip ahead to next path element
+            while(index < route.template.length) {
+                a = route.template.buffer[index]
+                if(a == '/') {
+                    break
+                }
+
+                index+=1
+            }
+
+            numberOfEntries += 1
+        }
+        else {
+            var b = path.buffer[i]
+            if(a != b) {
+                return false
+            }
+        }
+
+        index += 1
+        i += 1
+    }
+
+    // if there is still more path elements, this shouldn't be
+    // a match...
+    if(i < path.length) {
+        return false
+    }
+
+    return numberOfEntries == route.numberOfEntries
+}
+
+
+func assertCheckMatch(t: *const char, p: *const char, expected: bool) {
+    var template: HttpPathTemplate;
+    ParsePathTemplateStr(t, &template)
+
+    var path = StringViewInit(p)
+    assert(CheckMatch(&template, path) == expected)
+}
+
+@test
+func testCheckMatch() {
+    assertCheckMatch("/{id}/{a}", "/123/b", true)
+    assertCheckMatch("/{id}/{a}", "/123/", false)
+    assertCheckMatch("/{id}/", "/123/b", false)
+    assertCheckMatch("{id}/", "123/", true)
+    assertCheckMatch("{id}", "123", true)
+    assertCheckMatch("/{id}", "/123/b", false)
+    assertCheckMatch("/{id}", "/123", true)
+    assertCheckMatch("", "", true)
+    assertCheckMatch("", "/abc", false)
+}

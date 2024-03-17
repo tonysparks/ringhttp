@@ -1,16 +1,238 @@
 import "std/string_view"
+import "std/string_buffer"
+import "std/string"
 import "std/array"
+import "std/libc"
+import "std/assert"
+import "std/mem"
 
 import "http_header"
+import "http_parser"
+
+
+@asStr
+public enum HttpMethod {
+    INVALID,
+    GET,
+    PUT,
+    HEAD,
+    POST,
+    TRACE,
+    PATCH,
+    DELETE,
+    OPTIONS,
+    CONNECT,
+}
 
 /**
     The parsed out request
 */
 public struct HttpRequest {
-    method: StringView
+    method: HttpMethod
     path: StringView
     version: StringView
 
     headers: Array<HttpHeader>
     body: StringView
+}
+
+public struct QueryParam {
+    name: StringView
+    value: StringView
+}
+
+public struct HttpQuery {
+    params: Array<QueryParam>
+}
+
+public struct HttpPathValues {
+    entries: [MAX_TEMPATE_ENTRIES]StringView
+    numberOfEntries: i32
+}
+
+public struct HttpPathEntry {
+    name: StringView
+    index: i32
+}
+
+public const MAX_TEMPATE_ENTRIES = 32
+
+public struct HttpPathTemplate {
+    template: StringView
+    entries: [MAX_TEMPATE_ENTRIES]HttpPathEntry
+    numberOfEntries: i32
+}
+
+public func ParsePathTemplateStr(
+    pathTemplate: *const char,
+    result: *HttpPathTemplate
+) : ParseStatus {
+    var template = StringViewInit(pathTemplate)
+    return ParsePathTemplate(&template, result)
+}
+
+public func ParsePathTemplate(
+    pathTemplate: *StringView,
+    result: *HttpPathTemplate
+) : ParseStatus {
+
+    result.template = *pathTemplate
+    result.numberOfEntries = 0
+
+    var index = 0
+    var startIndex = -1
+    var diff = 0
+
+    while(index < pathTemplate.length) {
+        var c = pathTemplate.buffer[index]
+        if(c == '{') {
+            if(startIndex >= 0) {
+                return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START
+            }
+            startIndex = index
+        }
+        else if(c == '}') {
+            if(startIndex < 0) {
+                return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_END
+            }
+
+            var entry = &result.entries[result.numberOfEntries]
+            entry.name.buffer = &pathTemplate.buffer[startIndex + 1]
+            entry.name.length = index - (startIndex + 1)
+            entry.index = diff
+
+            result.numberOfEntries += 1
+            startIndex = -1
+            diff = -1
+        }
+
+        index += 1
+
+        if(startIndex < 0) {
+            diff += 1
+        }
+    }
+
+    if(startIndex >= 0) {
+        return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_END
+    }
+
+    return ParseStatus.OK
+}
+
+public func ParsePathValues(
+    template: *HttpPathTemplate,
+    path: *StringView,
+    result: *HttpPathValues) : ParseStatus {
+
+    var index = 0
+    for(var i = 0; i < template.numberOfEntries; i+=1) {
+        var entry = &template.entries[i]
+
+        if(index + entry.index >= path.length) {
+            return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START
+        }
+
+        index += entry.index
+        var startIndex = index
+
+        while(index < path.length) {
+            var c = path.buffer[index]
+            if(c == '/' || c == '?') {
+                break;
+            }
+
+            index += 1
+        }
+
+        var value = &result.entries[result.numberOfEntries]
+        value.buffer = &path.buffer[startIndex]
+        value.length = index - startIndex
+        result.numberOfEntries += 1
+    }
+
+    return ParseStatus.OK
+}
+
+public func HttpQueryInit(allocator: *const Allocator) : HttpQuery {
+    var query = HttpQuery{}
+    query.params.init(16, allocator)
+    return query
+}
+
+public func (this: *HttpRequest) parseQuery(result: *HttpQuery) {
+    var index = this.path.indexOf("?", 1)
+    if(index < 0) {
+        return;
+    }
+
+    var query = this.path.substring(index + 1)
+    var i = 0
+
+    var nameStartIndex = 0
+    var nameEndIndex = -1
+
+    var valueStartIndex = -1
+    var valueEndIndex = -1
+
+    while(i < query.length) {
+        var c = query.buffer[i]
+        switch(c) {
+            case '=': {
+                nameEndIndex = i
+                valueStartIndex = i + 1
+                break;
+            }
+            case '&': {
+                valueEndIndex = i
+
+                var nameLength = nameEndIndex - nameStartIndex
+                if(nameEndIndex < 0) {
+                    nameLength = i - nameStartIndex
+                }
+
+                var value = StringView{}
+                if(valueStartIndex < 0) {
+                    value = StringViewInit("", 0)
+                }
+                else {
+                    value = StringViewInit(&query.buffer[valueStartIndex], valueEndIndex - valueStartIndex)
+                }
+
+                result.params.add(QueryParam {
+                    .name = StringViewInit(&query.buffer[nameStartIndex], nameLength),
+                    .value = value
+                })
+
+                nameStartIndex = i + 1
+                nameEndIndex = -1
+                valueStartIndex = -1
+                valueEndIndex = -1
+                break;
+            }
+            default: {
+            }
+        }
+
+        i += 1
+    }
+
+    if(nameStartIndex < query.length) {
+        var nameLength = nameEndIndex - nameStartIndex
+        if(nameEndIndex < 0) {
+            nameLength = query.length - nameStartIndex
+        }
+
+        var value = StringView{}
+        if(valueStartIndex < 0) {
+            value = StringViewInit("", 0)
+        }
+        else {
+            value = StringViewInit(&query.buffer[valueStartIndex], query.length - valueStartIndex)
+        }
+        result.params.add(QueryParam {
+            .name = StringViewInit(&query.buffer[nameStartIndex], nameLength),
+            .value = value
+        })
+    }
 }

@@ -1,0 +1,16 @@
+@include("<fcntl.h>", "<unistd.h>");
+
+@foreign
+public const O_CLOEXEC:i32;
+
+@foreign
+public const O_DIRECT:i32;
+
+@foreign
+public const O_NONBLOCK:i32;
+
+@foreign
+public const O_NOTIFICATION_PIPE:i32;
+
+@foreign
+public func pipe2(pipefd: [2]i32, flags: i32) : i32;

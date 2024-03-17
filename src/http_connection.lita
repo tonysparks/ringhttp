@@ -11,13 +11,77 @@ import "http_header"
 import "http_common"
 import "http_file"
 
+
+public const MAX_REQUEST_LINE_SIZE = 8192 /* 8 * KiB TODO: Compiler doesn't like this when used in arrays...?!? */
+
 public struct HttpConnection {
     id: u32
     socket: Socket
     writeBuffer: StringBuffer
     readBuffer: StringBuffer
+
+    //
+    buffer: [MAX_REQUEST_LINE_SIZE]char
 }
 
+public func (this: *HttpConnection) init(allocator: *const Allocator) {
+    this.writeBuffer.init(1024, allocator)
+    this.readBuffer.init(1024, allocator)
+}
+
+
+public func (this: *HttpConnection) free() {
+    this.writeBuffer.free()
+    this.readBuffer.free()
+    this.socket.close()
+}
+
+public func (this: *HttpConnection) handle() : i32 {
+    return this.socket.socket
+}
+
+
+public func (this: *HttpConnection) bufferContents(response: *HttpResponse) {
+    if(response.status > 512) {
+        response.status = 500;
+    }
+
+    // Status Line
+    this.writeBuffer.append("HTTP/1.1 %d %s\r\n",
+        response.status, STATUS_CODES[response.status]
+    )
+
+    // Headers
+    for(var i = 0; i < response.numberOfHeaders; i += 1) {
+        var header = response.headers[i]
+        this.writeBuffer.append("%.*s: %.*s\r\n",
+            header.name.length, header.name.buffer,
+            header.values.length, header.values.buffer
+        )
+    }
+
+    var contentLength = 0_usize
+    switch(response.type) {
+        case ResponseType.NONE: break;
+        case ResponseType.BODY: contentLength = response.body.length; break;
+        case ResponseType.FILE: contentLength = response.fileSize; break;
+        default: break;
+    }
+
+    this.writeBuffer.append("Content-Length: %zu\r\n", contentLength)
+
+    // Blank Line
+    this.writeBuffer.append("\r\n")
+
+    // Body (if applicable)
+    if(response.type == ResponseType.BODY) {
+        this.writeBuffer.append("%.*s",
+            response.body.length, response.body.buffer
+        )
+    }
+}
+
+/*
 public func (this: *HttpConnection) send(response: *HttpResponse) : Status {
     if(response.status > 512) {
         response.status = 500;
@@ -71,15 +135,10 @@ public func (this: *HttpConnection) sendFile(response: *HttpResponse, file: *Fil
     // this.socket.write(this.writeBuffer.buffer, this.writeBuffer.length)
 
     return SendFile(this, response, file)
-}
-
-public func (this: *HttpConnection) free() {
-    this.writeBuffer.free()
-    this.readBuffer.free()
-    this.socket.close()
-}
+}*/
 
 
+/*
 public struct HttpConnections {
     allocator: *const Allocator
     connections: Array<HttpConnection>
@@ -103,4 +162,4 @@ public func (this: *HttpConnections) add(allocator: *const Allocator, clientSock
     c.readBuffer.init(1024, allocator)
 
     this.connections.add(c)
-}
+}*/
