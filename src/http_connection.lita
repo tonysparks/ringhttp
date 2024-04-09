@@ -1,6 +1,6 @@
 import "std/net"
 import "std/array"
-import "std/string_buffer"
+import "std/string/builder"
 import "std/thread"
 import "std/mem"
 import "std/io"
@@ -17,8 +17,8 @@ public const MAX_REQUEST_LINE_SIZE = 8192 /* 8 * KiB TODO: Compiler doesn't like
 public struct HttpConnection {
     id: u32
     socket: Socket
-    writeBuffer: StringBuffer
-    readBuffer: StringBuffer
+    writeBuffer: StringBuilder
+    readBuffer: StringBuilder
 
     //
     buffer: [MAX_REQUEST_LINE_SIZE]char

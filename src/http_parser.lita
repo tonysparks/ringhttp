@@ -1,5 +1,4 @@
 import "std/string"
-import "std/string_view"
 import "std/array"
 import "std/mem"
 import "std/libc"
@@ -16,6 +15,8 @@ public enum ParseStatus {
 
     ERROR_INVALID_TEMPLATE_NAME_START,
     ERROR_INVALID_TEMPLATE_NAME_END,
+
+    ERROR_INVALID_MULTIPART_SECTION,
 }
 
 public struct HttpParser {
@@ -27,7 +28,7 @@ public func (this: *HttpParser) init(allocator: *const Allocator) {
     this.allocator = allocator
 }
 
-public func (this: *HttpParser) parse(input: StringView, result: *HttpRequest) :  ParseStatus {
+public func (this: *HttpParser) parse(input: String, result: *HttpRequest) :  ParseStatus {
     var index = input.indexOf("\r\n", 2)
     if(index < 0) {
         return ParseStatus.ERROR_INVALID_REQUEST_LINE
@@ -59,7 +60,7 @@ public func (this: *HttpParser) parse(input: StringView, result: *HttpRequest) :
     return ParseStatus.OK
 }
 
-func ToHttpMethod(method: *StringView) : HttpMethod {
+func ToHttpMethod(method: *String) : HttpMethod {
     switch(method.length) {
         case 3: {
             // GET
@@ -121,7 +122,7 @@ func ToHttpMethod(method: *StringView) : HttpMethod {
 
 }
 
-func (this: *HttpParser) parseHeaders(input: StringView, result: *HttpRequest) : ParseStatus {
+func (this: *HttpParser) parseHeaders(input: String, result: *HttpRequest) : ParseStatus {
     var rawHeadersIndex = input.indexOf("\r\n\r\n", 4)
     if(rawHeadersIndex < 0) {
         return ParseStatus.ERROR_INVALID_HEADERS_SECTION
@@ -190,7 +191,7 @@ func testParse() {
     var parser = HttpParser{}
     parser.init(defaultAllocator)
 
-    var input = StringViewInit(
+    var input = StringInit(
 "GET /this/is/path HTTP/1.1\r\nContent-Type: application/json\r\nOrigin: example.com\r\nAgent:Some other Stuff/And some thingds end.\r\n\r\n"
 );
 

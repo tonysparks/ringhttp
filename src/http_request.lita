@@ -1,6 +1,5 @@
-import "std/string_view"
-import "std/string_buffer"
 import "std/string"
+import "std/string/builder"
 import "std/array"
 import "std/libc"
 import "std/assert"
@@ -29,16 +28,16 @@ public enum HttpMethod {
 */
 public struct HttpRequest {
     method: HttpMethod
-    path: StringView
-    version: StringView
+    path: String
+    version: String
 
     headers: Array<HttpHeader>
-    body: StringView
+    body: String
 }
 
 public struct QueryParam {
-    name: StringView
-    value: StringView
+    name: String
+    value: String
 }
 
 public struct HttpQuery {
@@ -46,19 +45,19 @@ public struct HttpQuery {
 }
 
 public struct HttpPathValues {
-    entries: [MAX_TEMPATE_ENTRIES]StringView
+    entries: [MAX_TEMPATE_ENTRIES]String
     numberOfEntries: i32
 }
 
 public struct HttpPathEntry {
-    name: StringView
+    name: String
     index: i32
 }
 
 public const MAX_TEMPATE_ENTRIES = 32
 
 public struct HttpPathTemplate {
-    template: StringView
+    template: String
     entries: [MAX_TEMPATE_ENTRIES]HttpPathEntry
     numberOfEntries: i32
 }
@@ -67,12 +66,12 @@ public func ParsePathTemplateStr(
     pathTemplate: *const char,
     result: *HttpPathTemplate
 ) : ParseStatus {
-    var template = StringViewInit(pathTemplate)
+    var template = StringInit(pathTemplate)
     return ParsePathTemplate(&template, result)
 }
 
 public func ParsePathTemplate(
-    pathTemplate: *StringView,
+    pathTemplate: *String,
     result: *HttpPathTemplate
 ) : ParseStatus {
 
@@ -122,7 +121,7 @@ public func ParsePathTemplate(
 
 public func ParsePathValues(
     template: *HttpPathTemplate,
-    path: *StringView,
+    path: *String,
     result: *HttpPathValues) : ParseStatus {
 
     var index = 0
@@ -191,16 +190,16 @@ public func (this: *HttpRequest) parseQuery(result: *HttpQuery) {
                     nameLength = i - nameStartIndex
                 }
 
-                var value = StringView{}
+                var value = String{}
                 if(valueStartIndex < 0) {
-                    value = StringViewInit("", 0)
+                    value = StringInit("", 0)
                 }
                 else {
-                    value = StringViewInit(&query.buffer[valueStartIndex], valueEndIndex - valueStartIndex)
+                    value = StringInit(&query.buffer[valueStartIndex], valueEndIndex - valueStartIndex)
                 }
 
                 result.params.add(QueryParam {
-                    .name = StringViewInit(&query.buffer[nameStartIndex], nameLength),
+                    .name = StringInit(&query.buffer[nameStartIndex], nameLength),
                     .value = value
                 })
 
@@ -223,15 +222,15 @@ public func (this: *HttpRequest) parseQuery(result: *HttpQuery) {
             nameLength = query.length - nameStartIndex
         }
 
-        var value = StringView{}
+        var value = String{}
         if(valueStartIndex < 0) {
-            value = StringViewInit("", 0)
+            value = StringInit("", 0)
         }
         else {
-            value = StringViewInit(&query.buffer[valueStartIndex], query.length - valueStartIndex)
+            value = StringInit(&query.buffer[valueStartIndex], query.length - valueStartIndex)
         }
         result.params.add(QueryParam {
-            .name = StringViewInit(&query.buffer[nameStartIndex], nameLength),
+            .name = StringInit(&query.buffer[nameStartIndex], nameLength),
             .value = value
         })
     }

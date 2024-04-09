@@ -4,8 +4,8 @@ import "std/thread"
 import "std/mem"
 import "std/mem/bucket_allocator"
 import "std/mem/thread_safe_allocator"
-import "std/string_buffer"
-import "std/string_view"
+import "std/string/builder"
+import "std/string"
 import "std/array"
 import "std/io"
 import "std/libc/signal"
@@ -521,7 +521,7 @@ func (this: *HttpRingEngine) handleHttpRequest(
     var parser = HttpParser{}
     parser.init(requestAllocator)
 
-    var input = StringViewInit(buffer, length)
+    var input = StringInit(buffer, length)
 
     var httpRequest: HttpRequest;
     var ok = parser.parse(input, &httpRequest)

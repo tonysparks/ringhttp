@@ -1,0 +1,83 @@
+import "std/string"
+import "std/array"
+import "std/assert"
+import "std/libc"
+import "std/mem"
+
+import "http_request"
+import "http_parser"
+import "http_header"
+
+public const MULTIPART_HEADER = "multipart/form-data"
+public const CONTENT_TYPE_HEADER = "content-type"
+
+
+const MULTIPART_HEADER_LENGTH = 19 // TODO constant length
+const BOUNDARY_LENGTH = 9
+
+public struct HttpMultipart {
+    boundary: String
+    parts: Array<Part>
+}
+
+public struct Part {
+    headers: Array<HttpHeader>
+    body: String
+}
+
+public func ParseMultipart(
+    allocator: *const Allocator,
+    request: *HttpRequest,
+    result: *HttpMultipart
+) : ParseStatus {
+
+    for(var i = 0; i < request.headers.size(); i+=1) {
+        var header = request.headers.getPtr(i)
+
+        // TODO: make content-type a first class element??
+        if(!header.name.equalsIgnoreCase(CONTENT_TYPE_HEADER)) {
+            continue
+        }
+
+        if(header.values.startsWith(MULTIPART_HEADER, MULTIPART_HEADER_LENGTH)) {
+            var value = header.values
+            var index = value.indexOfAt("boundary=", BOUNDARY_LENGTH, MULTIPART_HEADER_LENGTH)
+            if(index > -1) {
+                result.boundary.buffer = &value.buffer[index + BOUNDARY_LENGTH]
+                result.boundary.length = value.length - (index + BOUNDARY_LENGTH)
+                // TODO use HttpParser (parseHeaders to parse each part's header)
+                return ParseStatus.OK
+            }
+        }
+    }
+
+    return ParseStatus.ERROR_INVALID_MULTIPART_SECTION
+}
+
+func assertBoundaryParsing(headerValue: *const char, expectedValue: *const char, success: bool = true) {
+    var request = HttpRequest{};
+    request.headers.init(12)
+    request.headers.add(HttpHeader {
+        .name = StringInit(CONTENT_TYPE_HEADER),
+        .values = StringInit(headerValue)
+    })
+
+    var multipart = HttpMultipart{}
+    var status = ParseMultipart(defaultAllocator, &request, &multipart)
+    if(!success) {
+        assert(status == ParseStatus.ERROR_INVALID_MULTIPART_SECTION)
+        return;
+    }
+
+    assert(status == ParseStatus.OK)
+    printf("Boundary: '%.*s'\n", multipart.boundary.length, multipart.boundary.buffer)
+
+    assert(multipart.boundary.equals(expectedValue))
+}
+
+@test
+func testParseMultipart() {
+    assertBoundaryParsing("multipart/form-data; boundary=xyz", "xyz")
+    assertBoundaryParsing("multipart/form-data; boundary=xyz wxy", "xyz wxy")
+    assertBoundaryParsing("boundary=xyz", "", false)
+}

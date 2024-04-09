@@ -1,7 +1,6 @@
 import "std/mem"
-import "std/string_view"
-import "std/string_buffer"
 import "std/string"
+import "std/string/builder"
 import "std/io"
 import "std/system"
 import "std/libc"
@@ -102,7 +101,7 @@ public struct HttpResponse {
     type: ResponseType
 
     union {
-        body: StringBuffer
+        body: StringBuilder
 
         // File
         struct {

@@ -1,7 +1,7 @@
 import "std/mem"
-import "std/string_view"
-import "std/string_buffer"
 import "std/string"
+import "std/string/builder"
+import "std/string/buffer"
 import "std/io"
 import "std/system"
 import "std/libc"
@@ -81,13 +81,13 @@ public func SendFile(
 }
 
 
-public func OpenFile(fileServerPath: *const char, path: StringView, file: *File) : Status {
+public func OpenFile(fileServerPath: *const char, path: String, file: *File) : Status {
     if(path.contains("..") || path.length >= MAX_PATH) {
         return Status.ERROR_REQUEST_PATH_NOT_ALLOWED
     }
 
     var buffer = [MAX_PATH]char{}
-    var filepath = StringInit(buffer, MAX_PATH, 0)
+    var filepath = StringBufferInit(buffer, MAX_PATH, 0)
     filepath.format("%s%.*s", CurrentWorkingPath(), path.length, path.buffer)
 
     var fileStatus = file.open(filepath.cStr(), FileOpenOp.READ_ONLY)

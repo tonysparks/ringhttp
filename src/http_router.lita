@@ -1,5 +1,5 @@
 import "std/array"
-import "std/string_view"
+import "std/string"
 import "std/assert"
 import "std/libc"
 import "std/mem"
@@ -77,7 +77,7 @@ internal func (this: *Router) register(
 
 internal func (this: *Router) match(
     method: HttpMethod,
-    path: *StringView,
+    path: *String,
     result: *RouteMatch
 ) : bool {
     var routes = &this.methods[method]
@@ -99,7 +99,7 @@ internal func (this: *Router) match(
     return false
 }
 
-func CheckMatch(route: *HttpPathTemplate, path: *StringView) : bool {
+func CheckMatch(route: *HttpPathTemplate, path: *String) : bool {
     var numberOfEntries = 0
     var index = 0
     var i = 0
@@ -159,7 +159,7 @@ func assertCheckMatch(t: *const char, p: *const char, expected: bool) {
     var template: HttpPathTemplate;
     ParsePathTemplateStr(t, &template)
 
-    var path = StringViewInit(p)
+    var path = StringInit(p)
     assert(CheckMatch(&template, path) == expected)
 }
 
