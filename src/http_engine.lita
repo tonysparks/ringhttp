@@ -54,7 +54,8 @@ internal struct HttpRingEngine {
 
     router: Router
 
-    errorHandler: HttpErrorHandler
+    errorHandler: HttpHandler
+    notFoundHandler: HttpHandler
     filterHandlers: Array<HttpFilterHandler>
 }
 
@@ -150,8 +151,12 @@ internal func (this: *HttpRingEngine) addRequestHandler(
     return Status.OK
 }
 
-internal func (this: *HttpRingEngine) setErrorHandler(errorHandler: HttpErrorHandler) {
+internal func (this: *HttpRingEngine) setErrorHandler(errorHandler: HttpHandler) {
     this.errorHandler = errorHandler
+}
+
+internal func (this: *HttpRingEngine) setNotFoundHandler(notFoundHandler: HttpHandler) {
+    this.notFoundHandler = notFoundHandler
 }
 
 internal func (this: *HttpRingEngine) addFilterHandler() {
@@ -555,27 +560,28 @@ func (this: *HttpRingEngine) handleHttpRequest(
         }
     }
 
+    var requestContext = RequestHandlerContext {
+        .allocator = requestAllocator,
+        .request = &httpRequest,
+        .response = &request.response,
+        .userData = null,
+        .match = null
+    }
 
     var requestMatch: RouteMatch;
     if(!this.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
-        serverError(&httpRequest, &request.response, requestAllocator)
+        this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
     }
     else {
 
         var controller = requestMatch.controller
         Info("Found a match: %.*s\n", requestMatch.template.template.length, requestMatch.template.template.buffer)
 
-
-        var requestContext = RequestHandlerContext {
-            .allocator = requestAllocator,
-            .request = &httpRequest,
-            .response = &request.response,
-            .userData = controller.userData,
-            .match = &requestMatch
-        }
+        requestContext.userData = controller.userData
+        requestContext.match = &requestMatch
 
         if(controller.callback(&requestContext) != 1) {
-            serverError(&httpRequest, &request.response, requestAllocator)
+            this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
         }
     }
 
@@ -585,32 +591,62 @@ func (this: *HttpRingEngine) handleHttpRequest(
     return Status.ERROR_UNSUPPORTED_METHOD
 }
 
-func serverError(request: *HttpRequest, response: *HttpResponse, requestAllocator: *const Allocator) {
+func (this: *HttpRingEngine) serverError(
+    requestContext: *RequestHandlerContext,
+    status: Status
+) {
+    var request = requestContext.request
+    var response = requestContext.response
+
     Error("Internal Error handling request: %s %.*s\n",
         HttpMethodAsStr(request.method),
         request.path.length, request.path.buffer
     )
 
     response.status = 500
-    response.type = ResponseType.BODY
 
-    // TODO add mime type info..
-    response.body.init(1024, requestAllocator)
-    response.body.append("Internal Error handling the request.")
+    if (this.errorHandler.__this) {
+        this.errorHandler.handle(
+            requestContext,
+            status
+        )
+    }
+    else {
+        response.type = ResponseType.BODY
+
+        // TODO add mime type info..
+        response.body.init(1024, requestContext.allocator)
+        response.body.append("Internal Error handling the request.")
+    }
 }
 
-func server404(request: *HttpRequest, response: *HttpResponse, requestAllocator: *const Allocator) {
+func (this: *HttpRingEngine) server404(
+    requestContext: *RequestHandlerContext,
+    status: Status
+) {
+    var request = requestContext.request
+    var response = requestContext.response
+
     Error("Could not find match for request: %s %.*s\n",
         HttpMethodAsStr(request.method),
         request.path.length, request.path.buffer
     )
 
     response.status = 404
-    response.type = ResponseType.BODY
 
-    // TODO add mime type info..
-    response.body.init(1024, requestAllocator)
-    response.body.append("No route bound.")
+    if (this.notFoundHandler.__this) {
+        this.notFoundHandler.handle(
+            requestContext,
+            status
+        )
+    }
+    else {
+        response.type = ResponseType.BODY
+
+        // TODO add mime type info..
+        response.body.init(1024, requestContext.allocator)
+        response.body.append("No route bound.")
+    }
 }
 
 func signal_handler(signo: i32) {

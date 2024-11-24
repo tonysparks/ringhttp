@@ -27,8 +27,8 @@ public struct HttpServer {
     engine: HttpRingEngine
 }
 
-public trait HttpErrorHandler {
-    handleError: func(*RequestHandlerContext, Status) : i32;
+public trait HttpHandler {
+    handle: func(*RequestHandlerContext, Status) : i32;
 }
 
 public trait HttpFilterHandler {
@@ -57,8 +57,12 @@ public struct HttpConfig {
 }
 
 
-public func (this: *HttpServer) errorHandler(errorHandler: HttpErrorHandler) {
+public func (this: *HttpServer) errorHandler(errorHandler: HttpHandler) {
     this.engine.setErrorHandler(errorHandler)
+}
+
+public func (this: *HttpServer) notFoundHandler(notFoundHandler: HttpHandler) {
+    this.engine.setNotFoundHandler(notFoundHandler)
 }
 
 public func (this: *HttpServer) addRequestHandler(

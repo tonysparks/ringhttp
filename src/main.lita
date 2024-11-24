@@ -12,8 +12,44 @@ import "log"
 struct ServerHandler {
 }
 
-func (this: *ServerHandler) handleError(context: *RequestHandlerContext, status: Status) : i32 {
-    printf("Error: %s\n", StatusAsStr(status))
+func (this: *ServerHandler) handle(
+    context: *RequestHandlerContext,
+    status: Status
+) : i32 {
+
+    var body = ""
+    if (status == Status.ERROR_NO_ROUTE_FOUND) {
+        body = """
+            <html>
+                <body>
+                    <div>
+                        Unknown route for <b>%.*s</b>
+                    </div>
+                </body>
+            </html>
+        """
+    }
+    else {
+        body = """
+            <html>
+                <body>
+                    <div>
+                        Sorry, an internal server error ocurred.
+                    </div>
+                </body>
+            </html>
+        """
+    }
+    var response = context.response
+    response.type = ResponseType.BODY
+
+    // TODO add mime type info..
+    response.body.init(1024, context.allocator)
+    response.body.append(
+        body,
+        context.request.path.length,
+        context.request.path.buffer
+    )
     return 1
 }
 
@@ -86,6 +122,7 @@ func main(len: i32, args: **char) : i32 {
 
     var handler = ServerHandler{}
     server.errorHandler(&handler)
+    server.notFoundHandler(&handler)
 
     server.addRequestHandler(
         HttpMethod.GET,
