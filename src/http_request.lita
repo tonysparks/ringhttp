@@ -23,6 +23,17 @@ public enum HttpMethod {
     CONNECT,
 }
 
+@asStr
+public enum BodyType {
+    INVALID,
+    NONE,
+    FORM_URLENCODED
+}
+
+public enum HttpFlags {
+    DISABLE_KEEP_ALIVE = (1<<0)
+}
+
 /**
     The parsed out request
 */
@@ -31,9 +42,22 @@ public struct HttpRequest {
     path: String
     version: String
 
+    flags: i32
+
     headers: Array<HttpHeader>
     body: String
+
+    bodyType: BodyType
+    union {
+        formParams: Array<FormParam>
+    }
 }
+
+public struct FormParam {
+    name: String
+    value: String
+}
+
 
 public struct QueryParam {
     name: String

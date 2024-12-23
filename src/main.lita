@@ -44,7 +44,6 @@ func (this: *ServerHandler) handle(
     response.type = ResponseType.BODY
 
     // TODO add mime type info..
-    response.body.init(1024, context.allocator)
     response.body.append(
         body,
         context.request.path.length,
@@ -63,7 +62,6 @@ func EchoRequestHandler(context: *RequestHandlerContext) : i32 {
 
     res.status = 200
     res.type = ResponseType.BODY
-    res.body.init(1024, context.allocator)
     res.body.append("{ \"query\": {")
 
     for(var i = 0; i < query.params.size(); i+=1) {
@@ -79,6 +77,30 @@ func EchoRequestHandler(context: *RequestHandlerContext) : i32 {
     return 1
 }
 
+func SubmitRequestHandler(context: *RequestHandlerContext) : i32 {
+    var req = context.request
+    var res = context.response
+
+    res.status = 200
+    res.type = ResponseType.BODY
+    res.body.append("{ \"post_params\": {")
+
+    if(req.bodyType == BodyType.FORM_URLENCODED) {
+        for(var i = 0; i < req.formParams.size(); i+=1) {
+            var param = req.formParams.getPtr(i)
+            if(i > 0) res.body.append(",")
+
+            res.body.append("\"%.*s\": \"%.*s\"",
+                param.name.length, param.name.buffer,
+                param.value.length, param.value.buffer
+            )
+        }
+    }
+
+    res.body.append("}}")
+    return 1
+}
+
 func PathRequestHandler(context: *RequestHandlerContext) : i32 {
     var req = context.request
     var res = context.response
@@ -88,7 +110,6 @@ func PathRequestHandler(context: *RequestHandlerContext) : i32 {
 
     res.status = 200
     res.type = ResponseType.BODY
-    res.body.init(1024, context.allocator)
     res.body.append("{ \"path_values\": {")
     for(var i = 0; i < values.numberOfEntries; i+=1) {
         var entry = match.template.entries[i]
@@ -130,6 +151,15 @@ func main(len: i32, args: **char) : i32 {
         HttpController {
             .userData = &handler,
             .callback = EchoRequestHandler
+        }
+    )
+
+    server.addRequestHandler(
+        HttpMethod.POST,
+        "/submit",
+        HttpController {
+            .userData = &handler,
+            .callback = SubmitRequestHandler
         }
     )
 

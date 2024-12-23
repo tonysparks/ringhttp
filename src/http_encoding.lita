@@ -1,0 +1,165 @@
+import "std/string"
+import "std/string/builder"
+import "std/string/buffer"
+import "std/libc"
+
+const hex = "0123456789ABCDEF";
+
+public func UrlEncode(url: String, result: *StringBuilder) {
+
+    var str = url.buffer
+    var i = 0
+
+    while (*str && i < url.length) {
+        if (isalnum(*str) || *str == '-' || *str == '_' || *str == '.' || *str == '~') {
+            result.appendChar(*str);
+        } else {
+            result.appendChar('%');
+            result.appendChar(hex[(*str >> 4) & 0xF]);
+            result.appendChar(hex[*str & 0xF]);
+        }
+
+        str += 1;
+        i += 1;
+    }
+}
+
+public func UrlDecode(url: String, result: *StringBuilder) {
+    var encoded = url.buffer
+
+    for (var i = 0; i < url.length; i+=1) {
+        if (encoded[i] == '%') {
+            if (i + 2 < url.length && isxdigit(encoded[i + 1]) && isxdigit(encoded[i + 2])) {
+                var hex = [3]char{encoded[i + 1], encoded[i + 2], 0};
+                result.appendChar(strtol(hex, null, 16) as (char));
+                i += 2;
+            }
+        } else {
+            result.appendChar(encoded[i]);
+        }
+    }
+}
+
+
+public func FormUrlEncode(url: String, result: *StringBuilder) {
+
+    var str = url.buffer
+    var i = 0
+
+    while (*str && i < url.length) {
+        if (isalnum(*str) ||
+           *str == '-' ||
+           *str == '_' ||
+           *str == '.' ||
+           *str == '~' ||
+           *str == '=' ||
+           *str == '&'
+        ) {
+            result.appendChar(*str);
+        }
+        else if(*str == ' ') {
+            result.appendChar('+')
+        }
+        else {
+            result.appendChar('%');
+            result.appendChar(hex[(*str >> 4) & 0xF]);
+            result.appendChar(hex[*str & 0xF]);
+        }
+
+        str += 1;
+        i += 1;
+    }
+}
+
+public func FormUrlDecode(url: String, result: *StringBuilder) {
+    var encoded = url.buffer
+
+    for (var i = 0; i < url.length; i+=1) {
+        if (encoded[i] == '%') {
+            if (i + 2 < url.length && isxdigit(encoded[i + 1]) && isxdigit(encoded[i + 2])) {
+                var hex = [3]char{encoded[i + 1], encoded[i + 2], 0};
+                result.appendChar(strtol(hex, null, 16) as (char));
+                i += 2;
+            }
+        } else if (encoded[i] == '+') {
+            result.appendChar(' ');
+        } else {
+            result.appendChar(encoded[i]);
+        }
+    }
+}
+
+
+///~~~~~~~~~~~~~~~~~~~~~~
+// Tests
+
+
+import "std/assert"
+func testUrlEncoding(unencoded: *const char, expected: *const char) {
+    var result = StringBuilderInit(1024)
+    defer result.free()
+
+    UrlEncode(StringInit(unencoded), result)
+    printf("Encoded: %.*s\n", result.length, result.buffer)
+
+    var encoded = result.asString()
+    assert(encoded.equals(expected))
+
+    var result2 = StringBuilderInit(1024)
+    defer result2.free()
+
+    UrlDecode(encoded, result2)
+    printf("Decoded: %.*s\n", result2.length, result2.buffer)
+    assert(result2.asString().equals(unencoded))
+}
+
+func testFormUrlEncoding(unencoded: *const char, expected: *const char) {
+    var result = StringBuilderInit(1024)
+    defer result.free()
+
+    FormUrlEncode(StringInit(unencoded), result)
+    printf("Encoded: %.*s\n", result.length, result.buffer)
+
+    var encoded = result.asString()
+    assert(encoded.equals(expected))
+
+    var result2 = StringBuilderInit(1024)
+    defer result2.free()
+
+    FormUrlDecode(encoded, result2)
+    printf("Decoded: %.*s\n", result2.length, result2.buffer)
+    assert(result2.asString().equals(unencoded))
+}
+
+@test
+func testHexToChar() {
+    testUrlEncoding("name=JohnDoe", "name%3DJohnDoe")
+    testUrlEncoding("hello world", "hello%20world")
+    testUrlEncoding("name=John Doe&address=123 Main St", "name%3DJohn%20Doe%26address%3D123%20Main%20St")
+    testUrlEncoding("key=value&name=John@domain.com", "key%3Dvalue%26name%3DJohn%40domain.com")
+    testUrlEncoding("path=/user/docs/file.txt?search=apple&count=5", "path%3D%2Fuser%2Fdocs%2Ffile.txt%3Fsearch%3Dapple%26count%3D5")
+    testUrlEncoding("username=john_doe&location=NewYork-01", "username%3Djohn_doe%26location%3DNewYork-01")
+    testUrlEncoding("", "")
+    testUrlEncoding("name=José", "name%3DJos%C3%A9")
+
+
+    testFormUrlEncoding("name=JohnDoe", "name=JohnDoe")
+    testFormUrlEncoding("hello world", "hello+world")
+    testFormUrlEncoding("name=John Doe&address=123 Main St", "name=John+Doe&address=123+Main+St")
+    testFormUrlEncoding("key=value&name=John@domain.com", "key=value&name=John%40domain.com")
+    testFormUrlEncoding("path=/user/docs/file.txt?search=apple&count=5", "path=%2Fuser%2Fdocs%2Ffile.txt%3Fsearch=apple&count=5")
+    testFormUrlEncoding("username=john_doe&location=NewYork-01", "username=john_doe&location=NewYork-01")
+    testFormUrlEncoding("", "")
+    testFormUrlEncoding("name=José", "name=Jos%C3%A9")
+
+    //     // Decoding tests
+    //     {"name=JohnDoe", "name=JohnDoe", 0},
+    //     {"hello+world", "hello world", 0},
+    //     {"key=value&name=John%40domain.com", "key=value&name=John@domain.com", 0},
+    //     {"path=%2Fuser%2Fdocs%2Ffile.txt%3Fsearch%3Dapple%26count%3D5", "path=/user/docs/file.txt?search=apple&count=5", 0},
+    //     {"username=john_doe&location=NewYork-01", "username=john_doe&location=NewYork-01", 0},
+    //     {"", "", 0},
+    //     {"name=Jos%C3%A9", "name=José", 0},
+    //     {"name=John+Doe&address=123+Main+St&note=Hello%21", "name=John Doe&address=123 Main St&note=Hello!", 0}
+    // };
+}

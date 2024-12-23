@@ -1,4 +1,6 @@
 import "std/string"
+import "std/string/builder"
+import "std/string/buffer"
 import "std/array"
 import "std/mem"
 import "std/libc"
@@ -7,6 +9,7 @@ import "std/assert"
 import "http_header"
 import "http_request"
 import "http_common"
+import "http_encoding"
 
 public enum ParseStatus {
     OK,
@@ -52,7 +55,13 @@ public func (this: *HttpParser) parse(input: String, result: *HttpRequest) :  Pa
     result.path = requestLine.substring(methodIndex + 1, pathIndex)
     result.version = requestLine.substring(pathIndex + 1, index)
 
-    var parseResult = this.parseHeaders(input.substring(index + 2), result)
+    var headerInput = input.substring(index + 2)
+    var parseResult = this.parseHeaders(&headerInput, result)
+    if(parseResult != ParseStatus.OK) {
+        return parseResult
+    }
+
+    parseResult = this.parseBody(headerInput, result)
     if(parseResult != ParseStatus.OK) {
         return parseResult
     }
@@ -122,7 +131,8 @@ func ToHttpMethod(method: *String) : HttpMethod {
 
 }
 
-func (this: *HttpParser) parseHeaders(input: String, result: *HttpRequest) : ParseStatus {
+func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : ParseStatus {
+    // TODO: Performance, don't scan input twice
     var rawHeadersIndex = input.indexOf("\r\n\r\n", 4)
     if(rawHeadersIndex < 0) {
         return ParseStatus.ERROR_INVALID_HEADERS_SECTION
@@ -132,6 +142,8 @@ func (this: *HttpParser) parseHeaders(input: String, result: *HttpRequest) : Par
     if(rawHeadersIndex < 1) {
         return ParseStatus.OK
     }
+
+    defer *input = input.substring(rawHeadersIndex + 2)
 
     rawHeadersIndex += 2
 
@@ -173,16 +185,104 @@ func (this: *HttpParser) parseHeaders(input: String, result: *HttpRequest) : Par
             }
         }
 
-        result.headers.add(HttpHeader{
-            .name = rawHeaders.substring(nameStartIndex, nameEndIndex),
-            .values = rawHeaders.substring(valueStartIndex, headerIndex)
-        })
+        var name = rawHeaders.substring(nameStartIndex, nameEndIndex)
+        var value = rawHeaders.substring(valueStartIndex, headerIndex)
 
+        var header = HttpHeader{
+            .name = name,
+            .values = value
+        }
+        this.checkHeader(&header, result)
+
+        result.headers.add(header)
         current = headerIndex + 2
     }
 
     return ParseStatus.OK
 }
+
+func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) {
+
+    // TODO: Optimize case insensitivity
+    if (header.name.equalsIgnoreCase("connection") && header.values.contains("close")) {
+        result.flags |= HttpFlags.DISABLE_KEEP_ALIVE
+    }
+
+    if (header.name.equalsIgnoreCase("content-type")) {
+        if(header.values.equals("application/x-www-form-urlencoded")) {
+            result.bodyType = BodyType.FORM_URLENCODED
+        }
+    }
+}
+
+internal func (this: *HttpParser) parseBody(input: String, result: *HttpRequest) : ParseStatus {
+    switch(result.bodyType) {
+        case BodyType.FORM_URLENCODED: {
+            // Should we error if not POST, PUT, PATCH, OPTIONS, DELETE?
+
+            result.formParams = ArrayInit<FormParam>(16, this.allocator)
+            var currentParam = FormParam{}
+
+            var nameIndex = 0
+            var nameEndIndex = -1
+            var valueIndex = 0
+            var valueEndIndex = -1
+
+            for(var i = 0; i < input.length; i += 1) {
+                var c = input.buffer[i]
+                if(c == '=') {
+                    nameEndIndex = i
+
+                    var sb = StringBuilderInit((nameEndIndex - nameIndex) * 3, this.allocator)
+                    FormUrlDecode(input.substring(nameIndex, nameEndIndex), sb)
+                    currentParam.name = sb.asString()
+
+                    valueIndex = i + 1
+                    valueEndIndex = i + 1
+
+                    nameIndex = -1
+                    nameEndIndex = -1
+                    continue
+                }
+                else if(c == '&') {
+                    valueEndIndex = i
+
+                    var sb = StringBuilderInit((valueEndIndex - valueIndex) * 3, this.allocator)
+                    FormUrlDecode(input.substring(valueIndex, valueEndIndex), sb)
+                    currentParam.value = sb.asString()
+
+                    result.formParams.add(currentParam)
+
+                    nameIndex = i + 1
+                    nameEndIndex = i + 1
+
+                    valueIndex = -1
+                    valueEndIndex = -1
+                    continue
+                }
+
+                if(valueIndex > 0) {
+                    valueEndIndex += 1
+                }
+            }
+
+            if (valueIndex > 0) {
+                var sb = StringBuilderInit((valueEndIndex - valueIndex) * 3, this.allocator)
+                FormUrlDecode(input.substring(valueIndex, valueEndIndex), sb)
+                currentParam.value = sb.asString()
+
+                result.formParams.add(currentParam)
+            }
+            break
+        }
+        default: {
+            // TODO: More body types
+        }
+    }
+
+    return ParseStatus.OK
+}
+
 
 @test
 func testParse() {
@@ -192,7 +292,7 @@ func testParse() {
     parser.init(defaultAllocator)
 
     var input = StringInit(
-"GET /this/is/path HTTP/1.1\r\nContent-Type: application/json\r\nOrigin: example.com\r\nAgent:Some other Stuff/And some thingds end.\r\n\r\n"
+"GET /this/is/path HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nOrigin: example.com\r\nAgent:Some other Stuff/And some thingds end.\r\n\r\nname=Anthony+Sparks&address=3265+FORDHAM+CT&phone=414-315-1920"
 );
 
     var ok = parser.parse(input, &result)
@@ -211,6 +311,15 @@ func testParse() {
         printf("Name: '%.*s' Values: '%.*s'\n",
             header.name.length, header.name.buffer,
             header.values.length, header.values.buffer
+        )
+    }
+
+    assert(result.bodyType == BodyType.FORM_URLENCODED)
+    for(var i = 0; i < result.formParams.size(); i+=1) {
+        var form = result.formParams.getPtr(i)
+        printf("FormName: '%.*s' Values: '%.*s'\n",
+            form.name.length, form.name.buffer,
+            form.value.length, form.value.buffer
         )
     }
 }

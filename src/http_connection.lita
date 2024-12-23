@@ -20,13 +20,15 @@ public struct HttpConnection {
     writeBuffer: StringBuilder
     readBuffer: StringBuilder
 
+    disableKeepAlive: bool
+
     //
-    buffer: [MAX_REQUEST_LINE_SIZE]char
+    //buffer: [MAX_REQUEST_LINE_SIZE]char
 }
 
 public func (this: *HttpConnection) init(allocator: *const Allocator) {
     this.writeBuffer.init(1024, allocator)
-    this.readBuffer.init(1024, allocator)
+    this.readBuffer.init(MAX_REQUEST_LINE_SIZE, allocator)
 }
 
 
@@ -35,6 +37,19 @@ public func (this: *HttpConnection) free() {
     this.readBuffer.free()
     this.socket.close()
 }
+
+public func (this: *HttpConnection) reset(allocator: *const Allocator) {
+    this.writeBuffer.init(1024, allocator)
+    this.readBuffer.init(MAX_REQUEST_LINE_SIZE, allocator)
+    //this.writeBuffer.clear()
+    //this.readBuffer.clear()
+    // this.socket.socket = 0
+}
+
+public func (this: *HttpConnection) close() {
+    this.socket.close()
+}
+
 
 public func (this: *HttpConnection) handle() : i32 {
     return this.socket.socket
@@ -45,6 +60,8 @@ public func (this: *HttpConnection) bufferContents(response: *HttpResponse) {
     if(response.status > 512) {
         response.status = 500;
     }
+
+    this.writeBuffer.clear()
 
     // Status Line
     this.writeBuffer.append("HTTP/1.1 %d %s\r\n",
