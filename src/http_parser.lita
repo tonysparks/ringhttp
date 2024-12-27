@@ -5,11 +5,13 @@ import "std/array"
 import "std/mem"
 import "std/libc"
 import "std/assert"
+import "std/json"
 
 import "http_header"
 import "http_request"
 import "http_common"
 import "http_encoding"
+import "log"
 
 public enum ParseStatus {
     OK,
@@ -19,7 +21,9 @@ public enum ParseStatus {
     ERROR_INVALID_TEMPLATE_NAME_START,
     ERROR_INVALID_TEMPLATE_NAME_END,
 
+    // Error with multi-part
     ERROR_INVALID_MULTIPART_SECTION,
+    ERROR_INVALID_MULTIPART_BOUNDARY,
 }
 
 public struct HttpParser {
@@ -61,7 +65,7 @@ public func (this: *HttpParser) parse(input: String, result: *HttpRequest) :  Pa
         return parseResult
     }
 
-    parseResult = this.parseBody(headerInput, result)
+    parseResult = this.parseBody(headerInput, &result.body)
     if(parseResult != ParseStatus.OK) {
         return parseResult
     }
@@ -201,6 +205,77 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : Pa
     return ParseStatus.OK
 }
 
+func (this: *HttpParser) parseHeader(input: *String, result: *HttpRequest) : ParseStatus {
+    // TODO: Performance, don't scan input twice
+    var rawHeadersIndex = input.indexOf("\r\n\r\n", 4)
+    if(rawHeadersIndex < 0) {
+        return ParseStatus.ERROR_INVALID_HEADERS_SECTION
+    }
+
+    // there are no headers
+    if(rawHeadersIndex < 1) {
+        return ParseStatus.OK
+    }
+
+    defer *input = input.substring(rawHeadersIndex + 2)
+
+    rawHeadersIndex += 2
+
+    result.headers.init(16, this.allocator)
+
+    var rawHeaders = input.substring(0, rawHeadersIndex)
+    var current = 0
+    while(current < rawHeaders.length) {
+        var headerIndex = rawHeaders.indexOfAt("\r\n", 2, current)
+        if(headerIndex < 0) {
+            return ParseStatus.ERROR_INVALID_HEADERS_SECTION
+        }
+
+        var nameStartIndex = -1
+        var nameEndIndex = -1
+
+        var valueStartIndex = -1
+
+        var i = current
+        while(i < headerIndex) {
+            defer i+=1
+
+            var c = rawHeaders.buffer[i]
+
+            if(isspace(c)) {
+                continue;
+            }
+
+            if(nameStartIndex < 0) {
+                nameStartIndex = i
+            }
+
+            if(nameEndIndex > -1 && valueStartIndex < 0) {
+                valueStartIndex = i
+            }
+
+            if(c == ':' && nameEndIndex < 0) {
+                nameEndIndex = i
+            }
+        }
+
+        var name = rawHeaders.substring(nameStartIndex, nameEndIndex)
+        var value = rawHeaders.substring(valueStartIndex, headerIndex)
+
+        var header = HttpHeader{
+            .name = name,
+            .values = value
+        }
+        this.checkHeader(&header, result)
+
+        result.headers.add(header)
+        current = headerIndex + 2
+    }
+
+    return ParseStatus.OK
+}
+
+
 func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) {
 
     // TODO: Optimize case insensitivity
@@ -208,19 +283,36 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
         result.flags |= HttpFlags.DISABLE_KEEP_ALIVE
     }
 
+    this.checkHeaderBody(header, &result.body)
+}
+
+func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
     if (header.name.equalsIgnoreCase("content-type")) {
         if(header.values.equals("application/x-www-form-urlencoded")) {
-            result.bodyType = BodyType.FORM_URLENCODED
+            body.bodyType = BodyType.FORM_URLENCODED
+        }
+        else if(header.values.equals("application/json")) {
+            body.bodyType = BodyType.JSON
+        }
+        else if(header.values.startsWith("multipart/form-data")) {
+            body.bodyType = BodyType.MULTIPART_FORMDATA
+            var boundaryIndex = header.values.endIndexOf("boundary=")
+            if(boundaryIndex < 0) {
+                return;
+            }
+
+            body.multipart.boundary = header.values.substring(boundaryIndex)
         }
     }
 }
 
-internal func (this: *HttpParser) parseBody(input: String, result: *HttpRequest) : ParseStatus {
-    switch(result.bodyType) {
+
+internal func (this: *HttpParser) parseBody(input: String, body: *Body) : ParseStatus {
+    switch(body.bodyType) {
         case BodyType.FORM_URLENCODED: {
             // Should we error if not POST, PUT, PATCH, OPTIONS, DELETE?
 
-            result.formParams = ArrayInit<FormParam>(16, this.allocator)
+            body.formParams = ArrayInit<FormParam>(16, this.allocator)
             var currentParam = FormParam{}
 
             var nameIndex = 0
@@ -251,7 +343,7 @@ internal func (this: *HttpParser) parseBody(input: String, result: *HttpRequest)
                     FormUrlDecode(input.substring(valueIndex, valueEndIndex), sb)
                     currentParam.value = sb.asString()
 
-                    result.formParams.add(currentParam)
+                    body.formParams.add(currentParam)
 
                     nameIndex = i + 1
                     nameEndIndex = i + 1
@@ -271,18 +363,119 @@ internal func (this: *HttpParser) parseBody(input: String, result: *HttpRequest)
                 FormUrlDecode(input.substring(valueIndex, valueEndIndex), sb)
                 currentParam.value = sb.asString()
 
-                result.formParams.add(currentParam)
+                body.formParams.add(currentParam)
             }
+            break
+        }
+        case BodyType.JSON: {
+            var jsonParser = JsonParserInit(this.allocator)
+
+            // TODO: fix horrible duplicate copy
+            var sb = StringBuilderInit(input.length, this.allocator)
+            input.copyTo(sb.buffer, input.length)
+
+            body.json = jsonParser.parseJson(sb.buffer)
+
+            // TODO: Error handling of bad json
+            if (!body.json && input.length > 0) {
+                body.bodyType = BodyType.MALFORMED_INPUT
+                body.body = input
+            }
+            break
+        }
+        case BodyType.MULTIPART_FORMDATA: {
+            this.parseMultipart(input, &body.multipart)
             break
         }
         default: {
             // TODO: More body types
+            body.body = input
         }
     }
 
     return ParseStatus.OK
 }
 
+internal func (this: *HttpParser) parseMultipart(input: *String, multipart: *MultiPart) : ParseStatus {
+    multipart.parts.init(6, this.allocator)
+
+    var boundary = multipart.boundary
+    var index = -1
+
+    while(true) {
+        // ensure start boundary
+        {
+            if(!input.startsWith("--")) {
+                return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
+            }
+            *input = input.substring(2)
+
+            index = input.endIndexOf(boundary.buffer, boundary.length)
+            if(index < 0) {
+                return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
+            }
+
+            *input = input.substring(index)
+        }
+
+        var part = Part{}
+        part.bodyType = BodyType.UNKNOWN
+        part.body.buffer = input.buffer;
+
+        // TEMP
+        {
+            index = input.indexOf(boundary.buffer, boundary.length)
+            if(index < 0) {
+                return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
+            }
+            part.body.length = index - 2;
+            *input = input.substring(index)
+            Info("Part: '%.*s\n", part.body.length, part.body.buffer)
+        }
+
+        // parse headers
+        {
+
+        }
+
+        // parse body
+        {
+
+        }
+
+        // ensure end boundary
+        {
+            index = input.endIndexOf(boundary.buffer, boundary.length)
+            if(index < 0) {
+                return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
+            }
+
+            *input = input.substring(index)
+        }
+
+        multipart.parts.add(part)
+
+        // exit if --boundary--
+        {
+            if(input.startsWith("--")) {
+                break
+            }
+        }
+    }
+}
+
+internal func (this: *HttpParser) parseMultipartHeader(input: *String, multipart: *MultiPart) : ParseStatus {
+    while(true) {
+        var index = input.endIndexOf("\r\n")
+        if (index < 0) {
+            break
+        }
+        var header = HttpHeader{}
+
+
+        *input = input.substring(index)
+    }
+}
 
 @test
 func testParse() {

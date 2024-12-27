@@ -4,6 +4,7 @@ import "std/array"
 import "std/libc"
 import "std/assert"
 import "std/mem"
+import "std/json"
 
 import "http_header"
 import "http_parser"
@@ -25,9 +26,11 @@ public enum HttpMethod {
 
 @asStr
 public enum BodyType {
-    INVALID,
-    NONE,
-    FORM_URLENCODED
+    UNKNOWN,
+    MALFORMED_INPUT,
+    FORM_URLENCODED,
+    JSON,
+    MULTIPART_FORMDATA,
 }
 
 public enum HttpFlags {
@@ -45,12 +48,27 @@ public struct HttpRequest {
     flags: i32
 
     headers: Array<HttpHeader>
-    body: String
+    body: using Body
+}
+
+public struct Body {
+    body: using String
 
     bodyType: BodyType
     union {
         formParams: Array<FormParam>
+        json: *JsonNode
+        multipart: MultiPart
     }
+}
+
+public struct MultiPart {
+    boundary: String
+    parts: Array<Part>
+}
+
+public struct Part {
+    body: using Body
 }
 
 public struct FormParam {

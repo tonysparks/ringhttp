@@ -4,6 +4,7 @@ import "std/array"
 import "std/string/builder"
 import "std/string"
 import "std/mem"
+import "std/json"
 
 import "http_ring"
 import "log"
@@ -83,22 +84,58 @@ func SubmitRequestHandler(context: *RequestHandlerContext) : i32 {
 
     res.status = 200
     res.type = ResponseType.BODY
-    res.body.append("{ \"post_params\": {")
 
-    if(req.bodyType == BodyType.FORM_URLENCODED) {
-        for(var i = 0; i < req.formParams.size(); i+=1) {
-            var param = req.formParams.getPtr(i)
-            if(i > 0) res.body.append(",")
+    PrintBody(&req.body, res, context.allocator)
+    return 1
+}
 
-            res.body.append("\"%.*s\": \"%.*s\"",
-                param.name.length, param.name.buffer,
-                param.value.length, param.value.buffer
-            )
+func PrintBody(body: *Body, res: *HttpResponse, allocator: *const Allocator) {
+    switch(body.bodyType) {
+        case BodyType.FORM_URLENCODED: {
+            res.body.append("{ \"post_params\": {")
+            for(var i = 0; i < body.formParams.size(); i+=1) {
+                var param = body.formParams.getPtr(i)
+                if(i > 0) res.body.append(",")
+
+                res.body.append("\"%.*s\": \"%.*s\"",
+                    param.name.length, param.name.buffer,
+                    param.value.length, param.value.buffer
+                )
+            }
+            res.body.append("}}")
+            break
+        }
+        case BodyType.JSON: {
+            if (body.json) {
+                body.json.print(res.body)
+            }
+            break
+        }
+        case BodyType.MULTIPART_FORMDATA: {
+            var multipart = body.multipart
+            res.body.append("{ \"multi_part\": { ")
+            res.body.append(" \"boundary\": \"%.*s\", ", multipart.boundary.length, multipart.boundary.buffer)
+
+            res.body.append(" \"parts\": [")
+            for(var i = 0; i < multipart.parts.size(); i+=1) {
+                var part = multipart.parts.getPtr(i)
+                if(i > 0) res.body.append(",")
+
+                PrintBody(&part.body, res, allocator)
+            }
+            res.body.append("]}}")
+            break
+        }
+        default: {
+            var sb = StringBuilderInit(body.length + 32, allocator)
+            JsonEscapeString(sb, body.buffer, body.length)
+
+            res.body.append("{ \"body\": ")
+            res.body.append("\"%.*s\"", sb.length, sb.buffer)
+            res.body.append("}")
+            break
         }
     }
-
-    res.body.append("}}")
-    return 1
 }
 
 func PathRequestHandler(context: *RequestHandlerContext) : i32 {

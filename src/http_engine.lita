@@ -492,7 +492,7 @@ func (this: *HttpRingEngine) queueWriteHttpFileResponse(
             response.fileSize as (u32),
             0
         )
-        sqe.flags |= IOSQE_IO_LINK//|IORING_SQ_NEED_WAKEUP
+        sqe.flags |= IOSQE_IO_LINK
 
         io_uring_sqe_set_data(sqe, request)
     }
@@ -514,9 +514,27 @@ func (this: *HttpRingEngine) queueWriteHttpFileResponse(
             response.fileSize as (u32),
             0
         )
+        // sqe.flags |= IOSQE_IO_LINK
 
         io_uring_sqe_set_data(sqe, request)
     }
+
+    // close out the file
+    // {
+    //     var sqe = io_uring_get_sqe(ring)
+    //     if(!sqe) {
+    //         Error("Error creating SQE for socket: %d\n", socketFd)
+    //         goto error;
+    //     }
+
+    //     io_uring_prep_close(
+    //         sqe,
+    //         response.fileHandle
+    //     )
+
+
+    //     io_uring_sqe_set_data(sqe, request)
+    // }
 
     request.submissions += 2
     io_uring_submit(ring)
@@ -587,6 +605,7 @@ func (this: *HttpRingEngine) handleHttpRequest(
 
             // determine if this is a file request
             if(httpRequest.path.startsWith(this.fileServerPath)) {
+                // TODO: Cache File contents
                 var file: File;
                 var fileStatus = OpenFile(this.fileServerPath, httpRequest.path, &file)
                 if(fileStatus != Status.OK) {
