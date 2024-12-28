@@ -5,6 +5,7 @@ import "std/mem"
 import "std/mem/bucket_allocator"
 import "std/mem/thread_safe_allocator"
 import "std/string/builder"
+import "std/string/buffer"
 import "std/string"
 import "std/array"
 import "std/io"
@@ -85,8 +86,11 @@ internal struct Request {
     clientAddrLen: socklen_t;
 
     connection: HttpConnection
+    request: HttpRequest
     response: HttpResponse
     state: RequestState
+
+    bodyIndex: i32
 
     // Allocator for each request on this thread
     requestAllocator: BucketAllocator
@@ -110,6 +114,7 @@ func (this: *Request) begin() {
     this.response.init(allocator)
 
     this.submissions = 0
+    this.bodyIndex = 0
 
     if(this.pipes[0] > 0) {
         close(this.pipes[0])
@@ -120,7 +125,7 @@ func (this: *Request) begin() {
     }
 
     if(this.file > 0) {
-        close(this.file)
+        // close(this.file)
     }
     this.file = 0
 
@@ -135,6 +140,7 @@ func (this: *Request) finish(forceClose: bool = false) {
     Info("Finishing Request for socket: %d\n", this.connection.handle())
 
     this.submissions = 0
+    this.bodyIndex = 0
 
     if(this.pipes[0] > 0) {
         close(this.pipes[0])
@@ -145,7 +151,7 @@ func (this: *Request) finish(forceClose: bool = false) {
     }
 
     if(this.file > 0) {
-        close(this.file)
+        // close(this.file)
     }
     this.file = 0
 
@@ -179,6 +185,10 @@ internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
     this.requests.init(1, 1, this, config.allocator)
 
     this.filterHandlers.init(32, config.allocator)
+
+    if(!config.disableSignal) {
+        signal(SIGINT, signal_handler);
+    }
 }
 
 // internal func (this: *HttpRingEngine) free() {
@@ -369,14 +379,16 @@ func (this: *HttpRingEngine) queueReadHttpRequest(ring: *io_uring, clientSocket:
         goto error;
     }
 
+    var readBuffer = &connection.readBuffer
+
     // Listen for bytes from the client, store them in
     // our readBuffer, this may take multiple reads to complete
     // the full client socket payload
     io_uring_prep_read(
         sqe,
         clientSocket,
-        connection.readBuffer.buffer + connection.readBuffer.length,
-        connection.readBuffer.remaining(),
+        &readBuffer.buffer[readBuffer.length],
+        readBuffer.remaining(),
         0
     )
 
@@ -514,29 +526,29 @@ func (this: *HttpRingEngine) queueWriteHttpFileResponse(
             response.fileSize as (u32),
             0
         )
-        // sqe.flags |= IOSQE_IO_LINK
+        sqe.flags |= IOSQE_IO_LINK
 
         io_uring_sqe_set_data(sqe, request)
     }
 
     // close out the file
-    // {
-    //     var sqe = io_uring_get_sqe(ring)
-    //     if(!sqe) {
-    //         Error("Error creating SQE for socket: %d\n", socketFd)
-    //         goto error;
-    //     }
+    {
+        var sqe = io_uring_get_sqe(ring)
+        if(!sqe) {
+            Error("Error creating SQE for socket: %d\n", socketFd)
+            goto error;
+        }
 
-    //     io_uring_prep_close(
-    //         sqe,
-    //         response.fileHandle
-    //     )
+        io_uring_prep_close(
+            sqe,
+            response.fileHandle
+        )
 
 
-    //     io_uring_sqe_set_data(sqe, request)
-    // }
+        io_uring_sqe_set_data(sqe, request)
+    }
 
-    request.submissions += 2
+    request.submissions += 3
     io_uring_submit(ring)
 
 error:
@@ -554,8 +566,8 @@ func (this: *HttpRingEngine) handlePartialHttpRequest(
     var connection = &request.connection
     var readBuffer = &connection.readBuffer
 
-
     readBuffer.length += bytesRead
+
     if(readBuffer.remaining() < 1024) {
         readBuffer.reserve(readBuffer.capacity + 1024)
     }
@@ -568,9 +580,36 @@ func (this: *HttpRingEngine) handlePartialHttpRequest(
     }
 
     // determine if we read all of the request line and headers
-    if(!readBuffer.contains("\r\n\r\n")) {
+    // TODO: Scan from end of string
+    var index = readBuffer.asString().endIndexOf("\r\n\r\n")
+    if(index < 0) {
         Info("Request was a partial read for connection: %d\n", connection.handle())
         return Status.PARTIAL_REQUEST_DISPATCHING_READ
+    }
+    else {
+        request.bodyIndex = index
+
+        // we've read the http header part, now
+        // let's ensure we've read the entire body
+        var parser = HttpParser{}
+        parser.init(requestAllocator)
+
+        var input = String {
+            .buffer = readBuffer.buffer,
+            .length = index
+        }
+
+        var ok = parser.parse(input, &request.request)
+        if(ok != ParseStatus.OK) {
+            Error("Error parsing http request: %s\n", ParseStatusAsStr(ok))
+            return Status.ERROR_PARSING_HTTP_REQUEST
+        }
+
+        var bodyLength = request.request.bodyLength
+        if(readBuffer.length - index < bodyLength) {
+            Info("Need to dispatch read for body: %d\n", connection.handle())
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        }
     }
 
     // we are ready to handle the full request
@@ -585,16 +624,17 @@ func (this: *HttpRingEngine) handleHttpRequest(
     var connection = &request.connection
 
     var buffer = &connection.readBuffer
-    Info("Beging handling HTTP Request for socket: %d: %.*s\n", connection.handle(), buffer.length, buffer.buffer)
+    Info("Begin handling HTTP Request for socket: %d\n%.*s\n", connection.handle(), buffer.length, buffer.buffer)
 
     var parser = HttpParser{}
     parser.init(requestAllocator)
 
-    var input = StringInit(buffer.buffer, buffer.length)
+    var input = StringInit(buffer.buffer, buffer.length).substring(request.bodyIndex)
 
-    var httpRequest: HttpRequest;
-    var ok = parser.parse(input, &httpRequest)
+    var httpRequest = &request.request;
+    var ok = parser.parseBody(input, httpRequest)
     if(ok != ParseStatus.OK) {
+        Error("Error parsing http request: %s\n", ParseStatusAsStr(ok))
         return Status.ERROR_PARSING_HTTP_REQUEST
     }
 
@@ -637,7 +677,7 @@ func (this: *HttpRingEngine) handleHttpRequest(
 
     var requestContext = RequestHandlerContext {
         .allocator = requestAllocator,
-        .request = &httpRequest,
+        .request = httpRequest,
         .response = &request.response,
         .userData = null,
         .match = null
@@ -663,7 +703,7 @@ func (this: *HttpRingEngine) handleHttpRequest(
     this.queueWriteHttpResponse(ring, request)
 
     Info("Done handling HTTP Request for socket: %d\n", connection.handle())
-    return Status.ERROR_UNSUPPORTED_METHOD
+    return Status.OK
 }
 
 func (this: *HttpRingEngine) sendServerError(
@@ -740,6 +780,10 @@ func (this: *HttpRingEngine) server404(
 
 func signal_handler(signo: i32) {
     Error("caught signal SIGPIPE for %d\n", signo)
+    if(signo == SIGINT) {
+        Info("Signal for shutdown received\n")
+        exit(0)
+    }
 }
 
 func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_uring_cqe, result: i32) {

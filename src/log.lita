@@ -34,6 +34,8 @@ public func Log(level: LogLevel, format: *const char, ...) {
 }
 
 public func Logv(level: LogLevel, format: *const char, args: va_list) {
+    if(!outputFile) return;
+
     mtx.lock()
         fprintf(outputFile, "[%s] [%s] ", LogLevelAsStr(level), "TIME_TODO")
         vfprintf(outputFile, format, args);

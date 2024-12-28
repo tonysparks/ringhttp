@@ -4,6 +4,7 @@ import "std/string/builder"
 import "std/thread"
 import "std/mem"
 import "std/io"
+import "std/libc"
 
 import "http_request"
 import "http_response"

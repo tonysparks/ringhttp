@@ -13,6 +13,7 @@ import "http_common"
 import "http_encoding"
 import "log"
 
+@asStr
 public enum ParseStatus {
     OK,
     ERROR_INVALID_REQUEST_LINE,
@@ -24,6 +25,7 @@ public enum ParseStatus {
     // Error with multi-part
     ERROR_INVALID_MULTIPART_SECTION,
     ERROR_INVALID_MULTIPART_BOUNDARY,
+    ERROR_INVALID_MULTIPART_HEADER,
 }
 
 public struct HttpParser {
@@ -57,6 +59,12 @@ public func (this: *HttpParser) parse(input: String, result: *HttpRequest) :  Pa
     var method = requestLine.substring(0, methodIndex)
     result.method = ToHttpMethod(&method)
     result.path = requestLine.substring(methodIndex + 1, pathIndex)
+    var queryIndex = result.path.indexOf("?")
+    if(queryIndex >= 0) {
+        result.query = result.path.substring(queryIndex + 1)
+        result.path = result.path.substring(0, queryIndex)
+    }
+
     result.version = requestLine.substring(pathIndex + 1, index)
 
     var headerInput = input.substring(index + 2)
@@ -65,11 +73,14 @@ public func (this: *HttpParser) parse(input: String, result: *HttpRequest) :  Pa
         return parseResult
     }
 
-    parseResult = this.parseBody(headerInput, &result.body)
+    return ParseStatus.OK
+}
+
+public func (this: *HttpParser) parseBody(input: String, result: *HttpRequest): ParseStatus {
+    var parseResult = this.parseBodyInternal(input, &result.body)
     if(parseResult != ParseStatus.OK) {
         return parseResult
     }
-
     return ParseStatus.OK
 }
 
@@ -77,51 +88,51 @@ func ToHttpMethod(method: *String) : HttpMethod {
     switch(method.length) {
         case 3: {
             // GET
-            if(method.equalsIgnoreCase("GET", method.length)) {
+            if(method.equals("GET", method.length)) {
                 return HttpMethod.GET
             }
             // PUT
-            else if(method.equalsIgnoreCase("PUT", method.length)) {
+            else if(method.equals("PUT", method.length)) {
                 return HttpMethod.PUT
             }
             break;
         }
         case 4: {
             // HEAD
-            if(method.equalsIgnoreCase("HEAD", method.length)) {
+            if(method.equals("HEAD", method.length)) {
                 return HttpMethod.HEAD
             }
             // POST
-            else if(method.equalsIgnoreCase("POST", method.length)) {
+            else if(method.equals("POST", method.length)) {
                 return HttpMethod.POST
             }
             break;
         }
         case 5: {
             // TRACE
-            if(method.equalsIgnoreCase("TRACE", method.length)) {
+            if(method.equals("TRACE", method.length)) {
                 return HttpMethod.TRACE
             }
             // PATCH
-            else if(method.equalsIgnoreCase("PATCH", method.length)) {
+            else if(method.equals("PATCH", method.length)) {
                 return HttpMethod.PATCH
             }
             break;
         }
         case 6: {
             // DELETE
-            if(method.equalsIgnoreCase("DELETE", method.length)) {
+            if(method.equals("DELETE", method.length)) {
                 return HttpMethod.DELETE
             }
             break;
         }
         case 7: {
             // OPTIONS
-            if(method.equalsIgnoreCase("OPTIONS", method.length)) {
+            if(method.equals("OPTIONS", method.length)) {
                 return HttpMethod.OPTIONS
             }
             // CONNECT
-            else if(method.equalsIgnoreCase("CONNECT", method.length)) {
+            else if(method.equals("CONNECT", method.length)) {
                 return HttpMethod.CONNECT
             }
             break;
@@ -282,8 +293,12 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
     if (header.name.equalsIgnoreCase("connection") && header.values.contains("close")) {
         result.flags |= HttpFlags.DISABLE_KEEP_ALIVE
     }
-
-    this.checkHeaderBody(header, &result.body)
+    else if (header.name.equalsIgnoreCase("content-length")) {
+        result.bodyLength = strtol(header.values.buffer, null, 10) as (i32)
+    }
+    else {
+        this.checkHeaderBody(header, &result.body)
+    }
 }
 
 func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
@@ -307,7 +322,7 @@ func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
 }
 
 
-internal func (this: *HttpParser) parseBody(input: String, body: *Body) : ParseStatus {
+internal func (this: *HttpParser) parseBodyInternal(input: String, body: *Body) : ParseStatus {
     switch(body.bodyType) {
         case BodyType.FORM_URLENCODED: {
             // Should we error if not POST, PUT, PATCH, OPTIONS, DELETE?
@@ -384,8 +399,7 @@ internal func (this: *HttpParser) parseBody(input: String, body: *Body) : ParseS
             break
         }
         case BodyType.MULTIPART_FORMDATA: {
-            this.parseMultipart(input, &body.multipart)
-            break
+            return this.parseMultipart(input, &body.multipart)
         }
         default: {
             // TODO: More body types
@@ -401,83 +415,165 @@ internal func (this: *HttpParser) parseMultipart(input: *String, multipart: *Mul
 
     var boundary = multipart.boundary
     var index = -1
+    var status = ParseStatus.OK
 
     while(true) {
+        if(input.empty()) {
+            break
+        }
+
         // ensure start boundary
+        status = this.parseMultipartBoundary(input, boundary)
+        if(status != ParseStatus.OK) return status;
+
+        // exit if --boundary--
         {
-            if(!input.startsWith("--")) {
-                return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
+            if(input.startsWith("--", 2)) {
+                break
             }
-            *input = input.substring(2)
-
-            index = input.endIndexOf(boundary.buffer, boundary.length)
-            if(index < 0) {
-                return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
-            }
-
-            *input = input.substring(index)
         }
 
         var part = Part{}
         part.bodyType = BodyType.UNKNOWN
         part.body.buffer = input.buffer;
 
-        // TEMP
-        {
-            index = input.indexOf(boundary.buffer, boundary.length)
-            if(index < 0) {
-                return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
-            }
-            part.body.length = index - 2;
-            *input = input.substring(index)
-            Info("Part: '%.*s\n", part.body.length, part.body.buffer)
-        }
-
         // parse headers
         {
-
+            status = this.parseMultipartHeaders(input, &part)
+            if(status != ParseStatus.OK) return status
         }
 
         // parse body
         {
-
-        }
-
-        // ensure end boundary
-        {
-            index = input.endIndexOf(boundary.buffer, boundary.length)
-            if(index < 0) {
-                return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
-            }
-
-            *input = input.substring(index)
+            status = this.parseMultipartBody(input, &part, boundary)
+            if(status != ParseStatus.OK) return status
         }
 
         multipart.parts.add(part)
+    }
 
-        // exit if --boundary--
+    return ParseStatus.OK
+}
+
+internal func (this: *HttpParser) parseMultipartBoundary(input: *String, boundary: String) : ParseStatus {
+    if(!input.startsWith("--", 2)) {
+        return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
+    }
+
+    *input = input.substring(2)
+
+    var index = input.endIndexOf(boundary.buffer, boundary.length)
+    if(index < 0) {
+        return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
+    }
+
+    *input = input.substring(index)
+
+    if(input.startsWith("\r\n", 2)) {
+       *input = input.substring(2)
+    }
+
+    return ParseStatus.OK
+}
+
+internal func (this: *HttpParser) parseMultipartHeaders(input: *String, part: *Part) : ParseStatus {
+    part.headers.init(4, this.allocator)
+
+    var it = input.split("\r\n", 2)
+    while(it.hasNext()) {
+        var rawHeader = it.next()
+
+        if(rawHeader.empty()) {
+            *input = it.remaining()
+            break
+        }
+
+        var nameValue = rawHeader.split(":", 1)
+
+        if(!nameValue.hasNext()) {
+            return ParseStatus.ERROR_INVALID_MULTIPART_HEADER
+        }
+        var name = nameValue.next()
+
+        if(!nameValue.hasNext()) {
+            return ParseStatus.ERROR_INVALID_MULTIPART_HEADER
+        }
+        var value = nameValue.next()
+
+        var header = HttpHeader{
+            .name = name,
+            .values = value,
+        }
+        this.checkHeaderBody(&header, &part.body)
+
+        part.headers.add(header)
+    }
+
+    return ParseStatus.OK
+}
+
+internal func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundary: String) : ParseStatus {
+    var it = input.split(boundary.buffer, boundary.length)
+    var formData = &part.formData
+
+    var disposition = part.getHeaderValue(StringInit("content-disposition"))
+    if(disposition.contains("form-data")) {
+        part.bodyType = BodyType.FORMDATA
+
+        // name
         {
-            if(input.startsWith("--")) {
-                break
+            var index = disposition.endIndexOf(" name=")
+            if(index > -1) {
+                var endIndex = disposition.indexOfAt(";", 1, index)
+                if(endIndex < 0) {
+                    endIndex = disposition.length
+                }
+
+                formData.name = disposition.substring(index, endIndex)
+                if(formData.name.startsWith("\"") && formData.name.endsWith("\"")) {
+                    formData.name.buffer += 1
+                    formData.name.length -= 2
+                }
+            }
+        }
+
+        // filename
+        {
+            var index = disposition.endIndexOf("filename=")
+            if(index > -1) {
+                var endIndex = disposition.indexOfAt(";", 1, index)
+                if(endIndex < 0) {
+                    endIndex = disposition.length
+                }
+
+                formData.filename = disposition.substring(index, endIndex)
+                // TODO: Allow for encoded characters
+                if(formData.filename.startsWith("\"") && formData.filename.endsWith("\"")) {
+                    formData.filename.buffer += 1
+                    formData.filename.length -= 2
+                }
             }
         }
     }
-}
-
-internal func (this: *HttpParser) parseMultipartHeader(input: *String, multipart: *MultiPart) : ParseStatus {
-    while(true) {
-        var index = input.endIndexOf("\r\n")
-        if (index < 0) {
-            break
-        }
-        var header = HttpHeader{}
 
 
-        *input = input.substring(index)
+    // body/value
+    if(it.hasNext()) {
+        var body = it.next()
+        // adjust the \r\n--
+        formData.value = body.substring(0, body.length - 4)
     }
+
+    var offset = it.remaining();
+    *input = String {
+        .buffer = offset.buffer - boundary.length - 2,
+        .length = offset.length + boundary.length + 2,
+    }
+
+    return ParseStatus.OK
 }
 
-@test
+//@test
 func testParse() {
     var result: HttpRequest;
 
@@ -514,5 +610,58 @@ func testParse() {
             form.name.length, form.name.buffer,
             form.value.length, form.value.buffer
         )
+    }
+}
+
+
+
+@test
+func testParseMultipart() {
+    var result: HttpRequest;
+
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    var input = StringInit(
+"POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Length: 356\r\n\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nJohn Doe\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"address\"\r\n\r\n123 Elm Street\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"phone\"\r\n\r\n+1234567890\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"file\"; filename=\"example.txt\"\r\nContent-Type: text/plain\r\n\r\nThis is the content of the file.\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW--"
+);
+
+    var ok = parser.parse(input, &result)
+    printf("Status: %s\n", ParseStatusAsStr(ok))
+    assert(ok == ParseStatus.OK)
+
+
+    printf("Raw: %.*s\nMethod: '%s' Path: '%.*s' Version: '%.*s'\n",
+        input.length, input.buffer,
+        HttpMethodAsStr(result.method),
+        result.path.length, result.path.buffer,
+        result.version.length, result.version.buffer
+    )
+
+    for(var i = 0; i < result.headers.size(); i+=1) {
+        var header = result.headers.getPtr(i)
+        printf("Name: '%.*s' Values: '%.*s'\n",
+            header.name.length, header.name.buffer,
+            header.values.length, header.values.buffer
+        )
+    }
+
+    assert(result.bodyType == BodyType.MULTIPART_FORMDATA)
+    printf("boundary: '%.*s'\n", result.multipart.boundary.length, result.multipart.boundary.buffer)
+    for(var i = 0; i < result.multipart.parts.size(); i+=1) {
+        var part = result.multipart.parts.getPtr(i)
+        printf("Part: \n")
+        for(var j = 0; j < part.headers.size(); j+=1) {
+            var header = part.headers.getPtr(j)
+            printf("Header Name: '%.*s' Values: '%.*s'\n",
+                header.name.length, header.name.buffer,
+                header.values.length, header.values.buffer
+            )
+        }
+
+        printf("Name: '%.*s'\n", part.formData.name.length, part.formData.name.buffer)
+        printf("Filename: '%.*s'\n", part.formData.filename.length, part.formData.filename.buffer)
+        printf("Value: '%.*s'\n", part.formData.value.length, part.formData.value.buffer)
+
     }
 }

@@ -22,6 +22,7 @@ import "http_header"
 import "http_file"
 import "http_engine"
 import "http_router"
+import "log"
 
 public struct HttpServer {
     engine: HttpRingEngine
@@ -54,6 +55,13 @@ public struct HttpConfig {
 
     // io_uring queue depth
     ioQueueDepth: i32 = 32
+
+    // logging
+    logFilePath: *const char = "./ring.log"
+    isLogEnabled: bool = true
+
+    // command line handling
+    disableSignal: bool = false
 }
 
 
@@ -83,6 +91,11 @@ public func (this: *HttpServer) init(config: *HttpConfig) : Status {
 }
 
 public func (this: *HttpServer) start() : Status {
+    if(this.engine.config.isLogEnabled) {
+        LogInit(this.engine.config.logFilePath)
+    }
+
+    Info("listening on port: %d\n", this.engine.config.port)
     return this.engine.listen()
 }
 

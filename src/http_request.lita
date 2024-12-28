@@ -31,6 +31,7 @@ public enum BodyType {
     FORM_URLENCODED,
     JSON,
     MULTIPART_FORMDATA,
+    FORMDATA,
 }
 
 public enum HttpFlags {
@@ -43,10 +44,16 @@ public enum HttpFlags {
 public struct HttpRequest {
     method: HttpMethod
     path: String
+    query: String
     version: String
 
     flags: i32
+    bodyLength: i32
 
+    payload: using Payload
+}
+
+public struct Payload {
     headers: Array<HttpHeader>
     body: using Body
 }
@@ -59,6 +66,7 @@ public struct Body {
         formParams: Array<FormParam>
         json: *JsonNode
         multipart: MultiPart
+        formData: FormData
     }
 }
 
@@ -68,7 +76,7 @@ public struct MultiPart {
 }
 
 public struct Part {
-    body: using Body
+    payload: using Payload
 }
 
 public struct FormParam {
@@ -76,6 +84,11 @@ public struct FormParam {
     value: String
 }
 
+public struct FormData {
+    name: String
+    filename: String
+    value: String
+}
 
 public struct QueryParam {
     name: String
@@ -102,6 +115,17 @@ public struct HttpPathTemplate {
     template: String
     entries: [MAX_TEMPATE_ENTRIES]HttpPathEntry
     numberOfEntries: i32
+}
+
+public func (this: *Payload) getHeaderValue(name: String) : String {
+    for(var i = 0; i < this.headers.size(); i+=1) {
+        var header = this.headers.getPtr(i)
+        if(header.name.equalsIgnoreCase(name.buffer, name.length)) {
+            return header.values
+        }
+    }
+
+    return String{}
 }
 
 public func ParsePathTemplateStr(
@@ -202,12 +226,11 @@ public func HttpQueryInit(allocator: *const Allocator) : HttpQuery {
 }
 
 public func (this: *HttpRequest) parseQuery(result: *HttpQuery) {
-    var index = this.path.indexOf("?", 1)
-    if(index < 0) {
+    if(this.query.empty()) {
         return;
     }
 
-    var query = this.path.substring(index + 1)
+    var query = this.query
     var i = 0
 
     var nameStartIndex = 0

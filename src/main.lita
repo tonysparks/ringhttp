@@ -7,8 +7,6 @@ import "std/mem"
 import "std/json"
 
 import "http_ring"
-import "log"
-
 
 struct ServerHandler {
 }
@@ -126,6 +124,19 @@ func PrintBody(body: *Body, res: *HttpResponse, allocator: *const Allocator) {
             res.body.append("]}}")
             break
         }
+        case BodyType.FORMDATA: {
+            var sb = StringBuilderInit(body.formData.value.length + 32, allocator)
+            JsonEscapeString(sb, body.formData.value.buffer, body.formData.value.length)
+
+            res.body.append("{")
+            res.body.append(" \"form_data\": {")
+            res.body.append(" \"name\": \"%.*s\",", body.formData.name.length, body.formData.name.buffer)
+            res.body.append(" \"filename\": \"%.*s\",", body.formData.filename.length, body.formData.filename.buffer)
+            res.body.append(" \"value\": \"%.*s\"", sb.length, sb.buffer)
+            res.body.append("  }")
+            res.body.append("}")
+            break
+        }
         default: {
             var sb = StringBuilderInit(body.length + 32, allocator)
             JsonEscapeString(sb, body.buffer, body.length)
@@ -169,12 +180,10 @@ func main(len: i32, args: **char) : i32 {
         .allocator = defaultAllocator,
         .port = 8080_u16,
         .maxThreads = 1,
-        .ioQueueDepth = 32,
+        .ioQueueDepth = 64,
+        .isLogEnabled = true,
     }
 
-    LogInit("./ring.log")
-
-    Info("Listening on port: %d\n", config.port)
     var server = HttpServer{};
     server.init(&config)
 
@@ -213,7 +222,7 @@ func main(len: i32, args: **char) : i32 {
     defer server.close()
 
     if(status != Status.OK) {
-        Error("error starting server: %s\n", StatusAsStr(status))
+        printf("error starting server: %s\n", StatusAsStr(status))
         return 1;
     }
 
