@@ -46,6 +46,10 @@ public struct HttpConfig {
     // maximum client HTTP request size in bytes
     maxHttpRequestSizeInBytes: usize = 10 * MiB
 
+    maxHttpRequestLineSizeInBytes: usize = 8 * KiB
+    maxHttpHeaderSizeInBytes: usize = 8 * KiB
+    maxHttpBodySizeInBytes: usize = 64 * MiB // 0 for no limit
+
     // the bucket size for the bucket memory allocator for request allocator
     requestBucketSizeInBytes: usize = 2 * MiB
 

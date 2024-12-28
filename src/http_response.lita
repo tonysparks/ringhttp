@@ -124,7 +124,7 @@ public func (this: *HttpResponse) free() {
 public func (this: *HttpResponse) reset() {
     this.body.clear()
 
-    if(this.fileHandle > 0) {
-        close(this.fileHandle)
-    }
+    // if(this.fileHandle > 0) {
+    //     close(this.fileHandle)
+    // }
 }

@@ -44,7 +44,7 @@ internal struct HttpRingEngine {
     accept: io_uring
 
     // workers: Array<WorkerThread>
-    requests: Pool<Request>
+    requests: Pool<RequestContext>
 
     distribution: u64
 
@@ -56,11 +56,6 @@ internal struct HttpRingEngine {
     errorHandler: HttpHandler
     notFoundHandler: HttpHandler
     filterHandlers: Array<HttpFilterHandler>
-}
-
-func myerror(str: *const char) {
-    perror(str)
-    errno = 0
 }
 
 // struct WorkerThread {
@@ -78,9 +73,9 @@ enum RequestState {
     WRITTEN_FILE,
 }
 
-internal struct Request {
+internal struct RequestContext {
     index: i32
-    requests: *Pool<Request>
+    requests: *Pool<RequestContext>
 
     clientAddr: sockaddr_in;
     clientAddrLen: socklen_t;
@@ -90,6 +85,8 @@ internal struct Request {
     response: HttpResponse
     state: RequestState
 
+    requestLineIndex: i32
+    headerIndex: i32
     bodyIndex: i32
 
     // Allocator for each request on this thread
@@ -106,7 +103,7 @@ internal struct Request {
 }
 
 // begining of a HTTP request cycle
-func (this: *Request) begin() {
+func (this: *RequestContext) begin() {
     this.requestAllocator.clear()
 
     var allocator = &this.requestAllocator.allocator
@@ -114,7 +111,11 @@ func (this: *Request) begin() {
     this.response.init(allocator)
 
     this.submissions = 0
+
+    this.requestLineIndex = 0
+    this.headerIndex = 0
     this.bodyIndex = 0
+
 
     if(this.pipes[0] > 0) {
         close(this.pipes[0])
@@ -136,10 +137,13 @@ func (this: *Request) begin() {
 }
 
 // ending of an HTTP request cycle, with optional force connection close
-func (this: *Request) finish(forceClose: bool = false) {
+func (this: *RequestContext) finish(forceClose: bool = false) {
     Info("Finishing Request for socket: %d\n", this.connection.handle())
 
     this.submissions = 0
+
+    this.requestLineIndex = 0
+    this.headerIndex = 0
     this.bodyIndex = 0
 
     if(this.pipes[0] > 0) {
@@ -155,8 +159,8 @@ func (this: *Request) finish(forceClose: bool = false) {
     }
     this.file = 0
 
-    //this.connection.reset()
-    //this.response.reset()
+    this.connection.reset()
+    this.response.reset()
 
     if(!this.isKeepAlive() || forceClose) {
         this.connection.close()
@@ -164,14 +168,14 @@ func (this: *Request) finish(forceClose: bool = false) {
     }
 }
 
-func (this: *Request) free() {
+func (this: *RequestContext) free() {
     this.finish(.forceClose = true)
 
     this.connection.free()
     this.response.free()
 }
 
-func (this: *Request) isKeepAlive(): bool {
+func (this: *RequestContext) isKeepAlive(): bool {
     return !this.connection.disableKeepAlive
 }
 
@@ -182,7 +186,7 @@ internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
     this.safeAllocator.init(config.allocator)
     this.router.init(config.allocator)
     // this.workers.init(config.maxThreads, config.allocator)
-    this.requests.init(1, 1, this, config.allocator)
+    this.requests.init(1024, 512, this, config.allocator)
 
     this.filterHandlers.init(32, config.allocator)
 
@@ -211,8 +215,8 @@ internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
 //     Info("Created io_uring context\n")
 // }
 
-public func (this: *HttpRingEngine) allocx(request: *Request) {
-    request.requestAllocator.init(this.safeAllocator, this.requestBucketSizeInBytes)
+public func (this: *HttpRingEngine) allocx(context: *RequestContext) {
+    context.requestAllocator.init(this.safeAllocator, this.requestBucketSizeInBytes)
 }
 
 internal func (this: *HttpRingEngine) addRequestHandler(
@@ -365,7 +369,7 @@ error:
     return;
 }
 
-func (this: *HttpRingEngine) queueReadHttpRequest(ring: *io_uring, clientSocket: i32, request: *Request) {
+func (this: *HttpRingEngine) queueReadHttpRequest(ring: *io_uring, clientSocket: i32, request: *RequestContext) {
     Info("Reading HTTP request for socket: %d state: %s\n", clientSocket, RequestStateAsStr(request.state))
 
     request.state = RequestState.READ_REQUEST_LINE
@@ -401,7 +405,7 @@ error:
 
 func (this: *HttpRingEngine) queueWriteHttpResponse(
     ring: *io_uring,
-    request: *Request) {
+    request: *RequestContext) {
 
     request.state = RequestState.WRITTEN_HTTP_RESPONSE
 
@@ -464,7 +468,7 @@ error:
 
 func (this: *HttpRingEngine) queueWriteHttpFileResponse(
     ring: *io_uring,
-    request: *Request) {
+    request: *RequestContext) {
 
     request.state = RequestState.WRITTEN_FILE
 
@@ -560,7 +564,7 @@ error:
 func (this: *HttpRingEngine) handlePartialHttpRequest(
     ring: *io_uring,
     requestAllocator: *const Allocator,
-    request: *Request,
+    request: *RequestContext,
     bytesRead: i32) : Status {
 
     var connection = &request.connection
@@ -568,49 +572,86 @@ func (this: *HttpRingEngine) handlePartialHttpRequest(
 
     readBuffer.length += bytesRead
 
-    if(readBuffer.remaining() < 1024) {
-        readBuffer.reserve(readBuffer.capacity + 1024)
-    }
+    var buffer = readBuffer.asString()
+    if(request.requestLineIndex < 1) {
+        request.requestLineIndex = buffer.endIndexOf("\r\n")
+        if(request.requestLineIndex < 0) {
+            if(readBuffer.remaining() < this.config.maxHttpRequestLineSizeInBytes) {
+                readBuffer.reserve(readBuffer.capacity + this.config.maxHttpRequestLineSizeInBytes as (i32))
+            }
 
-    // check to see if we are exceeding our limit
-    if(readBuffer.length >= MAX_REQUEST_LINE_SIZE) {
-        Error("Request exceeded max request limit for connection: %d\n", connection.handle())
-        // error out - request is too big
-        return Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT
-    }
-
-    // determine if we read all of the request line and headers
-    // TODO: Scan from end of string
-    var index = readBuffer.asString().endIndexOf("\r\n\r\n")
-    if(index < 0) {
-        Info("Request was a partial read for connection: %d\n", connection.handle())
-        return Status.PARTIAL_REQUEST_DISPATCHING_READ
-    }
-    else {
-        request.bodyIndex = index
-
-        // we've read the http header part, now
-        // let's ensure we've read the entire body
-        var parser = HttpParser{}
-        parser.init(requestAllocator)
-
-        var input = String {
-            .buffer = readBuffer.buffer,
-            .length = index
-        }
-
-        var ok = parser.parse(input, &request.request)
-        if(ok != ParseStatus.OK) {
-            Error("Error parsing http request: %s\n", ParseStatusAsStr(ok))
-            return Status.ERROR_PARSING_HTTP_REQUEST
-        }
-
-        var bodyLength = request.request.bodyLength
-        if(readBuffer.length - index < bodyLength) {
-            Info("Need to dispatch read for body: %d\n", connection.handle())
+            Info("RequestLine not fully read, dispatching another io-read for connection: %d\n", connection.handle())
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
         }
+
+        if(request.requestLineIndex > this.config.maxHttpRequestLineSizeInBytes) {
+            Error("RequestLine of size '%d' exceeded max request limit of '%d' for connection: %d\n",
+                request.requestLineIndex,
+                this.config.maxHttpRequestLineSizeInBytes,
+                connection.handle()
+            )
+            return Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT
+        }
     }
+
+    if(request.headerIndex < 1) {
+        request.headerIndex = buffer.endIndexOf("\r\n\r\n")
+        if(request.headerIndex < 0) {
+            if(readBuffer.remaining() < this.config.maxHttpHeaderSizeInBytes) {
+                readBuffer.reserve(readBuffer.capacity + this.config.maxHttpHeaderSizeInBytes as (i32))
+            }
+
+            Info("Headers not fully read, dispatching another io-read for connection: %d\n", connection.handle())
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        }
+
+        if(request.headerIndex > this.config.maxHttpHeaderSizeInBytes) {
+            Error("Headers of size '%d' exceeded max request limit of '%d' for connection: %d\n",
+                request.headerIndex,
+                this.config.maxHttpHeaderSizeInBytes,
+                connection.handle()
+            )
+            return Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT
+        }
+
+        request.bodyIndex = request.headerIndex
+    }
+
+    // we've read the http header part, now
+    // let's ensure we've read the entire body
+    var parser = HttpParser{}
+    parser.init(requestAllocator)
+
+    var input = String {
+        .buffer = readBuffer.buffer,
+        .length = request.headerIndex
+    }
+
+    var ok = parser.parse(input, &request.request)
+    if(ok != ParseStatus.OK) {
+        Error("Error parsing http request: %s\n", ParseStatusAsStr(ok))
+        return Status.ERROR_PARSING_HTTP_REQUEST
+    }
+
+    var bodyLength = request.request.bodyLength
+    if(this.config.maxHttpBodySizeInBytes > 0 && bodyLength > this.config.maxHttpBodySizeInBytes) {
+        Error("Body of size '%d' exceeded max request limit of '%d' for connection: %d\n",
+            bodyLength,
+            this.config.maxHttpBodySizeInBytes,
+            connection.handle()
+        )
+        return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
+    }
+
+    if(readBuffer.length - request.headerIndex < bodyLength) {
+        if(readBuffer.remaining() < 1 * MiB) {
+            readBuffer.reserve(readBuffer.capacity + 1 * MiB as (i32))
+        }
+
+        Info("Body not fully read, dispatching another io-read for connection: %d\n", connection.handle())
+        return Status.PARTIAL_REQUEST_DISPATCHING_READ
+    }
+
 
     // we are ready to handle the full request
     return Status.OK
@@ -619,7 +660,7 @@ func (this: *HttpRingEngine) handlePartialHttpRequest(
 func (this: *HttpRingEngine) handleHttpRequest(
     ring: *io_uring,
     requestAllocator: *const Allocator,
-    request: *Request) : Status {
+    request: *RequestContext) : Status {
 
     var connection = &request.connection
 
@@ -707,7 +748,7 @@ func (this: *HttpRingEngine) handleHttpRequest(
 }
 
 func (this: *HttpRingEngine) sendServerError(
-    request: *Request,
+    request: *RequestContext,
     status: Status,
     ring: *io_uring
 ) {
@@ -799,7 +840,7 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
         Error("Error accepting socket.res: %d (%s)\n", cqe.res, strerror(-cqe.res))
 
         // Force close the connection
-        var request = io_uring_cqe_get_data(cqe) as (*Request)
+        var request = io_uring_cqe_get_data(cqe) as (*RequestContext)
         if(request) {
             Error("Force closing connection: %d due to error\n", request.connection.handle())
             request.finish(.forceClose = true)
@@ -807,7 +848,7 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
         return;
     }
 
-    var request = io_uring_cqe_get_data(cqe) as (*Request)
+    var request = io_uring_cqe_get_data(cqe) as (*RequestContext)
     assert(request != null)
 
     var connection = &request.connection

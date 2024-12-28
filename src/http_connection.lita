@@ -13,7 +13,8 @@ import "http_common"
 import "http_file"
 
 
-public const MAX_REQUEST_LINE_SIZE = 8192 /* 8 * KiB TODO: Compiler doesn't like this when used in arrays...?!? */
+public const READ_BUFFER_SIZE = 16 * KiB as (i32)
+public const WRITE_BUFFER_SIZE = 8 * KiB as (i32)
 
 public struct HttpConnection {
     id: u32
@@ -22,14 +23,11 @@ public struct HttpConnection {
     readBuffer: StringBuilder
 
     disableKeepAlive: bool
-
-    //
-    //buffer: [MAX_REQUEST_LINE_SIZE]char
 }
 
 public func (this: *HttpConnection) init(allocator: *const Allocator) {
-    this.writeBuffer.init(1024, allocator)
-    this.readBuffer.init(MAX_REQUEST_LINE_SIZE, allocator)
+    this.writeBuffer.init(WRITE_BUFFER_SIZE, allocator)
+    this.readBuffer.init(READ_BUFFER_SIZE, allocator)
 }
 
 
@@ -39,11 +37,11 @@ public func (this: *HttpConnection) free() {
     this.socket.close()
 }
 
-public func (this: *HttpConnection) reset(allocator: *const Allocator) {
-    this.writeBuffer.init(1024, allocator)
-    this.readBuffer.init(MAX_REQUEST_LINE_SIZE, allocator)
-    //this.writeBuffer.clear()
-    //this.readBuffer.clear()
+public func (this: *HttpConnection) reset() {
+    //this.writeBuffer.init(WRITE_BUFFER_SIZE, allocator)
+    //this.readBuffer.init(READ_BUFFER_SIZE, allocator)
+    this.writeBuffer.clear()
+    this.readBuffer.clear()
     // this.socket.socket = 0
 }
 
