@@ -4,3 +4,4 @@ bin/ring.c
 .pkgs/
 *.log
 bin/*.log
+notes.txt
