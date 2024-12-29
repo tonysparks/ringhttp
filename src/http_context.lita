@@ -1,0 +1,216 @@
+import "std/libc"
+import "std/mem"
+import "std/mem/linear_allocator"
+import "std/array"
+import "std/assert"
+import "std/system"
+
+// posix specific
+import "std/net/posix_socket"
+import "pipe_posix"
+
+import "http_connection"
+import "http_common"
+import "http_request"
+import "http_response"
+
+import "log"
+
+
+public trait Initializer<T> {
+    allocx: func(*T) : void
+}
+
+
+@asStr
+internal enum RequestState {
+    CONNECTED,
+    READ_REQUEST_LINE,
+    WRITTEN_HTTP_RESPONSE,
+    WRITTEN_HTTP_RESPONSE_MORE,
+    WRITTEN_FILE,
+}
+
+internal struct RequestContext {
+    index: i32
+    requests: *ContextPool
+
+    // if this is currently in use by a request
+    inUse: bool
+
+    clientAddr: sockaddr_in;
+    clientAddrLen: socklen_t;
+
+    connection: HttpConnection
+    request: HttpRequest
+    response: HttpResponse
+    state: RequestState
+
+    requestLineIndex: i32
+    headerIndex: i32
+    bodyIndex: i32
+
+    // Allocator for each request on this thread
+    requestAllocator: LinearAllocator
+
+    // for file transmission
+    pipes: [2]i32
+
+    // file handle if opened
+    file: i32
+
+    // SQE requests submissions
+    submissions: u32
+
+    // the last time we received a request from the client
+    lastRequestTime: f64
+}
+
+// begining of a HTTP request cycle
+internal func (this: *RequestContext) begin() {
+    this.requestAllocator.clear()
+
+    var allocator = &this.requestAllocator.allocator
+    this.connection.init(allocator)
+    this.response.init(allocator)
+
+    this.submissions = 0
+
+    this.requestLineIndex = 0
+    this.headerIndex = 0
+    this.bodyIndex = 0
+
+
+    if(this.pipes[0] > 0) {
+        close(this.pipes[0])
+    }
+
+    if(this.pipes[1] > 0) {
+        close(this.pipes[1])
+    }
+
+    if(this.file > 0) {
+        // close(this.file)
+    }
+    this.file = 0
+
+    this.pipes[0] = 0
+    this.pipes[1] = 0
+
+    this.clientAddrLen = sizeof(this.clientAddr) as (socklen_t);
+}
+
+// ending of an HTTP request cycle, with optional force connection close
+internal func (this: *RequestContext) finish(forceClose: bool = false) {
+    Info("Finishing Request for socket: %d\n", this.connection.handle())
+
+    this.submissions = 0
+
+    this.requestLineIndex = 0
+    this.headerIndex = 0
+    this.bodyIndex = 0
+
+    if(this.pipes[0] > 0) {
+        close(this.pipes[0])
+    }
+
+    if(this.pipes[1] > 0) {
+        close(this.pipes[1])
+    }
+
+    if(this.file > 0) {
+        // close(this.file)
+    }
+    this.file = 0
+
+    this.connection.reset()
+    this.response.reset()
+
+    if(!this.isKeepAlive() || forceClose) {
+        this.connection.close()
+        this.requests.dealloc(this.index)
+    }
+}
+
+internal func (this: *RequestContext) free() {
+    this.finish(.forceClose = true)
+
+    this.connection.free()
+    this.response.free()
+}
+
+internal func (this: *RequestContext) isKeepAlive(): bool {
+    return !this.connection.disableKeepAlive
+}
+
+
+public struct ContextPool {
+    pool: Array<RequestContext>
+    freeList: Array<i32>
+
+    initializer: Initializer<RequestContext>
+}
+
+public func (this: *ContextPool) init(
+    maxSize: i32,
+    initializer: Initializer<RequestContext>,
+    allocator: *const Allocator
+) {
+    this.initializer = initializer
+
+    this.pool.init(maxSize, allocator)
+    this.freeList.init(maxSize, allocator)
+    this.grow(0, maxSize)
+}
+
+public func (this: *ContextPool) free() {
+    this.pool.free()
+    this.freeList.free()
+}
+
+func (this: *ContextPool) grow(oldSize: i32, newSize: i32) {
+    for(var i = oldSize; i < newSize; i+=1) {
+        var item: RequestContext;
+        this.pool.add(item)
+
+        var itemPtr = this.pool.lastPtr()
+        memset(itemPtr, 0, sizeof(:RequestContext))
+
+        this.initializer.allocx<RequestContext>(itemPtr)
+        this.freeList.add(i)
+    }
+}
+
+public func (this: *ContextPool) alloc() : i32 {
+    if(this.freeList.empty()) {
+        return -1
+    }
+
+    assert(!this.freeList.empty())
+    var index = this.freeList.pop()
+
+    var context = this.pool.getPtr(index)
+    context.inUse = true
+
+    return index
+}
+
+public func (this: *ContextPool) get(index: i32) : *RequestContext {
+    if(index < 0 || index >= this.freeList.capacity) {
+        return null;
+    }
+
+    return this.pool.getPtr(index)
+}
+
+public func (this: *ContextPool) dealloc(index: i32) {
+    if(index < 0 || index >= this.freeList.capacity) {
+        return;
+    }
+
+    var context = this.get(index)
+    if(context.inUse) {
+        this.freeList.push(index)
+        context.inUse = false
+    }
+}

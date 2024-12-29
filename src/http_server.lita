@@ -43,12 +43,14 @@ public struct HttpConfig {
     minThreads: i32 = 1
     maxThreads: i32 = 32
 
-    // maximum client HTTP request size in bytes
-    maxHttpRequestSizeInBytes: usize = 10 * MiB
+    maxPoolSize: i32 = 128
 
     maxHttpRequestLineSizeInBytes: usize = 8 * KiB
     maxHttpHeaderSizeInBytes: usize = 8 * KiB
-    maxHttpBodySizeInBytes: usize = 64 * MiB // 0 for no limit
+    maxHttpBodySizeInBytes: usize = 16 * MiB // 0 for no limit
+
+    // max limit size for handling a request, including user-space
+    maxRequestSizeInBytes: usize = 24 * MiB
 
     // the bucket size for the bucket memory allocator for request allocator
     requestBucketSizeInBytes: usize = 2 * MiB
@@ -56,6 +58,8 @@ public struct HttpConfig {
     // static file directory
     fileServerPath: *const char = "/static/"
 
+    // the server side keep alive time in seconds
+    keepAliveTimeoutInSec: i32 = 5
 
     // io_uring queue depth
     ioQueueDepth: i32 = 32

@@ -16,6 +16,26 @@
                     ]
                 }
             }
+        },
+        "release" : {
+            "default" : {
+                "default" : {
+                    "cc" : "gcc",
+                    "cc_options": [
+                        "-std=gnu99",
+                        "-O3",
+                        "-march=native",
+                        "-mtune=native",
+                        "%input%",
+                        "-o",
+                        "%output%",
+                        "-D_CRT_SECURE_NO_WARNINGS"
+                    ],
+                    "lita_options" : [
+                        "-verbose"
+                    ]
+                }
+            }
         }
     },
 

@@ -54,6 +54,10 @@ public func (this: *HttpConnection) handle() : i32 {
     return this.socket.socket
 }
 
+public func (this: *HttpConnection) isConnected() : bool {
+    return this.socket.socket > 0
+}
+
 
 public func (this: *HttpConnection) bufferContents(response: *HttpResponse) {
     if(response.status > 512) {
