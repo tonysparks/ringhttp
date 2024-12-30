@@ -83,8 +83,38 @@ func SubmitRequestHandler(context: *RequestHandlerContext) : i32 {
     res.status = 200
     res.type = ResponseType.BODY
 
+    res.body.append("{ ")
+
+    res.body.append(" \"headers\": ")
+    PrintHeaders(&req.headers, res, context.allocator)
+
+    res.body.append(", ")
+
+    res.body.append("\"body\": ")
     PrintBody(&req.body, res, context.allocator)
+
+    res.body.append("} ")
     return 1
+}
+
+func PrintHeaders(headers: *Array<HttpHeader>, res: *HttpResponse, allocator: *const Allocator) {
+    res.body.append("[")
+
+    var sb = StringBuilderInit(1024, allocator)
+    for(var i = 0; i < headers.size(); i+=1) {
+        if(i > 0) res.body.append(",")
+
+        var header = headers.getPtr(i)
+        res.body.append("{ ")
+        res.body.append("\"name\": \"%.*s\", ", header.name.length, header.name.buffer)
+
+        JsonEscapeString(sb, header.values.buffer, header.values.length)
+        res.body.append("\"value\": \"%.*s\"", sb.length, sb.buffer)
+        res.body.append("} ")
+
+        sb.clear()
+    }
+    res.body.append("]")
 }
 
 func PrintBody(body: *Body, res: *HttpResponse, allocator: *const Allocator) {

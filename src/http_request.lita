@@ -35,7 +35,13 @@ public enum BodyType {
 }
 
 public enum HttpFlags {
-    DISABLE_KEEP_ALIVE = (1<<0)
+    DISABLE_KEEP_ALIVE  = (1<<0),
+    CHUNKED_ENCODING    = (1<<1),
+    GZIP_ENCODING       = (1<<2),
+    DEFLATE_ENCODING    = (1<<3),
+    COMPRESSED_ENCODING = (1<<4),
+
+    CONTENT_LENGTH_PROVIDED = (1<<5),
 }
 
 /**
@@ -67,6 +73,7 @@ public struct Body {
         json: *JsonNode
         multipart: MultiPart
         formData: FormData
+        chunkData: StringBuilder
     }
 }
 

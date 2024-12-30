@@ -488,29 +488,51 @@ func (this: *HttpRingEngine) handlePartialHttpRequest(
         .length = request.headerIndex
     }
 
-    var ok = parser.parse(input, &request.request)
+    var httpRequest = &request.request
+    var ok = parser.parse(input, httpRequest)
     if(ok != ParseStatus.OK) {
         Error("Error parsing http request: %s\n", ParseStatusAsStr(ok))
         return Status.ERROR_PARSING_HTTP_REQUEST
     }
 
-    var bodyLength = request.request.bodyLength
-    if(this.config.maxHttpBodySizeInBytes > 0 && bodyLength > this.config.maxHttpBodySizeInBytes) {
-        Error("Body of size '%d' exceeded max request limit of '%d' for connection: %d\n",
-            bodyLength,
-            this.config.maxHttpBodySizeInBytes,
-            connection.handle()
-        )
-        return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
-    }
-
-    if(readBuffer.length - request.headerIndex < bodyLength) {
-        if(readBuffer.remaining() < 1 * MiB) {
-            readBuffer.reserve(readBuffer.capacity + 1 * MiB as (i32))
+    if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
+        var status = parser.parseChunk(readBuffer.asString().substring(request.headerIndex), httpRequest)
+        if(status == ParseStatus.CHUNK_INCOMPLETE) {
+            Info("Chunked Body not fully read, dispatching another io-read for connection: %d\n", connection.handle())
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
         }
 
-        Info("Body not fully read, dispatching another io-read for connection: %d\n", connection.handle())
-        return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        if(status != ParseStatus.OK) {
+            Error("Error parsing chunk encoding for http request: %s\n", ParseStatusAsStr(status))
+            return Status.ERROR_PARSING_HTTP_REQUEST
+        }
+    }
+    else if(httpRequest.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) {
+        var bodyLength = httpRequest.bodyLength
+        if(this.config.maxHttpBodySizeInBytes > 0 && bodyLength > this.config.maxHttpBodySizeInBytes) {
+            Error("Body of size '%d' exceeded max request limit of '%d' for connection: %d\n",
+                bodyLength,
+                this.config.maxHttpBodySizeInBytes,
+                connection.handle()
+            )
+            return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
+        }
+
+        if(readBuffer.length - request.headerIndex < bodyLength) {
+            if(readBuffer.remaining() < 1 * MiB) {
+                readBuffer.reserve(readBuffer.capacity + 1 * MiB as (i32))
+            }
+
+            Info("Body not fully read, dispatching another io-read for connection: %d\n", connection.handle())
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        }
+    }
+    else  {
+        var body = readBuffer.asString().substring(request.headerIndex)
+        if(!body.empty()) {
+            // No chunked encoding and no content-length header, return back invalid request
+            return Status.ERROR_UNKNOWN_BODY_LENGTH
+        }
     }
 
 
@@ -534,6 +556,15 @@ func (this: *HttpRingEngine) handleHttpRequest(
     var input = StringInit(buffer.buffer, buffer.length).substring(request.bodyIndex)
 
     var httpRequest = &request.request;
+
+    // Since chunked encoding is handled by reading the full
+    // payload from the client, if this a chunked encoding from
+    // the client, don't use the raw readBuffer, instead use the
+    // chunkData buffer that contains the decoded data
+    if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
+        input = httpRequest.body.chunkData.asString()
+    }
+
     var ok = parser.parseBody(input, httpRequest)
     if(ok != ParseStatus.OK) {
         Error("Error parsing http request: %s\n", ParseStatusAsStr(ok))
@@ -680,7 +711,7 @@ func (this: *HttpRingEngine) server404(
     }
 }
 
-func (this: *HttpRingEngine) sendLimitReachedError(
+func (this: *HttpRingEngine) sendBadRequest(
     context: *RequestContext,
     status: Status,
     ring: *io_uring
@@ -697,7 +728,7 @@ func (this: *HttpRingEngine) sendLimitReachedError(
     var request = requestContext.request
     var response = requestContext.response
 
-    Error("Limit (%s) reached for request: %s %.*s\n",
+    Error("Bad request (%s) for request: %s %.*s\n",
         StatusAsStr(status),
         HttpMethodAsStr(request.method),
         request.path.length, request.path.buffer
@@ -727,6 +758,12 @@ func (this: *HttpRingEngine) sendLimitReachedError(
                 this.config.maxHttpBodySizeInBytes
             )
             break
+        case Status.ERROR_UNKNOWN_BODY_LENGTH: {
+            response.body.append(
+                "Missing Content-Length or Transfer-Encoding\n"
+            )
+            break
+        }
         default: {
             response.body.append(
                 "Bad request\n",
@@ -818,10 +855,11 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
 
             if(status != Status.OK) {
                 switch(status) {
+                    case Status.ERROR_UNKNOWN_BODY_LENGTH:
                     case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT: {
-                        this.sendLimitReachedError(request, status, ring)
+                        this.sendBadRequest(request, status, ring)
                         break
                     }
                     default: {
@@ -890,7 +928,8 @@ func (this: *HttpRingEngine) checkTimeouts() {
                 context.lastRequestTime + timeout,
                 currentTime
             )
-            context.finish(.forceClose = true)
+            // TODO: Causes crashing
+            // context.finish(.forceClose = true)
         }
     }
 }
