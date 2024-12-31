@@ -31,6 +31,7 @@ internal enum RequestState {
     WRITTEN_HTTP_RESPONSE_MORE,
     WRITTEN_FILE,
     WRITING_STREAM,
+    CLOSED,
 }
 
 internal struct RequestContext {

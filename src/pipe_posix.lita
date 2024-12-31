@@ -14,3 +14,16 @@ public const O_NOTIFICATION_PIPE:i32;
 
 @foreign
 public func pipe2(pipefd: [2]i32, flags: i32) : i32;
+
+// TODO: Move these to stdlib
+@foreign
+public const ECANCELED:i32;
+
+@foreign
+public const EALREADY:i32;
+
+@foreign
+public const ENOENT:i32;
+
+@foreign
+public const EINVAL:i32;

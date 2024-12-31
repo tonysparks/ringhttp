@@ -530,6 +530,54 @@ error:
     return;
 }
 
+func (this: *HttpRingEngine) queueCancelAndClose(
+    ring: *io_uring,
+    request: *RequestContext) {
+
+    request.state = RequestState.CLOSED
+
+    var response = &request.response
+    var connection = &request.connection
+
+    {
+        var sqe = io_uring_get_sqe(ring)
+        if(!sqe) {
+            Error("Error creating SQE for socket: %d\n", connection.handle())
+            goto error;
+        }
+
+        io_uring_prep_cancel(
+            sqe,
+            request,
+            0
+        )
+
+        sqe.flags |= IOSQE_IO_LINK
+
+        io_uring_sqe_set_data(sqe, request)
+    }
+
+    // {
+    //     var sqe = io_uring_get_sqe(ring)
+    //     if(!sqe) {
+    //         Error("Error creating SQE for socket: %d\n", connection.handle())
+    //         goto error;
+    //     }
+
+    //     io_uring_prep_close(
+    //         sqe,
+    //         connection.handle()
+    //     )
+
+    //     io_uring_sqe_set_data(sqe, request)
+    // }
+
+    request.submissions += 1
+    io_uring_submit(ring)
+
+error:
+    return;
+}
 
 
 func (this: *HttpRingEngine) handlePartialHttpRequest(
@@ -886,16 +934,13 @@ func signal_handler(signo: i32) {
 }
 
 func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_uring_cqe, result: i32) {
-
-    // Determine if there was an error reading the accept socket request
     if(!cqe) {
-        Error("Error reading accept socket socket: %d\n", result)
+        Error("Error reading completion queue: %d\n", result)
         return;
     }
 
     // Determine if this is a timeout or a socket error
     if(cqe.res < 0) {
-
         // no attached data, this should be a timeout check
         var data:*void = io_uring_cqe_get_data(cqe)
         if(!data) {
@@ -905,12 +950,37 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
 
         var request = data as (*RequestContext)
 
-        // otherwise we are experiencing a socket error
-        Error("Error accepting socket.res: %d (%s)\n", cqe.res, strerror(-cqe.res))
+        switch(cqe.res) {
+            case -ENOENT:
+            case -EINVAL:
+            case -EALREADY: {
+                Info("Unable to cancel operations for socket: %d due to already in progress or not found\n",
+                    request.connection.handle()
+                )
+                break
+            }
+            case -ECANCELED: {
+                Info("Canceled request queue entries for socket: %d\n",
+                    request.connection.handle()
+                )
+                break
+            }
+            default: {
+                // otherwise we are experiencing a socket error
+                Error("Error with socket (%d) completion result: %d (%s)\n",
+                    request.connection.handle(),
+                    cqe.res,
+                    strerror(-cqe.res)
+                )
 
-        // Force close the connection
-        Error("Force closing connection: %d due to error\n", request.connection.handle())
-        request.finish(.forceClose = true)
+                // Force close the connection
+                Error("Force closing connection: %d due to error\n", request.connection.handle())
+
+                // request.finish(.forceClose = true)
+                this.queueCancelAndClose(ring, request)
+            }
+        }
+
         return;
     }
 
@@ -943,7 +1013,8 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
             // The client has gracefully closed their connection
             if(bytesRead == 0) {
                 Info("Client Closed socket: %d\n", connection.handle())
-                request.finish(.forceClose = true)
+                //request.finish(.forceClose = true)
+                this.queueCancelAndClose(ring, request)
                 break;
             }
 
@@ -1022,6 +1093,11 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
             Info("Request caught in unknown state for connection: %d\n", connection.handle())
             break
         }
+        case RequestState.CLOSED: {
+            Info("Request is now closed for connection: %d\n", connection.handle())
+            request.finish(.forceClose = true)
+            break
+        }
         default: {
             assert(false)
             break;
@@ -1033,7 +1109,7 @@ func (this: *HttpRingEngine) checkTimeouts(ring: *io_uring) {
     const timeout = this.config.keepAliveTimeoutInSec
     const currentTime = SystemTimeMSec()
 
-    Info("Checking timeouts\n")
+    // Info("Checking timeouts\n")
     for(var i = 0; i < this.requests.pool.size(); i+=1) {
         var context = this.requests.pool.getPtr(i)
         if(context.inUse && context.connection.isConnected() && context.lastRequestTime + timeout < currentTime) {
@@ -1044,8 +1120,10 @@ func (this: *HttpRingEngine) checkTimeouts(ring: *io_uring) {
                 context.lastRequestTime + timeout,
                 currentTime
             )
+
+            this.queueCancelAndClose(ring, context)
             // TODO: Causes crashing
-            context.finish(.forceClose = true)
+            //context.finish(.forceClose = true)
         }
     }
 
