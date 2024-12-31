@@ -3,14 +3,12 @@ import "std/string"
 import "std/assert"
 import "std/libc"
 import "std/mem"
+import "std/log"
 
 import "http_request"
 import "http_response"
 import "http_common"
-import "http_header"
 import "http_parser"
-
-import "log"
 
 public struct RequestHandlerContext {
     allocator: *const Allocator

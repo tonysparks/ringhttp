@@ -14,6 +14,7 @@ import "std/libc/signal"
 import "std/atomic"
 import "std/assert"
 import "std/system"
+import "std/log"
 
 // posix specific
 import "std/net/posix_socket"
@@ -26,13 +27,10 @@ import "http_parser"
 import "http_common"
 import "http_request"
 import "http_response"
-import "http_header"
 import "http_file"
 import "http_server"
 import "http_router"
 import "http_context"
-
-import "log"
 
 @foreign
 func strerror(errnum: i32) : *const char;
@@ -52,6 +50,8 @@ internal struct HttpRingEngine {
     acceptSubmits: i32
 
     isRunning: Atomic<bool>
+
+    lastTimeoutSchedule: f64
 
     router: Router
 
@@ -120,7 +120,10 @@ internal func (this: *HttpRingEngine) listen() : Status {
 
     this.isRunning.init(true)
 
-    io_uring_queue_init(this.config.ioQueueDepth, &this.accept, 0/*IORING_SETUP_SQPOLL*/);
+    var ioStatus = io_uring_queue_init(this.config.ioQueueDepth, &this.accept, 0/*IORING_SETUP_SQPOLL*/)
+    if(ioStatus != 0) {
+        Panic("Error initializing the io_uring queue: %d\n", ioStatus)
+    }
 
     if(!this.serverSocket.create()) {
         return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
@@ -144,9 +147,11 @@ internal func (this: *HttpRingEngine) listen() : Status {
     }
 
     var ring = &this.accept
+    io_uring_submit(ring)
 
     // prime the pump, dispatch a request for socket accepts
     this.queueAcceptRequest(ring)
+    this.queueTimeoutCheck(ring)
 
     var cqe: *io_uring_cqe = null;
 
@@ -161,11 +166,7 @@ internal func (this: *HttpRingEngine) listen() : Status {
         this.handleCompletionRing(ring, cqe, result)
 
         io_uring_cqe_seen(ring, cqe)
-
         io_uring_submit(ring)
-
-        // Timeout any http connections past TTL
-        this.checkTimeouts()
     }
 
     return Status.OK
@@ -185,7 +186,30 @@ internal func (this: *HttpRingEngine) close() {
     }
 }
 
+func (this: *HttpRingEngine) queueTimeoutCheck(ring: *io_uring): bool {
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for timeout check\n")
+        goto error;
+    }
 
+    var ts: __kernel_timespec;
+    ts.tv_sec = this.config.timeoutCheckMSec / 1_000;
+    ts.tv_nsec = (this.config.timeoutCheckMSec % 1_000) * 1_000_000;
+
+    io_uring_prep_timeout(
+        sqe,
+        &ts,
+        0,
+        0// IORING_TIMEOUT_ETIME_SUCCESS (not supported on all uring instances yet)
+    )
+
+    io_uring_submit(ring)
+    return true;
+
+error:
+    return false;
+}
 
 func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): bool {
     var index = this.requests.alloc()
@@ -199,15 +223,17 @@ func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): bool {
     var request = this.requests.get(index)
     assert(request != null)
 
+    request.begin()
+
     request.index = index
     request.requests = &this.requests
     request.state = RequestState.CONNECTED
 
-    request.begin()
 
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
-        Error("Error creating SQE for server socket\n")
+        var space = io_uring_sq_space_left(ring)
+        Error("Error creating SQE for server socket, space remaining: %d\n", space)
         goto error;
     }
 
@@ -657,40 +683,30 @@ func (this: *HttpRingEngine) handleHttpRequest(
 
     connection.disableKeepAlive = httpRequest.flags & HttpFlags.DISABLE_KEEP_ALIVE
 
-    switch(httpRequest.method) {
-        case HttpMethod.GET: {
-
-            // determine if this is a file request
-            if(httpRequest.path.startsWith(this.fileServerPath)) {
-                // TODO: Cache File contents
-                var file: File;
-                var fileStatus = OpenFile(this.fileServerPath, httpRequest.path, &file)
-                if(fileStatus != Status.OK) {
-                    return fileStatus
-                }
-
-                request.file = file.handle()
-
-                var response = &request.response;
-                response.status = 200
-                response.type = ResponseType.FILE
-                response.fileHandle = file.handle()
-                response.fileSize = file.length()
-
-                // TODO add mime type info..
-                this.queueWriteHttpResponse(ring, request)
-                return Status.OK
-            }
-            break
+    // determine if this is a file request
+    if(httpRequest.method == HttpMethod.GET &&
+       httpRequest.path.startsWith(this.fileServerPath)
+    ) {
+        // TODO: Cache File contents
+        var file: File;
+        var fileStatus = OpenFile(this.fileServerPath, httpRequest.path, &file)
+        if(fileStatus != Status.OK) {
+            return fileStatus
         }
-        case HttpMethod.POST:
-        case HttpMethod.PUT:
-        case HttpMethod.PATCH:
-        case HttpMethod.OPTIONS:
-        case HttpMethod.DELETE: {
-            break
-        }
+
+        request.file = file.handle()
+
+        var response = &request.response;
+        response.status = 200
+        response.type = ResponseType.FILE
+        response.fileHandle = file.handle()
+        response.fileSize = file.length()
+
+        // TODO add mime type info..
+        this.queueWriteHttpResponse(ring, request)
+        return Status.OK
     }
+
 
     var requestContext = RequestHandlerContext {
         .allocator = requestAllocator,
@@ -872,21 +888,29 @@ func signal_handler(signo: i32) {
 func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_uring_cqe, result: i32) {
 
     // Determine if there was an error reading the accept socket request
-    if(result < 0 || !cqe) {
+    if(!cqe) {
         Error("Error reading accept socket socket: %d\n", result)
         return;
     }
 
-    // If the accept socket request completed, but the result contains an error
+    // Determine if this is a timeout or a socket error
     if(cqe.res < 0) {
+
+        // no attached data, this should be a timeout check
+        var data:*void = io_uring_cqe_get_data(cqe)
+        if(!data) {
+            this.checkTimeouts(ring)
+            return;
+        }
+
+        var request = data as (*RequestContext)
+
+        // otherwise we are experiencing a socket error
         Error("Error accepting socket.res: %d (%s)\n", cqe.res, strerror(-cqe.res))
 
         // Force close the connection
-        var request = io_uring_cqe_get_data(cqe) as (*RequestContext)
-        if(request) {
-            Error("Force closing connection: %d due to error\n", request.connection.handle())
-            request.finish(.forceClose = true)
-        }
+        Error("Force closing connection: %d due to error\n", request.connection.handle())
+        request.finish(.forceClose = true)
         return;
     }
 
@@ -994,7 +1018,10 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
             }
             break
         }
-
+        case RequestState.UNKNOWN: {
+            Info("Request caught in unknown state for connection: %d\n", connection.handle())
+            break
+        }
         default: {
             assert(false)
             break;
@@ -1002,8 +1029,7 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
     }
 }
 
-func (this: *HttpRingEngine) checkTimeouts() {
-    /*
+func (this: *HttpRingEngine) checkTimeouts(ring: *io_uring) {
     const timeout = this.config.keepAliveTimeoutInSec
     const currentTime = SystemTimeMSec()
 
@@ -1019,8 +1045,9 @@ func (this: *HttpRingEngine) checkTimeouts() {
                 currentTime
             )
             // TODO: Causes crashing
-            // context.finish(.forceClose = true)
+            context.finish(.forceClose = true)
         }
     }
-    */
+
+    this.queueTimeoutCheck(ring)
 }

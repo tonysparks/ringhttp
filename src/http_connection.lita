@@ -8,7 +8,6 @@ import "std/libc"
 
 import "http_request"
 import "http_response"
-import "http_header"
 import "http_common"
 import "http_file"
 
@@ -40,15 +39,13 @@ public func (this: *HttpConnection) free() {
 }
 
 public func (this: *HttpConnection) reset() {
-    //this.writeBuffer.init(WRITE_BUFFER_SIZE, allocator)
-    //this.readBuffer.init(READ_BUFFER_SIZE, allocator)
     this.writeBuffer.clear()
     this.readBuffer.clear()
-    // this.socket.socket = 0
 }
 
 public func (this: *HttpConnection) close() {
     this.socket.close()
+    this.socket.socket = 0
 }
 
 

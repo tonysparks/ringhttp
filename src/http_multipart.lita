@@ -6,7 +6,6 @@ import "std/mem"
 
 import "http_request"
 import "http_parser"
-import "http_header"
 
 public const MULTIPART_HEADER = "multipart/form-data"
 public const CONTENT_TYPE_HEADER = "content-type"

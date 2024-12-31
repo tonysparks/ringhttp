@@ -6,7 +6,6 @@ import "std/assert"
 import "std/mem"
 import "std/json"
 
-import "http_header"
 import "http_parser"
 
 
@@ -95,6 +94,19 @@ public struct FormData {
     name: String
     filename: String
     value: String
+}
+
+
+public struct HttpHeader {
+    name: String
+    values: String
+}
+
+public func HttpHeaderFrom(name: *const char, values: *const char) : HttpHeader {
+    return HttpHeader {
+        .name = StringInit(name),
+        .values = StringInit(values)
+    }
 }
 
 public struct QueryParam {

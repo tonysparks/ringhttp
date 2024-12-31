@@ -10,6 +10,7 @@ import "std/string"
 import "std/array"
 import "std/io"
 import "std/libc/signal"
+import "std/log"
 
 import "liburing"
 
@@ -18,11 +19,9 @@ import "http_parser"
 import "http_common"
 import "http_request"
 import "http_response"
-import "http_header"
 import "http_file"
 import "http_engine"
 import "http_router"
-import "log"
 
 public struct HttpServer {
     engine: HttpRingEngine
@@ -60,6 +59,8 @@ public struct HttpConfig {
 
     // the server side keep alive time in seconds
     keepAliveTimeoutInSec: i32 = 5
+    // the frequency in which the server checks timeouts
+    timeoutCheckMSec: i64 = 5_000i64
 
     // io_uring queue depth
     ioQueueDepth: i32 = 32

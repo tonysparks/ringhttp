@@ -9,7 +9,6 @@ import "std/net"
 import "std/assert"
 
 import "std/array"
-import "http_header"
 import "http_common"
 import "http_response"
 import "http_connection"

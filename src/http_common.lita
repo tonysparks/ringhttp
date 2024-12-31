@@ -1,4 +1,4 @@
-
+import "std/string"
 
 /** Standard max URL length */
 public const MAX_URL_LENGTH_DEFAULT = 8_000;
