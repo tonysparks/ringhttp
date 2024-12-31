@@ -29,6 +29,7 @@ internal enum RequestState {
     WRITTEN_HTTP_RESPONSE,
     WRITTEN_HTTP_RESPONSE_MORE,
     WRITTEN_FILE,
+    WRITING_STREAM,
 }
 
 internal struct RequestContext {
@@ -73,12 +74,15 @@ internal func (this: *RequestContext) begin() {
     var allocator = &this.requestAllocator.allocator
     this.connection.init(allocator)
     this.response.init(allocator)
+    this.request.reset()
 
     this.submissions = 0
 
     this.requestLineIndex = 0
     this.headerIndex = 0
     this.bodyIndex = 0
+
+    this.state = RequestState.CONNECTED
 
 
     if(this.pipes[0] > 0) {
@@ -123,8 +127,11 @@ internal func (this: *RequestContext) finish(forceClose: bool = false) {
     }
     this.file = 0
 
+    this.state = RequestState.CONNECTED
+
     this.connection.reset()
     this.response.reset()
+    this.request.reset()
 
     if(!this.isKeepAlive() || forceClose) {
         this.connection.close()

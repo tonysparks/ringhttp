@@ -232,6 +232,14 @@ public func HttpQueryInit(allocator: *const Allocator) : HttpQuery {
     return query
 }
 
+public func (this: *HttpRequest) reset() {
+    this.flags = 0
+    this.bodyLength = 0
+    this.headers.clear()
+    this.method = HttpMethod.INVALID
+    this.bodyType = BodyType.UNKNOWN
+}
+
 public func (this: *HttpRequest) parseQuery(result: *HttpQuery) {
     if(this.query.empty()) {
         return;

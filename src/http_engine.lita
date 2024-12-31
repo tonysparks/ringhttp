@@ -290,9 +290,104 @@ func (this: *HttpRingEngine) queueWriteHttpResponse(
         .msg_iovlen = 1,
     }
 
-    var moreContents = response.type == ResponseType.FILE
 
     // Send the HTTP response to the client socket
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for socket: %d\n", connection.handle())
+        goto error;
+    }
+
+    var moreContents = (response.type != ResponseType.BODY)
+    io_uring_prep_sendmsg(
+        sqe,
+        connection.handle(),
+        &msg,
+        moreContents ? SocketFlags.MSG_MORE : 0
+    )
+
+    io_uring_sqe_set_data(sqe, request)
+
+    // If we have more contents, let's link
+    // this submission with the next one, so they are delivered
+    // in proper order
+    if(response.type == ResponseType.FILE) {
+        sqe.flags |= IOSQE_IO_LINK
+    }
+
+    request.submissions += 1
+    io_uring_submit(ring)
+
+    if(moreContents) {
+        if(response.type == ResponseType.FILE) {
+            request.state = RequestState.WRITTEN_HTTP_RESPONSE_MORE
+            this.queueWriteHttpFileResponse(ring, request)
+        }
+        else {
+            assert(response.type == ResponseType.STREAM)
+            request.state = RequestState.WRITING_STREAM
+        }
+    }
+
+error:
+    return;
+}
+
+func (this: *HttpRingEngine) queueWriteHttpStreamResponse(
+    ring: *io_uring,
+    request: *RequestContext) {
+
+    request.state = RequestState.WRITING_STREAM
+
+    var connection = &request.connection
+    var response = &request.response
+    if(!response.stream.__this) {
+        Error("No stream attached to connection: %d\n", connection.handle())
+        goto error;
+    }
+
+    var writeBuffer = &connection.writeBuffer
+    writeBuffer.clear()
+
+    // Read the stream contents
+    var numberOfBytesRead = response.stream.read(response.body.buffer, response.body.capacity)
+    var moreContents = numberOfBytesRead > 0
+
+    if(!moreContents) {
+        request.state = RequestState.WRITTEN_HTTP_RESPONSE
+        writeBuffer.append("0\r\n\r\n")
+    }
+    else {
+
+        if(!writeBuffer.reserve(numberOfBytesRead + 16)) {
+            // Error out as we are not able to meet capacity requirements
+            Error(
+                "Unable to handle stream of %d bytes due to out of memory for connection: %d\n",
+                numberOfBytesRead,
+                connection.handle()
+            )
+            goto error;
+        }
+
+        writeBuffer.append("%08X\r\n", numberOfBytesRead)
+        response.body.length = numberOfBytesRead
+        response.body.copyTo(writeBuffer.buffer + writeBuffer.length, numberOfBytesRead, false)
+
+        writeBuffer.length += numberOfBytesRead
+        writeBuffer.appendStrn("\r\n", 2)
+    }
+
+    // Send the bytes over the TCP connection
+    var iov = iovec {
+        .iov_base = connection.writeBuffer.buffer,
+        .iov_len  = connection.writeBuffer.length,
+    }
+
+    var msg = msghdr {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    }
+
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
         Error("Error creating SQE for socket: %d\n", connection.handle())
@@ -306,24 +401,14 @@ func (this: *HttpRingEngine) queueWriteHttpResponse(
         moreContents ? SocketFlags.MSG_MORE : 0
     )
 
-    // If we have more contents, let's link
-    // this submission with the next one, so they are delivered
-    // in proper order
-    if(moreContents) {
-        request.state = RequestState.WRITTEN_HTTP_RESPONSE_MORE
-        sqe.flags |= IOSQE_IO_LINK
-    }
-
     io_uring_sqe_set_data(sqe, request)
 
     request.submissions += 1
     io_uring_submit(ring)
 
-    if(moreContents) {
-        this.queueWriteHttpFileResponse(ring, request)
-    }
-
 error:
+// TODO: Handler error scenarios, either send back an http 500 or if no memory kill the
+// client connection..
     return;
 }
 
@@ -408,7 +493,6 @@ func (this: *HttpRingEngine) queueWriteHttpFileResponse(
             sqe,
             response.fileHandle
         )
-
 
         io_uring_sqe_set_data(sqe, request)
     }
@@ -590,10 +674,10 @@ func (this: *HttpRingEngine) handleHttpRequest(
                 var response = &request.response;
                 response.status = 200
                 response.type = ResponseType.FILE
-                // TODO add mime type info..
                 response.fileHandle = file.handle()
                 response.fileSize = file.length()
 
+                // TODO add mime type info..
                 this.queueWriteHttpResponse(ring, request)
                 return Status.OK
             }
@@ -811,7 +895,7 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
 
     request.lastRequestTime = SystemTimeMSec()
     var connection = &request.connection
-    Info("Setting lastRequest time for socket: %d to %f\n", connection.handle(), request.lastRequestTime)
+    // Info("Setting lastRequest time for socket: %d to %f\n", connection.handle(), request.lastRequestTime)
 
     switch(request.state) {
         // Server just accepted a client connection
@@ -883,7 +967,12 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
             }
             break
         }
+        case RequestState.WRITING_STREAM: {
+            request.submissions -= 1
 
+            this.queueWriteHttpStreamResponse(ring, request)
+            break;
+        }
         // The connection request was parsed, we have dispatched
         // an http response to the client socket
         case RequestState.WRITTEN_HTTP_RESPONSE:
@@ -914,6 +1003,7 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
 }
 
 func (this: *HttpRingEngine) checkTimeouts() {
+    /*
     const timeout = this.config.keepAliveTimeoutInSec
     const currentTime = SystemTimeMSec()
 
@@ -932,4 +1022,5 @@ func (this: *HttpRingEngine) checkTimeouts() {
             // context.finish(.forceClose = true)
         }
     }
+    */
 }

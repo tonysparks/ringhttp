@@ -28,6 +28,8 @@ public struct HttpConnection {
 public func (this: *HttpConnection) init(allocator: *const Allocator) {
     this.writeBuffer.init(WRITE_BUFFER_SIZE, allocator)
     this.readBuffer.init(READ_BUFFER_SIZE, allocator)
+
+    this.reset()
 }
 
 
@@ -60,11 +62,11 @@ public func (this: *HttpConnection) isConnected() : bool {
 
 
 public func (this: *HttpConnection) bufferContents(response: *HttpResponse) {
-    if(response.status > 512) {
-        response.status = 500;
-    }
-
     this.writeBuffer.clear()
+
+    if(response.status < 0 || response.status >= MAX_STATUS_CODES) {
+        response.status = 500
+    }
 
     // Status Line
     this.writeBuffer.append("HTTP/1.1 %d %s\r\n",
@@ -80,23 +82,41 @@ public func (this: *HttpConnection) bufferContents(response: *HttpResponse) {
         )
     }
 
-    var contentLength = 0_usize
     switch(response.type) {
         case ResponseType.NONE: break;
-        case ResponseType.BODY: contentLength = response.body.length; break;
-        case ResponseType.FILE: contentLength = response.fileSize; break;
+        case ResponseType.BODY: {
+            this.writeBuffer.append("Content-Length: %zu\r\n", response.body.length)
+            break;
+        }
+        case ResponseType.FILE: {
+            this.writeBuffer.append("Content-Length: %zu\r\n", response.fileSize)
+            break;
+        }
+        case ResponseType.STREAM: {
+            this.writeBuffer.append("Transfer-Encoding: chunked\r\n")
+            break;
+        }
         default: break;
     }
 
-    this.writeBuffer.append("Content-Length: %zu\r\n", contentLength)
+    // TODO: Default headers
+    this.writeBuffer.append("Server: Ring/0.0.1 (Linux)\r\n")
+
 
     // Blank Line
     this.writeBuffer.append("\r\n")
 
     // Body (if applicable)
-    if(response.type == ResponseType.BODY) {
-        this.writeBuffer.append("%.*s",
-            response.body.length, response.body.buffer
-        )
+    switch(response.type) {
+        case ResponseType.BODY: {
+            this.writeBuffer.append("%.*s",
+                response.body.length, response.body.buffer
+            )
+            break;
+        }
+        default: {
+            /* handled in queueWriteHttpResponse */
+            break;
+        }
     }
 }

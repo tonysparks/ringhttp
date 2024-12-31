@@ -5,8 +5,26 @@ import "std/string/builder"
 import "std/string"
 import "std/mem"
 import "std/json"
+import "std/io"
 
 import "http_ring"
+
+
+
+
+struct FileStream {
+    file: File
+}
+
+func (this: *FileStream) read(buffer: *char, size: i32) : i32 {
+    var startPosition = this.file.position()
+    var status = this.file.readBytes(buffer, size as (usize))
+
+    if(status == FileStatus.Ok) {
+        return (this.file.position() - startPosition) as (i32)
+    }
+    return -1
+}
 
 struct ServerHandler {
 }
@@ -41,6 +59,7 @@ func (this: *ServerHandler) handle(
     }
     var response = context.response
     response.type = ResponseType.BODY
+    response.addHeaderStr("Content-Type", "text/html")
 
     // TODO add mime type info..
     response.body.append(
@@ -61,6 +80,8 @@ func EchoRequestHandler(context: *RequestHandlerContext) : i32 {
 
     res.status = 200
     res.type = ResponseType.BODY
+    res.addHeaderStr("Content-Type", "application/json")
+
     res.body.append("{ \"query\": {")
 
     for(var i = 0; i < query.params.size(); i+=1) {
@@ -76,12 +97,32 @@ func EchoRequestHandler(context: *RequestHandlerContext) : i32 {
     return 1
 }
 
+var fileStream = FileStream{} // TODO/TEMP
+func DownloadRequestHandler(context: *RequestHandlerContext) : i32 {
+    var req = context.request
+    var res = context.response
+
+    res.status = 200
+    res.type = ResponseType.STREAM
+    res.addHeaderStr("Content-Type", "application/octet-stream")
+    res.addHeaderStr("Content-Disposition", "attachment; filename=\"big_file.txt\"")
+
+    fileStream.file.open("./ring.c", FileOpenOp.READ_ONLY)
+    // TODO: Error handling..
+
+    res.stream = &fileStream
+
+    return 1
+}
+
+
 func SubmitRequestHandler(context: *RequestHandlerContext) : i32 {
     var req = context.request
     var res = context.response
 
     res.status = 200
     res.type = ResponseType.BODY
+    res.addHeaderStr("Content-Type", "application/json")
 
     res.body.append("{ ")
 
@@ -237,6 +278,15 @@ func main(len: i32, args: **char) : i32 {
         HttpController {
             .userData = &handler,
             .callback = SubmitRequestHandler
+        }
+    )
+
+    server.addRequestHandler(
+        HttpMethod.GET,
+        "/download",
+        HttpController {
+            .userData = &handler,
+            .callback = DownloadRequestHandler
         }
     )
 

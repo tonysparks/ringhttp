@@ -12,7 +12,8 @@ import "http_common"
 @foreign
 func close(fd: i32) : i32;
 
-public const STATUS_CODES = [512]*const char {
+public const MAX_STATUS_CODES = 512
+public const STATUS_CODES = [MAX_STATUS_CODES]*const char {
     // 1xx Informational
     [100] = "Continue",
     [101] = "Switching Protocols",
@@ -90,7 +91,12 @@ public const MAX_HEADERS = 64
 public enum ResponseType {
     NONE,
     BODY,
-    FILE
+    FILE,
+    STREAM,
+}
+
+public trait Stream {
+    read: func(*char, i32) : i32;
 }
 
 public struct HttpResponse {
@@ -101,15 +107,37 @@ public struct HttpResponse {
     type: ResponseType
     body: StringBuilder
 
-    // File
-    struct {
-        fileHandle: i32
-        fileSize: usize
+    union {
+        // File
+        struct {
+            fileHandle: i32
+            fileSize: usize
+        }
+
+        // Stream
+        stream: Stream
     }
 }
 
 public func (this: *HttpResponse) init(allocator: *const Allocator) {
     this.body.init(1024, allocator)
+    this.reset()
+}
+
+public func (this: *HttpResponse) addHeader(name: String, value: String) {
+    if(this.numberOfHeaders >= MAX_HEADERS) {
+        return;
+    }
+
+    var header = &this.headers[this.numberOfHeaders]
+    header.name = name
+    header.values = value
+
+    this.numberOfHeaders += 1
+}
+
+public func (this: *HttpResponse) addHeaderStr(name: *const char, value: *const char) {
+    this.addHeader(StringInit(name), StringInit(value))
 }
 
 public func (this: *HttpResponse) free() {
@@ -123,7 +151,8 @@ public func (this: *HttpResponse) free() {
 
 public func (this: *HttpResponse) reset() {
     this.body.clear()
-
+    this.type = ResponseType.NONE
+    this.numberOfHeaders = 0
     // if(this.fileHandle > 0) {
     //     close(this.fileHandle)
     // }
