@@ -552,7 +552,7 @@ func (this: *HttpRingEngine) queueCancelAndClose(
             0
         )
 
-        sqe.flags |= IOSQE_IO_LINK
+        // sqe.flags |= IOSQE_IO_LINK
 
         io_uring_sqe_set_data(sqe, request)
     }
@@ -926,7 +926,7 @@ func (this: *HttpRingEngine) sendBadRequest(
 
 
 func signal_handler(signo: i32) {
-    Info("caught signal SIGPIPE for %d\n", signo)
+    Info("Caught signal SIGPIPE for %d\n", signo)
     if(signo == SIGINT) {
         Info("Signal for shutdown received\n")
         exit(0)
@@ -975,8 +975,6 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
 
                 // Force close the connection
                 Error("Force closing connection: %d due to error\n", request.connection.handle())
-
-                // request.finish(.forceClose = true)
                 this.queueCancelAndClose(ring, request)
             }
         }
@@ -1013,7 +1011,6 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
             // The client has gracefully closed their connection
             if(bytesRead == 0) {
                 Info("Client Closed socket: %d\n", connection.handle())
-                //request.finish(.forceClose = true)
                 this.queueCancelAndClose(ring, request)
                 break;
             }
@@ -1109,7 +1106,6 @@ func (this: *HttpRingEngine) checkTimeouts(ring: *io_uring) {
     const timeout = this.config.keepAliveTimeoutInSec
     const currentTime = SystemTimeMSec()
 
-    // Info("Checking timeouts\n")
     for(var i = 0; i < this.requests.pool.size(); i+=1) {
         var context = this.requests.pool.getPtr(i)
         if(context.inUse && context.connection.isConnected() && context.lastRequestTime + timeout < currentTime) {
@@ -1122,8 +1118,6 @@ func (this: *HttpRingEngine) checkTimeouts(ring: *io_uring) {
             )
 
             this.queueCancelAndClose(ring, context)
-            // TODO: Causes crashing
-            //context.finish(.forceClose = true)
         }
     }
 

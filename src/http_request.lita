@@ -58,6 +58,15 @@ public struct HttpRequest {
     payload: using Payload
 }
 
+
+public func (this: *HttpRequest) reset() {
+    this.flags = 0
+    this.bodyLength = 0
+    this.headers.clear()
+    this.method = HttpMethod.INVALID
+    this.bodyType = BodyType.UNKNOWN
+}
+
 public struct Payload {
     headers: Array<HttpHeader>
     body: using Body
@@ -244,86 +253,217 @@ public func HttpQueryInit(allocator: *const Allocator) : HttpQuery {
     return query
 }
 
-public func (this: *HttpRequest) reset() {
-    this.flags = 0
-    this.bodyLength = 0
-    this.headers.clear()
-    this.method = HttpMethod.INVALID
-    this.bodyType = BodyType.UNKNOWN
-}
-
-public func (this: *HttpRequest) parseQuery(result: *HttpQuery) {
+public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : ParseStatus {
     if(this.query.empty()) {
-        return;
+        return ParseStatus.OK;
     }
 
-    var query = this.query
-    var i = 0
-
-    var nameStartIndex = 0
-    var nameEndIndex = -1
-
-    var valueStartIndex = -1
-    var valueEndIndex = -1
-
-    while(i < query.length) {
-        var c = query.buffer[i]
-        switch(c) {
-            case '=': {
-                nameEndIndex = i
-                valueStartIndex = i + 1
-                break;
-            }
-            case '&': {
-                valueEndIndex = i
-
-                var nameLength = nameEndIndex - nameStartIndex
-                if(nameEndIndex < 0) {
-                    nameLength = i - nameStartIndex
-                }
-
-                var value = String{}
-                if(valueStartIndex < 0) {
-                    value = StringInit("", 0)
-                }
-                else {
-                    value = StringInit(&query.buffer[valueStartIndex], valueEndIndex - valueStartIndex)
-                }
-
-                result.params.add(QueryParam {
-                    .name = StringInit(&query.buffer[nameStartIndex], nameLength),
-                    .value = value
-                })
-
-                nameStartIndex = i + 1
-                nameEndIndex = -1
-                valueStartIndex = -1
-                valueEndIndex = -1
-                break;
-            }
-            default: {
-            }
+    var params = this.query.split("&", 1)
+    while(params.hasNext()) {
+        var entry = params.next()
+        if(entry.empty()) {
+            continue
         }
 
-        i += 1
-    }
+        var valueIndex = entry.endIndexOf("=", 1)
 
-    if(nameStartIndex < query.length) {
-        var nameLength = nameEndIndex - nameStartIndex
-        if(nameEndIndex < 0) {
-            nameLength = query.length - nameStartIndex
-        }
-
-        var value = String{}
-        if(valueStartIndex < 0) {
-            value = StringInit("", 0)
+        var queryParam = QueryParam{}
+        if(valueIndex  < 0) {
+            queryParam.name = entry
         }
         else {
-            value = StringInit(&query.buffer[valueStartIndex], query.length - valueStartIndex)
+            queryParam.name = entry.substring(0, valueIndex - 1)
+            queryParam.value = entry.substring(valueIndex)
         }
-        result.params.add(QueryParam {
-            .name = StringInit(&query.buffer[nameStartIndex], nameLength),
-            .value = value
-        })
+
+        result.params.add(queryParam)
+    }
+
+    return ParseStatus.OK
+}
+
+
+@test
+func testQueryParams() {
+    var queryParam = HttpQueryInit(defaultAllocator)
+    var queryRequest = HttpRequest{}
+
+    // Test empty
+    {
+        queryParam.params.clear()
+        queryRequest.query = StringInit("")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.empty())
+    }
+
+    // Test 1
+    {
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=value")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equals("name"))
+            assert(n.value.equals("value"))
+        }
+    }
+
+    // Test 2
+    {
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=value&thing1=thing2")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 2)
+
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equals("name"))
+            assert(n.value.equals("value"))
+        }
+
+        {
+            var n = queryParam.params.get(1)
+            assert(n.name.equals("thing1"))
+            assert(n.value.equals("thing2"))
+        }
+    }
+
+    // Missing '='
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equals("name"))
+            assert(n.value.equals(""))
+        }
+    }
+
+    // Missing '=' with '&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name&value")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 2)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equals("name"))
+            assert(n.value.equals(""))
+        }
+        {
+            var n = queryParam.params.get(1)
+            assert(n.name.equals("value"))
+            assert(n.value.equals(""))
+        }
+    }
+
+    // Double '='
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=x=y")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equals("name"))
+            assert(n.value.equals("x=y"))
+        }
+    }
+
+    // Double '=' with '&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=x=y&thing1=thing2")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 2)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equals("name"))
+            assert(n.value.equals("x=y"))
+        }
+
+        {
+            var n = queryParam.params.get(1)
+            assert(n.name.equals("thing1"))
+            assert(n.value.equals("thing2"))
+        }
+    }
+
+    // Trailing '&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=x&")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equals("name"))
+            assert(n.value.equals("x"))
+        }
+    }
+
+    // Only '&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("&")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.empty())
+    }
+
+    // String of '&&&&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("&&&&&")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.empty())
+    }
+
+    // String of '======'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("====")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equals(""))
+            assert(n.value.equals("==="))
+        }
+    }
+
+    // String of '=&=&=&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("=&=&=&")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 3)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equals(""))
+            assert(n.value.equals(""))
+        }
+        {
+            var n = queryParam.params.get(1)
+            assert(n.name.equals(""))
+            assert(n.value.equals(""))
+        }
+        {
+            var n = queryParam.params.get(2)
+            assert(n.name.equals(""))
+            assert(n.value.equals(""))
+        }
     }
 }

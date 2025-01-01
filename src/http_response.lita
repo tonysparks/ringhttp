@@ -140,6 +140,11 @@ public func (this: *HttpResponse) addHeaderStr(name: *const char, value: *const 
     this.addHeader(StringInit(name), StringInit(value))
 }
 
+public func (this: *HttpResponse) asStream(stream: Stream) {
+    this.stream = stream
+    this.type = ResponseType.STREAM
+}
+
 public func (this: *HttpResponse) free() {
     this.body.free()
 

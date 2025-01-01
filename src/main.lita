@@ -97,7 +97,6 @@ func EchoRequestHandler(context: *RequestHandlerContext) : i32 {
     return 1
 }
 
-var fileStream = FileStream{} // TODO/TEMP
 func DownloadRequestHandler(context: *RequestHandlerContext) : i32 {
     var req = context.request
     var res = context.response
@@ -107,10 +106,11 @@ func DownloadRequestHandler(context: *RequestHandlerContext) : i32 {
     res.addHeaderStr("Content-Type", "application/octet-stream")
     res.addHeaderStr("Content-Disposition", "attachment; filename=\"big_file.txt\"")
 
+    var fileStream = new<FileStream>(context.allocator)
     fileStream.file.open("./ring.c", FileOpenOp.READ_ONLY)
     // TODO: Error handling..
 
-    res.stream = &fileStream
+    res.asStream(fileStream)
 
     return 1
 }
@@ -253,7 +253,7 @@ func main(len: i32, args: **char) : i32 {
         .maxThreads = 1,
         .ioQueueDepth = 64,
         .isLogEnabled = true,
-        .maxPoolSize = 256,
+        .maxPoolSize = 512,
         .keepAliveTimeoutInSec = 5,
     }
 
