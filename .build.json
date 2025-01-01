@@ -1,1 +1,1 @@
-{"compile_template":null,"source_directory":null,"package_paths":["/src","/.pkgs/liburing/v0.0.2/pkg/src"],"include_paths":null,"library_paths":null,"static_libs":null}
+{"compile_template":null,"source_directory":null,"package_paths":["/.pkgs/liburing/v0.0.3/pkg/src","/src"],"include_paths":null,"library_paths":null,"static_libs":null}

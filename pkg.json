@@ -42,8 +42,8 @@
     "dependencies": [
         {
             "name" : "liburing",
-            "version" : "v0.0.2",
-            "repo" : "file:///home/tony/projects/libio_uring"
+            "version" : "v0.0.3",
+            "repo" : "https://github.com/tonysparks/liburing"
         }
     ],
 
