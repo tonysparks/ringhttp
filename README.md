@@ -43,16 +43,24 @@ Building
 
 This has only been tested on Ubuntu 22.04
 
-Build
-```
+__Setup and Build__
+
+```shell
+# Download the liburing litac bindings dependency (this only needs to be done once)
+litac -pkg-install
+
+# Build the project
 litac -pkg-build
 ```
 
-Build and Run
-```
+__Build and Run__
+```shell
+# Build the project and run the executable
 litac -pkg-build -run
 ```
-Run executable
-```
+
+__Run executable__
+```shell
+# Run the generated executable without litac
 ./bin/ring
 ```

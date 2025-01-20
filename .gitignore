@@ -7,3 +7,4 @@ bin/*.log
 notes.txt
 *.out.*
 perf.data
+.build.json
