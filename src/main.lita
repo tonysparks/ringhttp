@@ -7,6 +7,9 @@ import "std/mem"
 import "std/json"
 import "std/io"
 
+// import "std/json/to_json"
+// import "std/json/from_json"
+
 import "http_ring"
 
 
@@ -94,6 +97,9 @@ func EchoRequestHandler(context: *RequestHandlerContext) : i32 {
         )
     }
     res.body.append("}}")
+
+//    var json = query.toJson(res.body)
+    //res.bod
     return 1
 }
 

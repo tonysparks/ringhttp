@@ -14,6 +14,7 @@ import "http_connection"
 import "http_common"
 import "http_request"
 import "http_response"
+import "http_websocket"
 
 
 
@@ -21,6 +22,24 @@ public trait Initializer<T> {
     allocx: func(*T) : void
 }
 
+@asStr
+internal enum RingOpcode {
+    TIMEOUT,
+    ACCEPT,
+    SPLICE,
+    SENDMSG,
+    READ,
+    CANCEL,
+    CLOSE,
+}
+
+internal union RingOperation {
+    struct {
+        opcode: i32
+        contextIndex: i32
+    }
+    data: u64
+}
 
 @asStr
 internal enum RequestState {
@@ -31,6 +50,10 @@ internal enum RequestState {
     WRITTEN_HTTP_RESPONSE_MORE,
     WRITTEN_FILE,
     WRITING_STREAM,
+
+    WEB_SOCKET_UPGRADED,
+    WEB_SOCKET_OPERATION,
+
     CLOSED,
 }
 
@@ -40,6 +63,7 @@ internal struct RequestContext {
 
     // if this is currently in use by a request
     inUse: bool
+    isWebSocket: bool
 
     clientAddr: sockaddr_in;
     clientAddrLen: socklen_t;
@@ -48,6 +72,9 @@ internal struct RequestContext {
     request: HttpRequest
     response: HttpResponse
     state: RequestState
+
+    socketHandler: WebSocketHandler
+    socketSession: WebSocketSession
 
     requestLineIndex: i32
     headerIndex: i32
@@ -77,6 +104,8 @@ internal func (this: *RequestContext) begin() {
     this.connection.init(allocator)
     this.response.init(allocator)
     this.request.reset()
+
+    this.isWebSocket = false
 
     this.submissions = 0
 
@@ -110,6 +139,7 @@ internal func (this: *RequestContext) begin() {
 internal func (this: *RequestContext) finish(forceClose: bool = false) {
     Info("Finishing Request for socket: %d\n", this.connection.handle())
 
+    this.isWebSocket = false
     this.submissions = 0
 
     this.requestLineIndex = 0

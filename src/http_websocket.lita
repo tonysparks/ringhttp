@@ -1,0 +1,177 @@
+import "std/libc"
+import "std/string/builder"
+import "std/string"
+
+import "http_common"
+import "http_context"
+import "http_engine"
+
+public const WEB_SOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+public trait WebSocketHandler {
+    onFrame: func(*WebSocketSession, *Frame) : i32;
+}
+
+public struct WebSocketSession {
+    engine: *HttpRingEngine
+    context: *RequestContext
+}
+
+public enum Opcode {
+    UNKNOWN = -1,
+    CONTINUATION = 0x0,
+    TEXT         = 0x1,
+    BINARY       = 0x2,
+    CLOSE        = 0x8,
+    PING         = 0x9,
+    PONG         = 0xA,
+}
+
+public struct Frame {
+    payloadLength: i64
+    maskKey: [4]i8
+    opcode: Opcode
+    isFinal: bool
+    masked: bool
+
+    offset: i32
+    payload: *char
+}
+
+internal func (frame: *Frame) parseHeader(input: *StringBuilder) : Status {
+    if(input.length < 2) {
+        return Status.ERROR_WEB_SOCKET_FRAME
+    }
+
+    var buffer = input.buffer
+
+    var header = buffer[0]
+    frame.isFinal = (header>>7) & 0x1
+    frame.opcode = header & 0xF
+
+    var maskPayload = buffer[1]
+    frame.masked = (maskPayload>>7) & 0x1
+    frame.payloadLength = maskPayload & 0x7F
+
+    frame.offset = 2
+    if(frame.payloadLength == 126) {
+        if(input.length < 4) {
+            return Status.ERROR_WEB_SOCKET_FRAME
+        }
+        var b1 = buffer[2]
+        var b2 = buffer[3]
+
+        frame.payloadLength = (b1 << 8) | b2
+        frame.offset += 2
+    }
+    else if(frame.payloadLength == 127) {
+        if(input.length < 10) {
+            return Status.ERROR_WEB_SOCKET_FRAME
+        }
+
+        frame.payloadLength = 0
+        for(var i = 0; i < 8; i+=1) {
+            frame.payloadLength = (frame.payloadLength << 8) | buffer[2 + i]
+        }
+        frame.offset += 8
+    }
+
+    memset(frame.maskKey, 0, 4)
+    if(frame.masked) {
+        if(input.length < (frame.offset+4)) {
+            return Status.ERROR_WEB_SOCKET_FRAME
+        }
+
+        memcpy(frame.maskKey, buffer + frame.offset, 4)
+        frame.offset += 4
+    }
+
+    return Status.OK
+}
+
+internal func (frame: *Frame) parsePayload(input: *StringBuilder) : Status {
+
+    if(frame.payloadLength > (input.length - frame.offset)) {
+        return Status.ERROR_WEB_SOCKET_FRAME_LENGTH
+    }
+
+    var buffer = input.buffer
+    frame.payload = buffer + frame.offset;
+
+    if(frame.masked) {
+        for(var i = 0_i64; i < frame.payloadLength; i+=1) {
+            frame.payload[i] ^= frame.maskKey[i % 4]
+        }
+    }
+    return Status.OK
+}
+
+internal func (frame: *Frame) serialize(input: *StringBuilder) : Status {
+    if(input.capacity < frame.payloadLength + 8) {
+        return Status.ERROR_WEB_SOCKET_FRAME_LENGTH
+    }
+
+    var buffer = input.buffer
+
+    frame.offset = 2
+
+    buffer[0] = ((frame.isFinal ? 0x80 : 0x0) | (frame.opcode & 0x0F)) as (i32)
+    if(frame.payloadLength >= 126 && frame.payloadLength < 65536) {
+        frame.offset += 1
+
+        buffer[1] = 126
+        buffer[2] = ((frame.payloadLength >> 8) & 0xFF) as (i32)
+        buffer[3] = (frame.payloadLength & 0xFF) as (i32)
+    }
+    else if(frame.payloadLength >= 65536) {
+        frame.offset += 8
+
+        buffer[1] = 127
+        for(var i = 0; i < 8; i+=1) {
+            buffer[2 + i] = ((frame.payloadLength << (56 - i * 8)) & 0xFF) as (i32)
+        }
+    }
+    else {
+        buffer[1] = (frame.payloadLength & 0x7F) as (i32)
+    }
+
+    memcpy(buffer + frame.offset, frame.payload, frame.payloadLength)
+    input.length = (frame.offset + frame.payloadLength) as (i32)
+
+    return Status.OK
+}
+
+import "std/assert"
+
+@test
+func testWebSocketFrame() {
+    var text = StringInit("This is not a drill!")
+
+    var frame = Frame {
+        .payloadLength = text.length,
+        .maskKey = [4]i8{'A', 'B', 'C', 'D'},
+        .opcode = Opcode.TEXT,
+        .isFinal = true,
+        .masked = false,
+
+        .offset = 0,
+        .payload: text.buffer as (*char),
+    }
+
+    var sb = StringBuilderInit(1024)
+    var status = frame.serialize(sb)
+    assert(status == Status.OK)
+
+    var frame2 = Frame{}
+    frame2.parseHeader(sb)
+
+    assert(frame2.isFinal == frame.isFinal)
+    // printf("Opcode %d vs %d\n", frame2.opcode, frame.opcode)
+    assert(frame2.opcode == frame.opcode)
+    assert(frame2.payloadLength == frame.payloadLength)
+    assert(frame2.masked == frame.masked)
+    // assert(frame2.maskKey[0] == frame.maskKey[0])
+    // assert(frame2.maskKey[1] == frame.maskKey[1])
+    // assert(frame2.maskKey[2] == frame.maskKey[2])
+    // assert(frame2.maskKey[3] == frame.maskKey[3])
+}

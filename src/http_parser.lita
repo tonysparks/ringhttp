@@ -239,8 +239,13 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : Pa
 
 func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) {
     // TODO: Optimize case insensitivity
-    if (header.name.equalsIgnoreCase("connection") && header.values.contains("close")) {
-        result.flags |= HttpFlags.DISABLE_KEEP_ALIVE
+    if (header.name.equalsIgnoreCase("connection")) {
+        if (header.values.contains("close")) {
+            result.flags |= HttpFlags.DISABLE_KEEP_ALIVE
+        }
+        else if (header.values.contains("Upgrade")) {
+            result.flags |= HttpFlags.UPGRADE_REQUEST
+        }
     }
     else if (header.name.equalsIgnoreCase("content-length")) {
         result.bodyLength = MAX(0, strtol(header.values.buffer, null, 10) as (i32))
@@ -259,6 +264,9 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
         else if(header.values.startsWith("compressed")) {
             result.flags |= HttpFlags.COMPRESSED_ENCODING
         }
+    }
+    else if (header.name.equalsIgnoreCase("upgrade") && header.values.contains("websocket")) {
+        result.flags |= HttpFlags.WEB_SOCKET_PROTOCOL
     }
     else {
         this.checkHeaderBody(header, &result.body)
