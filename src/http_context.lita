@@ -25,6 +25,7 @@ public trait Initializer<T> {
 @asStr
 internal enum RingOpcode {
     TIMEOUT,
+    MSG_RING,
     ACCEPT,
     SPLICE,
     SENDMSG,
@@ -54,6 +55,7 @@ internal enum RequestState {
     WEB_SOCKET_UPGRADED,
     WEB_SOCKET_OPERATION,
 
+    PREP_CLOSE,
     CLOSED,
 }
 
@@ -79,6 +81,7 @@ internal struct RequestContext {
     requestLineIndex: i32
     headerIndex: i32
     bodyIndex: i32
+    workerIndex: i32
 
     // Allocator for each request on this thread
     requestAllocator: LinearAllocator
@@ -112,9 +115,9 @@ internal func (this: *RequestContext) begin() {
     this.requestLineIndex = 0
     this.headerIndex = 0
     this.bodyIndex = 0
+    this.workerIndex = -1
 
     this.state = RequestState.CONNECTED
-
 
     if(this.pipes[0] > 0) {
         close(this.pipes[0])
@@ -145,6 +148,7 @@ internal func (this: *RequestContext) finish(forceClose: bool = false) {
     this.requestLineIndex = 0
     this.headerIndex = 0
     this.bodyIndex = 0
+    this.workerIndex = -1
 
     if(this.pipes[0] > 0) {
         close(this.pipes[0])

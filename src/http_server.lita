@@ -1,7 +1,5 @@
 import "std/net"
 import "std/libc"
-import "std/thread"
-import "std/thread/thread_pool"
 import "std/mem"
 import "std/mem/bucket_allocator"
 import "std/mem/thread_safe_allocator"
@@ -39,8 +37,7 @@ public struct HttpConfig {
     allocator: *const Allocator //= defaultAllocator
     port: u16 = 8080_u16
 
-    minThreads: i32 = 1
-    maxThreads: i32 = 32
+    numThreads: i32 = 16
 
     maxPoolSize: i32 = 128
 

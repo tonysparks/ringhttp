@@ -1,6 +1,7 @@
 import "std/net"
 import "std/libc"
 import "std/thread"
+import "std/thread/thread_pool"
 import "std/mem"
 import "std/mem/bucket_allocator"
 import "std/mem/linear_allocator"
@@ -32,7 +33,9 @@ import "http_server"
 import "http_router"
 import "http_context"
 import "http_websocket"
+import "http_worker"
 
+/*
 struct TestWebSocket {
 
 }
@@ -67,7 +70,7 @@ public func (this: *WebSocketSession) send(frame: *Frame) : i32 {
 
 public func (this: *WebSocketSession) close() {
 
-}
+}*/
 
 @foreign
 func strerror(errnum: i32) : *const char;
@@ -77,9 +80,7 @@ internal struct HttpRingEngine {
     safeAllocator: ThreadSafeAllocator
     serverSocket: Socket
 
-    // IO Uring for socket Accepts
     ring: io_uring
-
     requests: ContextPool
 
     distribution: u64
@@ -95,6 +96,9 @@ internal struct HttpRingEngine {
     errorHandler: HttpHandler
     notFoundHandler: HttpHandler
     filterHandlers: Array<HttpFilterHandler>
+
+    workers: Array<WorkerThread>
+    barrier: pthread_barrier_t
 }
 
 internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
@@ -106,6 +110,12 @@ internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
     this.requests.init(config.maxPoolSize, this, config.allocator)
 
     this.filterHandlers.init(32, config.allocator)
+
+    var maxWorkers = MAX(this.config.numThreads, 1)
+    this.workers.init(
+        maxWorkers,
+        this.safeAllocator
+    )
 
     if(!config.disableSignal) {
         signal(SIGINT, signal_handler);
@@ -157,9 +167,33 @@ internal func (this: *HttpRingEngine) listen() : Status {
 
     this.isRunning.init(true)
 
-    var ioStatus = io_uring_queue_init(this.config.ioQueueDepth, &this.ring, 0/*IORING_SETUP_SQPOLL*/)
+    var params = io_uring_params {}
+    params.flags |= IORING_SETUP_SINGLE_ISSUER
+    params.flags |= IORING_SETUP_COOP_TASKRUN
+    params.flags |= IORING_SETUP_DEFER_TASKRUN
+    params.flags |= IORING_SETUP_SUBMIT_ALL
+
+    var ioStatus = io_uring_queue_init_params(this.config.ioQueueDepth, &this.ring, &params)
     if(ioStatus != 0) {
         Panic("Error initializing the io_uring queue: %d\n", ioStatus)
+    }
+
+    pthread_barrier_init(&this.barrier, null, this.config.numThreads + 1)
+    defer pthread_barrier_destroy(&this.barrier)
+
+    var maxWorkers = MAX(this.config.numThreads, 1)
+    for(var i = 0; i < maxWorkers; i+=1) {
+        this.workers.add(WorkerThread{})
+
+        var worker = this.workers.getPtr(i)
+        worker.init(this, i)
+    }
+
+    pthread_barrier_wait(&this.barrier)
+
+    for(var i = 0; i < this.workers.length; i+=1) {
+        var worker = this.workers.getPtr(i)
+        Info("Initialized worker thread: %d with ringfd: %d\n", worker.thread.id(), worker.ring.ring_fd)
     }
 
     if(!this.serverSocket.create()) {
@@ -184,15 +218,14 @@ internal func (this: *HttpRingEngine) listen() : Status {
     }
 
     var ring = &this.ring
-    io_uring_submit(ring)
 
     // prime the pump, dispatch a request for socket accepts
     this.queueAcceptRequest(ring)
-    this.queueTimeoutCheck(ring)
+    // this.queueTimeoutCheck(ring)
 
     var cqe: *io_uring_cqe = null;
 
-    while(true) {
+    while(this.isRunning.get()) {
         if(this.skippedAcceptRequest > 0) {
             if(this.queueAcceptRequest(ring)) {
                 this.skippedAcceptRequest = 0
@@ -227,38 +260,11 @@ internal func (this: *HttpRingEngine) close() {
     }
 }
 
-func (this: *HttpRingEngine) queueTimeoutCheck(ring: *io_uring): bool {
-    var sqe = io_uring_get_sqe(ring)
-    if(!sqe) {
-        Error("Error creating SQE for timeout check\n")
-        goto error;
-    }
-
-    var ts: __kernel_timespec;
-    ts.tv_sec = this.config.timeoutCheckMSec / 1_000;
-    ts.tv_nsec = (this.config.timeoutCheckMSec % 1_000) * 1_000_000;
-
-    io_uring_prep_timeout(
-        sqe,
-        &ts,
-        0,
-        0 // IORING_TIMEOUT_ETIME_SUCCESS (not supported on all uring instances yet)
-    )
-
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.TIMEOUT,
-            .contextIndex = -1,
-        }.data
-    )
-
-    io_uring_submit(ring)
-    return true;
-
-error:
-    return false;
+internal func (this: *HttpRingEngine) free() {
+    this.close()
+    this.workers.free()
 }
+
 
 func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): bool {
     var index = this.requests.alloc()
@@ -311,10 +317,15 @@ error:
     return false;
 }
 
-func (this: *HttpRingEngine) queueReadHttpRequest(ring: *io_uring, clientSocket: i32, request: *RequestContext) {
-    Info("Reading HTTP request for socket: %d state: %s\n", clientSocket, RequestStateAsStr(request.state))
 
-    request.state = RequestState.READ_REQUEST_LINE
+func (this: *HttpRingEngine) queueHandleConnection(
+    ring: *io_uring,
+    clientSocket: i32,
+    request: *RequestContext
+) {
+    Info("Delagating to worker thread for socket: %d state: %s\n", clientSocket, RequestStateAsStr(request.state))
+
+    request.state = RequestState.CONNECTED
 
     var connection = &request.connection
     connection.socket.socket = clientSocket
@@ -325,301 +336,30 @@ func (this: *HttpRingEngine) queueReadHttpRequest(ring: *io_uring, clientSocket:
         goto error;
     }
 
-    var readBuffer = &connection.readBuffer
+    this.distribution = (this.distribution + 1) % (this.workers.length as (u64))
+    var worker = this.workers.getPtr(this.distribution as (i32))
 
-    // Listen for bytes from the client, store them in
-    // our readBuffer, this may take multiple reads to complete
-    // the full client socket payload
-    io_uring_prep_read(
+    request.workerIndex = worker.index
+
+    Info("Handing off to thread: %d with ring %d\n", worker.thread.id(), worker.ring.ring_fd)
+    // Dispatch to one of the worker threads about this connect
+    io_uring_prep_msg_ring(
         sqe,
-        clientSocket,
-        &readBuffer.buffer[readBuffer.length],
-        readBuffer.remaining(),
+        worker.ring.ring_fd,
+        0,
+        RingOperation {
+            .opcode = RingOpcode.MSG_RING,
+            .contextIndex = request.index,
+        }.data,
         0
     )
-
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.READ,
-            .contextIndex = request.index,
-        }.data
-    )
+    io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
     io_uring_submit(ring)
 
 error:
     return;
 }
 
-func (this: *HttpRingEngine) queueWriteHttpResponse(
-    ring: *io_uring,
-    request: *RequestContext) {
-
-    request.state = RequestState.WRITTEN_HTTP_RESPONSE
-
-    var connection = &request.connection
-    var response = &request.response
-
-    connection.bufferContents(response)
-
-    Info("Writing Http Response (%d): \n%.*s\n",
-        connection.handle(),
-        connection.writeBuffer.length, connection.writeBuffer.buffer)
-
-
-    var iov = iovec {
-        .iov_base = connection.writeBuffer.buffer,
-        .iov_len  = connection.writeBuffer.length,
-    }
-
-    var msg = msghdr {
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-    }
-
-
-    // Send the HTTP response to the client socket
-    var sqe = io_uring_get_sqe(ring)
-    if(!sqe) {
-        Error("Error creating SQE for socket: %d\n", connection.handle())
-        goto error;
-    }
-
-    var moreContents = (response.type != ResponseType.BODY)
-    io_uring_prep_sendmsg(
-        sqe,
-        connection.handle(),
-        &msg,
-        moreContents ? SocketFlags.MSG_MORE : 0
-    )
-
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.SENDMSG,
-            .contextIndex = request.index,
-        }.data
-    )
-
-    // If we have more contents, let's link
-    // this submission with the next one, so they are delivered
-    // in proper order
-    if(response.type == ResponseType.FILE) {
-        sqe.flags |= IOSQE_IO_LINK
-    }
-
-    request.submissions += 1
-    io_uring_submit(ring)
-
-    if(moreContents) {
-        if(response.type == ResponseType.FILE) {
-            request.state = RequestState.WRITTEN_HTTP_RESPONSE_MORE
-            this.queueWriteHttpFileResponse(ring, request)
-        }
-        else {
-            assert(response.type == ResponseType.STREAM)
-            request.state = RequestState.WRITING_STREAM
-        }
-    }
-
-error:
-    return;
-}
-
-func (this: *HttpRingEngine) queueWriteHttpStreamResponse(
-    ring: *io_uring,
-    request: *RequestContext) {
-
-    request.state = RequestState.WRITING_STREAM
-
-    var connection = &request.connection
-    var response = &request.response
-    if(!response.stream.__this) {
-        Error("No stream attached to connection: %d\n", connection.handle())
-        goto error;
-    }
-
-    var writeBuffer = &connection.writeBuffer
-    writeBuffer.clear()
-
-    // Read the stream contents
-    var numberOfBytesRead = response.stream.read(response.body.buffer, response.body.capacity)
-    var moreContents = numberOfBytesRead > 0
-
-    if(!moreContents) {
-        request.state = RequestState.WRITTEN_HTTP_RESPONSE
-        writeBuffer.append("0\r\n\r\n")
-    }
-    else {
-
-        if(!writeBuffer.reserve(numberOfBytesRead + 16)) {
-            // Error out as we are not able to meet capacity requirements
-            Error(
-                "Unable to handle stream of %d bytes due to out of memory for connection: %d\n",
-                numberOfBytesRead,
-                connection.handle()
-            )
-            goto error;
-        }
-
-        writeBuffer.append("%08X\r\n", numberOfBytesRead)
-        response.body.length = numberOfBytesRead
-        response.body.copyTo(writeBuffer.buffer + writeBuffer.length, numberOfBytesRead, false)
-
-        writeBuffer.length += numberOfBytesRead
-        writeBuffer.appendStrn("\r\n", 2)
-    }
-
-    // Send the bytes over the TCP connection
-    var iov = iovec {
-        .iov_base = connection.writeBuffer.buffer,
-        .iov_len  = connection.writeBuffer.length,
-    }
-
-    var msg = msghdr {
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-    }
-
-    var sqe = io_uring_get_sqe(ring)
-    if(!sqe) {
-        Error("Error creating SQE for socket: %d\n", connection.handle())
-        goto error;
-    }
-
-    io_uring_prep_sendmsg(
-        sqe,
-        connection.handle(),
-        &msg,
-        moreContents ? SocketFlags.MSG_MORE : 0
-    )
-
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.SENDMSG,
-            .contextIndex = request.index,
-        }.data
-    )
-
-    request.submissions += 1
-    io_uring_submit(ring)
-
-error:
-// TODO: Handler error scenarios, either send back an http 500 or if no memory kill the
-// client connection..
-    return;
-}
-
-func (this: *HttpRingEngine) queueWriteHttpFileResponse(
-    ring: *io_uring,
-    request: *RequestContext) {
-
-    request.state = RequestState.WRITTEN_FILE
-
-    var response = &request.response
-    var connection = &request.connection
-
-    var fileFd = response.fileHandle
-    var fileSize = response.fileSize
-    var socketFd = connection.handle()
-
-
-    /*
-        Must move the file on disk thru a pipe to client socket:
-        File => Pipe => ClientSocket
-    */
-
-    if(pipe2(request.pipes, O_CLOEXEC | O_NONBLOCK) < 0) {
-        Error("Error creating pipes!")
-        goto error;
-    }
-
-
-    // move the file to the pipe
-    {
-        var sqe = io_uring_get_sqe(ring)
-        if(!sqe) {
-            Error("Error creating SQE for socket: %d\n", socketFd)
-            goto error;
-        }
-
-        io_uring_prep_splice(
-            sqe,
-            response.fileHandle,
-            0_i64,
-            request.pipes[1],
-            -1_i64,
-            response.fileSize as (u32),
-            0
-        )
-        sqe.flags |= IOSQE_IO_LINK
-
-        io_uring_sqe_set_data64(
-            sqe,
-            RingOperation {
-                .opcode = RingOpcode.SPLICE,
-                .contextIndex = request.index,
-            }.data
-        )
-    }
-
-    // move the pipe to the socket
-    {
-        var sqe = io_uring_get_sqe(ring)
-        if(!sqe) {
-            Error("Error creating SQE for socket: %d\n", socketFd)
-            goto error;
-        }
-
-        io_uring_prep_splice(
-            sqe,
-            request.pipes[0],
-            -1_i64,
-            connection.handle(),
-            -1_i64,
-            response.fileSize as (u32),
-            0
-        )
-        sqe.flags |= IOSQE_IO_LINK
-
-        io_uring_sqe_set_data64(
-            sqe,
-            RingOperation {
-                .opcode = RingOpcode.SPLICE,
-                .contextIndex = request.index,
-            }.data
-        )
-    }
-
-    // close out the file
-    {
-        var sqe = io_uring_get_sqe(ring)
-        if(!sqe) {
-            Error("Error creating SQE for socket: %d\n", socketFd)
-            goto error;
-        }
-
-        io_uring_prep_close(
-            sqe,
-            response.fileHandle
-        )
-
-        io_uring_sqe_set_data64(
-            sqe,
-            RingOperation {
-                .opcode = RingOpcode.CLOSE,
-                .contextIndex = request.index,
-            }.data
-        )
-    }
-
-    request.submissions += 3
-    io_uring_submit(ring)
-
-error:
-    return;
-}
 
 func (this: *HttpRingEngine) queueCancelAndClose(
     ring: *io_uring,
@@ -646,8 +386,7 @@ func (this: *HttpRingEngine) queueCancelAndClose(
             request,
             0
         )
-
-        // sqe.flags |= IOSQE_IO_LINK
+        io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
 
         io_uring_sqe_set_data64(
             sqe,
@@ -680,607 +419,9 @@ error:
     return;
 }
 
-func (this: *HttpRingEngine) queueWriteWebSocket(
-    ring: *io_uring,
-    request: *RequestContext,
-    frame: *Frame) {
-
-    request.state = RequestState.WEB_SOCKET_OPERATION
-
-    var connection = &request.connection
-
-    var writeBuffer = &connection.writeBuffer
-    writeBuffer.clear()
-
-    frame.serialize(writeBuffer)
-
-    var moreContents = false
-
-    // Send the bytes over the TCP connection
-    var iov = iovec {
-        .iov_base = connection.writeBuffer.buffer,
-        .iov_len  = connection.writeBuffer.length,
-    }
-
-    var msg = msghdr {
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-    }
-
-    var sqe = io_uring_get_sqe(ring)
-    if(!sqe) {
-        Error("Error creating SQE for socket: %d\n", connection.handle())
-        goto error;
-    }
-
-    io_uring_prep_sendmsg(
-        sqe,
-        connection.handle(),
-        &msg,
-        moreContents ? SocketFlags.MSG_MORE : 0
-    )
-
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.SENDMSG,
-            .contextIndex = request.index,
-        }.data
-    )
-
-    request.submissions += 1
-    io_uring_submit(ring)
-
-error:
-// TODO: Handler error scenarios, either send back an http 500 or if no memory kill the
-// client connection..
-    return;
-}
-
-func (this: *HttpRingEngine) queueReadWebSocket(
-    ring: *io_uring,
-    request: *RequestContext) {
-
-    request.state = RequestState.WEB_SOCKET_OPERATION
-    var connection = &request.connection
-
-    var sqe = io_uring_get_sqe(ring)
-    if(!sqe) {
-        Error("Error creating SQE for socket: %d\n", connection.handle())
-        goto error;
-    }
-
-    var readBuffer = &connection.readBuffer
-
-    // Listen for bytes from the client, store them in
-    // our readBuffer, this may take multiple reads to complete
-    // the full client socket payload
-    io_uring_prep_read(
-        sqe,
-        connection.handle(),
-        &readBuffer.buffer[readBuffer.length],
-        readBuffer.remaining(),
-        0
-    )
-
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.READ,
-            .contextIndex = request.index,
-        }.data
-    )
-    io_uring_submit(ring)
-
-error:
-    return;
-}
-
-
-
-func (this: *HttpRingEngine) handleWebSocketFrame(
-    ring: *io_uring,
-    request: *RequestContext,
-    bytesRead: i32) : Status {
-
-    var requestAllocator = &request.requestAllocator.allocator
-    var connection = &request.connection
-    var readBuffer = &connection.readBuffer
-
-    readBuffer.length += bytesRead
-
-    var frame = Frame{}
-    var status = frame.parseHeader(readBuffer)
-    if(status != ParseStatus.OK) {
-        return Status.ERROR_WEB_SOCKET_FRAME
-    }
-
-    if(this.config.maxHttpBodySizeInBytes > 0 &&
-       frame.payloadLength > this.config.maxHttpBodySizeInBytes
-    ) {
-        Error(
-            "Web socket frame length of %lu bytes is greater than configured max of %lu bytes\n",
-            frame.payloadLength,
-            this.config.maxHttpBodySizeInBytes
-        )
-        return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
-    }
-
-    status = frame.parsePayload(readBuffer)
-    if(status != Status.OK) {
-        if(status == Status.ERROR_WEB_SOCKET_FRAME_LENGTH) {
-
-            // grow the buffer for the next read
-            if((readBuffer.capacity - frame.offset) < frame.payloadLength) {
-                var neededSpace = frame.payloadLength - readBuffer.capacity
-                readBuffer.reserve(
-                    readBuffer.capacity + neededSpace as (i32)
-                )
-                Error("TODO: Grow buffer!\n")
-                exit(1) // TODO
-            }
-
-            // Partial read, need to wait for more bytes
-            return Status.PARTIAL_WEB_SOCKET_DISPATCHING_READ
-        }
-        return Status.ERROR_WEB_SOCKET_FRAME
-    }
-
-    defer readBuffer.clear()
-
-    if(request.socketHandler.__this) {
-        if(!request.socketHandler.onFrame(&request.socketSession, frame)) {
-            return Status.ERROR_WEB_SOCKET_HANDLE_FRAME_ERROR
-        }
-    }
-
-    if(frame.opcode == Opcode.CLOSE) {
-        return Status.WEB_SOCKET_CLOSED
-    }
-
-    return Status.OK
-}
-
-func (this: *HttpRingEngine) handlePartialHttpRequest(
-    ring: *io_uring,
-    requestAllocator: *const Allocator,
-    request: *RequestContext,
-    bytesRead: i32) : Status {
-
-    var connection = &request.connection
-    var readBuffer = &connection.readBuffer
-
-    readBuffer.length += bytesRead
-
-    var buffer = readBuffer.asString()
-    if(request.requestLineIndex < 1) {
-        request.requestLineIndex = buffer.endIndexOf("\r\n")
-        if(request.requestLineIndex < 0) {
-            if(readBuffer.remaining() < this.config.maxHttpRequestLineSizeInBytes) {
-                readBuffer.reserve(readBuffer.capacity + this.config.maxHttpRequestLineSizeInBytes as (i32))
-            }
-
-            Info("RequestLine not fully read, dispatching another io-read for connection: %d\n", connection.handle())
-            return Status.PARTIAL_REQUEST_DISPATCHING_READ
-        }
-
-        if(request.requestLineIndex > this.config.maxHttpRequestLineSizeInBytes) {
-            Error("RequestLine of size '%d' exceeded max request limit of '%d' for connection: %d\n",
-                request.requestLineIndex,
-                this.config.maxHttpRequestLineSizeInBytes,
-                connection.handle()
-            )
-            return Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT
-        }
-    }
-
-    if(request.headerIndex < 1) {
-        request.headerIndex = buffer.endIndexOf("\r\n\r\n")
-        if(request.headerIndex < 0) {
-            if(readBuffer.remaining() < this.config.maxHttpHeaderSizeInBytes) {
-                readBuffer.reserve(readBuffer.capacity + this.config.maxHttpHeaderSizeInBytes as (i32))
-            }
-
-            Info("Headers not fully read, dispatching another io-read for connection: %d\n", connection.handle())
-            return Status.PARTIAL_REQUEST_DISPATCHING_READ
-        }
-
-        if(request.headerIndex > this.config.maxHttpHeaderSizeInBytes) {
-            Error("Headers of size '%d' exceeded max request limit of '%d' for connection: %d\n",
-                request.headerIndex,
-                this.config.maxHttpHeaderSizeInBytes,
-                connection.handle()
-            )
-            return Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT
-        }
-
-        request.bodyIndex = request.headerIndex
-    }
-
-    // we've read the http header part, now
-    // let's ensure we've read the entire body
-    var parser = HttpParser{}
-    parser.init(requestAllocator)
-
-    var input = String {
-        .buffer = readBuffer.buffer,
-        .length = request.headerIndex
-    }
-
-    var httpRequest = &request.request
-    var ok = parser.parse(input, httpRequest)
-    if(ok != ParseStatus.OK) {
-        Error("Error parsing http request: %s\n", ParseStatusAsStr(ok))
-        return Status.ERROR_PARSING_HTTP_REQUEST
-    }
-
-    if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
-        var status = parser.parseChunk(readBuffer.asString().substring(request.headerIndex), httpRequest)
-        if(status == ParseStatus.CHUNK_INCOMPLETE) {
-            Info("Chunked Body not fully read, dispatching another io-read for connection: %d\n", connection.handle())
-            return Status.PARTIAL_REQUEST_DISPATCHING_READ
-        }
-
-        if(status != ParseStatus.OK) {
-            Error("Error parsing chunk encoding for http request: %s\n", ParseStatusAsStr(status))
-            return Status.ERROR_PARSING_HTTP_REQUEST
-        }
-    }
-    else if(httpRequest.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) {
-        var bodyLength = httpRequest.bodyLength
-        if(this.config.maxHttpBodySizeInBytes > 0 && bodyLength > this.config.maxHttpBodySizeInBytes) {
-            Error("Body of size '%d' exceeded max request limit of '%d' for connection: %d\n",
-                bodyLength,
-                this.config.maxHttpBodySizeInBytes,
-                connection.handle()
-            )
-            return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
-        }
-
-        if(readBuffer.length - request.headerIndex < bodyLength) {
-            if(readBuffer.remaining() < 1 * MiB) {
-                readBuffer.reserve(readBuffer.capacity + 1 * MiB as (i32))
-            }
-
-            Info("Body not fully read, dispatching another io-read for connection: %d\n", connection.handle())
-            return Status.PARTIAL_REQUEST_DISPATCHING_READ
-        }
-    }
-    else  {
-        var body = readBuffer.asString().substring(request.headerIndex)
-        if(!body.empty()) {
-            // No chunked encoding and no content-length header, return back invalid request
-            return Status.ERROR_UNKNOWN_BODY_LENGTH
-        }
-    }
-
-    // we are ready to handle the full request
-    return Status.OK
-}
-
-func (this: *HttpRingEngine) handleHttpRequest(
-    ring: *io_uring,
-    requestAllocator: *const Allocator,
-    request: *RequestContext) : Status {
-
-    var connection = &request.connection
-
-    var buffer = &connection.readBuffer
-    Info("Begin handling HTTP Request for socket: %d\n%.*s\n", connection.handle(), buffer.length, buffer.buffer)
-
-    var parser = HttpParser{}
-    parser.init(requestAllocator)
-
-    var input = StringInit(buffer.buffer, buffer.length).substring(request.bodyIndex)
-
-    var httpRequest = &request.request;
-
-    // Since chunked encoding is handled by reading the full
-    // payload from the client, if this a chunked encoding from
-    // the client, don't use the raw readBuffer, instead use the
-    // chunkData buffer that contains the decoded data
-    if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
-        input = httpRequest.body.chunkData.asString()
-    }
-
-    var ok = parser.parseBody(input, httpRequest)
-    if(ok != ParseStatus.OK) {
-        Error("Error parsing http request: %s\n", ParseStatusAsStr(ok))
-        return Status.ERROR_PARSING_HTTP_REQUEST
-    }
-
-    connection.disableKeepAlive = httpRequest.flags & HttpFlags.DISABLE_KEEP_ALIVE
-
-    if(httpRequest.method == HttpMethod.GET) {
-        // the client is requesting a file
-        if(httpRequest.path.startsWith(this.fileServerPath)) {
-            return this.handleFileRequest(request, ring, httpRequest)
-        }
-
-        // the client is requesting an upgrade to a different
-        // protocol
-        if(httpRequest.flags & HttpFlags.UPGRADE_REQUEST) {
-            if(!(httpRequest.flags & HttpFlags.WEB_SOCKET_PROTOCOL)) {
-                this.sendBadRequest(request, Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL, ring)
-                return Status.OK
-            }
-
-            return this.handleWebSocketUpgrade(request, ring, httpRequest)
-        }
-    }
-
-    var requestContext = RequestHandlerContext {
-        .allocator = requestAllocator,
-        .request = httpRequest,
-        .response = &request.response,
-        .userData = null,
-        .match = null
-    }
-
-    var requestMatch: RouteMatch;
-    if(!this.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
-        this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
-    }
-    else {
-
-        var controller = requestMatch.controller
-        Info("Found a match: %.*s\n", requestMatch.template.template.length, requestMatch.template.template.buffer)
-
-        requestContext.userData = controller.userData
-        requestContext.match = &requestMatch
-
-        if(controller.callback(&requestContext) != 1) {
-            this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
-        }
-    }
-
-    this.queueWriteHttpResponse(ring, request)
-
-    Info("Done handling HTTP Request for socket: %d\n", connection.handle())
-    return Status.OK
-}
-
-import "std/crypto/sha1"
-import "std/encoding/base64"
-
-func (this: *HttpRingEngine) handleWebSocketUpgrade(
-    context: *RequestContext,
-    ring: *io_uring,
-    httpRequest: *HttpRequest
-) : Status {
-
-    // TODO: Compiler should support compile time toString...
-    var secKey = httpRequest.getHeaderValue(
-        StringInit("Sec-WebSocket-Key")
-    )
-
-    if (secKey.empty()) {
-        return Status.ERROR_WEB_SOCKET_SECURITY_KEY
-    }
-
-    var keyBuffer = [128]char;
-    var keyString = StringBufferInit(keyBuffer, 128)
-    keyString.append("%.*s%s", secKey.length, secKey.buffer, WEB_SOCKET_MAGIC)
-
-    var hashResult:[SHA1_BLOCK_SIZE]u8;
-    var ctx: sha1_ctx;
-
-    sha1_init(&ctx)
-    sha1_update(&ctx, keyString.cStr(), keyString.length)
-    sha1_final(&ctx, hashResult)
-
-    var keyAccept = context.requestAllocator.alloc(sizeof(:u8) * 64) as (*u8)
-    var bytesEncoded = base64_encode(hashResult, keyAccept, SHA1_BLOCK_SIZE, 0)
-
-    var response = &context.response
-    response.status = 101
-    response.type = ResponseType.BODY
-    response.addHeaderStr("Upgrade", "websocket")
-    response.addHeaderStr("Connection", "Upgrade")
-    response.addHeader(
-        StringInit("Sec-WebSocket-Accept"),
-        String{.buffer = keyAccept as (*const char), .length = bytesEncoded as (i32)}
-    )
-
-    context.socketSession.context = context
-    context.socketSession.engine = this
-
-    // TODO: Replace with proper Route handling
-    context.socketHandler = &testWebSocket
-    context.isWebSocket = true
-
-    var connection = &context.connection
-    var readBuffer = &connection.readBuffer
-    readBuffer.clear()
-
-    this.queueWriteHttpResponse(ring, context)
-    context.state = RequestState.WEB_SOCKET_UPGRADED
-    return Status.OK
-}
-
-func (this: *HttpRingEngine) handleFileRequest(
-    request: *RequestContext,
-    ring: *io_uring,
-    httpRequest: *HttpRequest
-) : Status {
-
-    // TODO: Cache File contents
-    var file: File;
-    var fileStatus = OpenFile(this.fileServerPath, httpRequest.path, &file)
-    if(fileStatus != Status.OK) {
-        return fileStatus
-    }
-
-    request.file = file.handle()
-
-    var response = &request.response;
-    response.status = 200
-    response.type = ResponseType.FILE
-    response.fileHandle = file.handle()
-    response.fileSize = file.length()
-
-    // TODO add mime type info..
-    this.queueWriteHttpResponse(ring, request)
-    return Status.OK
-}
-
-
-func (this: *HttpRingEngine) sendServerError(
-    request: *RequestContext,
-    status: Status,
-    ring: *io_uring
-) {
-    var httpRequest = HttpRequest{}
-    var requestContext = RequestHandlerContext {
-        .allocator = &request.requestAllocator.allocator,
-        .request = &httpRequest,
-        .response = &request.response,
-        .userData = null,
-        .match = null
-    }
-
-    this.serverError(requestContext, status)
-    this.queueWriteHttpResponse(ring, request)
-}
-
-func (this: *HttpRingEngine) serverError(
-    requestContext: *RequestHandlerContext,
-    status: Status
-) {
-    var request = requestContext.request
-    var response = requestContext.response
-
-    Error("Internal Error handling request: %s %.*s\n",
-        HttpMethodAsStr(request.method),
-        request.path.length, request.path.buffer
-    )
-
-    response.status = 500
-
-    if (this.errorHandler.__this) {
-        this.errorHandler.handle(
-            requestContext,
-            status
-        )
-    }
-    else {
-        // TODO add mime type info..
-        response.type = ResponseType.BODY
-        response.body.append("Internal Error handling the request.")
-    }
-}
-
-func (this: *HttpRingEngine) server404(
-    requestContext: *RequestHandlerContext,
-    status: Status
-) {
-    var request = requestContext.request
-    var response = requestContext.response
-
-    Error("Could not find match for request: %s %.*s\n",
-        HttpMethodAsStr(request.method),
-        request.path.length, request.path.buffer
-    )
-
-    response.status = 404
-
-    if (this.notFoundHandler.__this) {
-        this.notFoundHandler.handle(
-            requestContext,
-            status
-        )
-    }
-    else {
-        // TODO add mime type info..
-        response.type = ResponseType.BODY
-        response.body.append("No route bound.")
-    }
-}
-
-func (this: *HttpRingEngine) sendBadRequest(
-    context: *RequestContext,
-    status: Status,
-    ring: *io_uring
-) {
-    var httpRequest = HttpRequest{}
-    var requestContext = RequestHandlerContext {
-        .allocator = &context.requestAllocator.allocator,
-        .request = &httpRequest,
-        .response = &context.response,
-        .userData = null,
-        .match = null
-    }
-
-    var request = requestContext.request
-    var response = requestContext.response
-
-    Error("Bad request (%s) for request: %s %.*s\n",
-        StatusAsStr(status),
-        HttpMethodAsStr(request.method),
-        request.path.length, request.path.buffer
-    )
-
-    response.status = 400
-
-    // TODO add mime type info..
-    response.type = ResponseType.BODY
-    switch(status) {
-        case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
-            response.body.append(
-                "Request exceeded the max request limit of %d bytes for request line\n",
-                this.config.maxHttpRequestLineSizeInBytes
-            )
-            break
-        case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
-            response.body.append(
-                "Request exceeded the max request limit of %d bytes for headers\n",
-                this.config.maxHttpHeaderSizeInBytes
-            )
-            break
-        case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT:
-            response.status = 413
-            response.body.append(
-                "Request exceeded the max request limit of %d bytes for request body\n",
-                this.config.maxHttpBodySizeInBytes
-            )
-            break
-        case Status.ERROR_UNKNOWN_BODY_LENGTH: {
-            response.body.append(
-                "Missing Content-Length or Transfer-Encoding\n"
-            )
-            break
-        }
-        case Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL:
-            response.status = 426
-            response.body.append(
-                "The requested protocol upgrade is not supported by the server\n"
-            )
-            break
-        default: {
-            response.body.append(
-                "Bad request\n",
-                this.config.maxHttpBodySizeInBytes
-            )
-            break
-        }
-    }
-
-    this.queueWriteHttpResponse(ring, context)
-}
-
-
-func signal_handler(signo: i32) {
-    Info("Caught signal SIGPIPE for %d\n", signo)
-    if(signo == SIGINT) {
-        Info("Signal for shutdown received\n")
-        exit(0)
-    }
-}
-
 func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_uring_cqe, result: i32) : Status {
     if(!cqe) {
         Error("Error reading completion queue: %d\n", result)
-        exit(1)
         return Status.ERROR_IO_ERROR;
     }
 
@@ -1291,44 +432,7 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
             .data = io_uring_cqe_get_data64(cqe)
         }
 
-        if(operation.opcode == RingOpcode.TIMEOUT) {
-            this.checkTimeouts(ring)
-            return Status.OK;
-        }
-
-        var request = this.requests.get(operation.contextIndex)
-
-        switch(cqe.res) {
-            case -ENOENT:
-            case -EINVAL:
-            case -EALREADY: {
-                Info("Unable to cancel operations for socket: %d due to already in progress or not found\n",
-                    request.connection.handle()
-                )
-                request.finish(.forceClose = true)
-                break
-            }
-            case -ECANCELED: {
-                Info("Canceled request queue entries for socket: %d\n",
-                    request.connection.handle()
-                )
-                break
-            }
-            default: {
-                // otherwise we are experiencing a socket error
-                Error("Error with socket (%d) completion result: %d (%s)\n",
-                    request.connection.handle(),
-                    cqe.res,
-                    strerror(-cqe.res)
-                )
-
-                // Force close the connection
-                Error("Force closing connection: %d due to error\n", request.connection.handle())
-                this.queueCancelAndClose(ring, request)
-                break
-            }
-        }
-
+        // TODO
         return Status.OK
     }
 
@@ -1341,160 +445,25 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
 
     request.lastRequestTime = SystemTimeMSec()
     var connection = &request.connection
-    // Info("Setting lastRequest time for socket: %d to %f\n", connection.handle(), request.lastRequestTime)
 
     switch(request.state) {
         // Server just accepted a client connection
         case RequestState.CONNECTED: {
             this.acceptSubmits -= 1
-            Info("CONNECTED: socket: %d subs: %d index: %d accepts: %d\n", cqe.res, request.submissions, request.index, this.acceptSubmits)
+            Info("CONNECTED: socket: %d accepts: %d\n", cqe.res, this.acceptSubmits)
 
             // queue up another accept
             this.queueAcceptRequest(ring)
 
-            // queue up delegation of handling the http request
-            this.queueReadHttpRequest(ring, cqe.res, request)
+            // queue up delegation of handling the connection
+            this.queueHandleConnection(ring, cqe.res, request)
             break;
         }
-        // The connection was established, and we've read
-        // the client socket contents for the HTTP request line
-        case RequestState.READ_REQUEST_LINE: {
-            var bytesRead = cqe.res
-            Info("READ_REQUEST_LINE: %d for socket: %d subs: %d\n", bytesRead, connection.handle(), request.submissions)
-
-            // The client has gracefully closed their connection
-            if(bytesRead == 0) {
-                Info("Client Closed socket: %d\n", connection.handle())
-                this.queueCancelAndClose(ring, request)
-                break;
-            }
-
-            var allocator = &request.requestAllocator.allocator
-
-            var status = this.handlePartialHttpRequest(
-                ring,
-                allocator,
-                request,
-                bytesRead
-            )
-
-            if(status == Status.PARTIAL_REQUEST_DISPATCHING_READ) {
-                this.queueReadHttpRequest(ring, connection.handle(), request)
-                break
-            }
-
-            if(status != Status.OK) {
-                switch(status) {
-                    case Status.ERROR_UNKNOWN_BODY_LENGTH:
-                    case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
-                    case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
-                    case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT: {
-                        this.sendBadRequest(request, status, ring)
-                        break
-                    }
-                    default: {
-                        this.sendServerError(request, status, ring)
-                        break
-                    }
-                }
-                break
-            }
-
-            // queue up delegation of handling the http response
-            status = this.handleHttpRequest(
-                ring,
-                allocator,
-                request
-            )
-
-            if(status != Status.OK) {
-                Error("HTTP Request Bad Status %s with index: %d\n", StatusAsStr(status), request.index)
-                this.sendServerError(request, status, ring)
-            }
-            break
-        }
-        case RequestState.WEB_SOCKET_UPGRADED: {
-            Info("WebSocket upgraded for socket: %d\n", connection.handle())
-            this.queueReadWebSocket(ring, request)
-            break
-        }
-        case RequestState.WEB_SOCKET_OPERATION: {
-            switch(operation.opcode) {
-                case RingOpcode.SENDMSG: {
-                    Info("WebSocket write completed for socket: %d\n",
-                        connection.handle()
-                    )
-                    request.submissions -= 1
-                    break
-                }
-                case RingOpcode.READ: {
-                    var bytesRead = cqe.res
-                    Info("WebSocket read completed for socket: %d bytes read: %d\n",
-                        connection.handle(),
-                        bytesRead
-                    )
-
-                    // client closed the socket
-                    if(bytesRead == 0) {
-                        Info("Client Closed socket: %d\n", connection.handle())
-                        this.queueCancelAndClose(ring, request)
-                        break;
-                    }
-
-                    var status = this.handleWebSocketFrame(ring, request, bytesRead)
-                    if(status == Status.WEB_SOCKET_CLOSED) {
-                        Info("Client Closed socket: %d\n", connection.handle())
-                        this.queueCancelAndClose(ring, request)
-                        break;
-                    }
-                    else if(status != Status.OK) {
-                        Error(
-                            "Error handling websocket frame for socket: %d: %s\n",
-                            connection.handle(),
-                            StatusAsStr(status)
-                        )
-                        exit(1); // TODO
-                    }
-
-                    this.queueReadWebSocket(ring, request)
-                    break
-                }
-                default: {
-                    Error("Unsupported web socket operation: %s\n", RingOpcodeAsStr(operation.opcode))
-                    break
-                }
-            }
-            break
-        }
-        case RequestState.WRITING_STREAM: {
-            request.submissions -= 1
-
-            this.queueWriteHttpStreamResponse(ring, request)
-            break;
-        }
-        // The connection request was parsed, we have dispatched
-        // an http response to the client socket
-        case RequestState.WRITTEN_HTTP_RESPONSE:
-        case RequestState.WRITTEN_HTTP_RESPONSE_MORE:
-        case RequestState.WRITTEN_FILE: {
-            request.submissions -= 1
-            Info("%s for socket: %d subs: %d index: %d\n",
-                RequestStateAsStr(request.state),
-                connection.handle(),
-                request.submissions,
-                request.index
-            )
-
-            if(request.submissions <= 0) {
-                request.begin() // ready to begin another HTTP request cycle
-
-                // listen for close socket from client
-                this.queueReadHttpRequest(ring, connection.handle(), request)
-            }
-            break
-        }
-        case RequestState.UNKNOWN: {
-            Info("Request caught in unknown state for connection: %d\n", connection.handle())
+        case RequestState.PREP_CLOSE: {
+            //Info("Prep closing for connection: %d\n", connection.handle())
+            Info("Request is now closed for connection: %d\n", connection.handle())
+            this.queueCancelAndClose(ring, request)
+            request.finish(.forceClose = true)
             break
         }
         case RequestState.CLOSED: {
@@ -1503,6 +472,7 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
             break
         }
         default: {
+            Panic("Unknown state: %d\n", request.state)
             assert(false)
             break;
         }
@@ -1511,30 +481,11 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
     return Status.OK
 }
 
-func (this: *HttpRingEngine) checkTimeouts(ring: *io_uring) {
-    var timeout = this.config.keepAliveTimeoutInSec
-    const currentTime = SystemTimeMSec()
-
-    for(var i = 0; i < this.requests.pool.size(); i+=1) {
-        var context = this.requests.pool.getPtr(i)
-
-        if(context.inUse && context.connection.isConnected()) {
-            if(context.isWebSocket) {
-                timeout = 90 // TODO: Make this configurable via settings
-            }
-
-            if(context.lastRequestTime + timeout < currentTime) {
-                Info("HTTP connection timedout socket: %d (index: %d) -> %f vs. %f\n",
-                    context.connection.handle(),
-                    context.index,
-                    context.lastRequestTime + timeout,
-                    currentTime
-                )
-
-                this.queueCancelAndClose(ring, context)
-            }
-        }
+func signal_handler(signo: i32) {
+    Info("Caught signal SIGPIPE for %d\n", signo)
+    if(signo == SIGINT) {
+        Info("Signal for shutdown received\n")
+        printf("Shutdown completed\n")
+        exit(0)
     }
-
-    this.queueTimeoutCheck(ring)
 }

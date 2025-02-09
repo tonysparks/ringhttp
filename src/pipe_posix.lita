@@ -27,3 +27,32 @@ public const ENOENT:i32;
 
 @foreign
 public const EINVAL:i32;
+
+
+@foreign
+public struct pthread_barrier_t;
+
+@foreign
+public func pthread_barrier_init(barrier: *pthread_barrier_t, attr: *pthread_barrierattr_t, count: u32) : i32;
+
+@foreign
+public func pthread_barrier_destroy(barrier: *pthread_barrier_t) : i32;
+
+@foreign
+public func pthread_barrier_wait(barrier: *pthread_barrier_t) : i32;
+
+
+@foreign
+public struct pthread_barrierattr_t;
+
+@foreign
+public func pthread_barrierattr_init(attr: *pthread_barrierattr_t) : i32;
+
+@foreign
+public func pthread_barrierattr_destroy(attr: *pthread_barrierattr_t) : i32;
+
+@foreign
+public func pthread_barrierattr_getpshared(attr: *const pthread_barrierattr_t, pshared: *i32) : i32;
+
+@foreign
+public func pthread_barrierattr_setpshared(attr: *pthread_barrierattr_t, pshared: i32): i32;

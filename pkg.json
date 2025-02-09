@@ -43,7 +43,8 @@
         {
             "name" : "liburing",
             "version" : "v0.0.3",
-            "repo" : "https://github.com/tonysparks/liburing"
+            "repo": "file:///home/tony/projects/libio_uring"
+            // "repo" : "https://github.com/tonysparks/liburing"
         }
     ],
 

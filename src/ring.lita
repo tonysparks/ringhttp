@@ -1,0 +1,140 @@
+import "std/libc"
+import "std/thread"
+// posix specific
+import "std/net/posix_socket"
+import "pipe_posix"
+
+import "liburing"
+import "std/assert"
+
+@foreign
+func gettid(): i32;
+
+@foreign
+typedef u64 as pthread_t;
+
+@foreign
+struct pthread_attr_t;
+
+@foreign
+func pthread_attr_init(attr: *pthread_attr_t) : i32;
+
+@foreign
+func pthread_attr_destroy(attr: *pthread_attr_t) : i32;
+
+@foreign
+func pthread_attr_setdetachstate(attr: *pthread_attr_t, prop: i32) : i32;
+
+@foreign
+func pthread_create(thread: *pthread_t, attr: *pthread_attr_t, fn: func(*void) : *void, arg: *void) : i32;
+
+
+@foreign
+func pthread_self() : pthread_t;
+
+@foreign
+func pthread_cancel(thread: pthread_t) : i32;
+
+@foreign
+func pthread_exit(retval: *void);
+
+@foreign
+func pthread_detach(thread: pthread_t) : i32;
+
+@foreign
+func pthread_equal(a: pthread_t, b: pthread_t) : i32;
+
+@foreign
+func pthread_join(thread: pthread_t, retval: **void) : i32;
+
+
+const NTHREADS = 16
+const threads = [NTHREADS]pthread_t{};
+const rings = [NTHREADS]i32{};
+var barrier: pthread_barrier_t;
+
+func mainRing() {
+    var ring:io_uring;
+
+    var params = io_uring_params {}
+    params.flags |= IORING_SETUP_SINGLE_ISSUER
+    params.flags |= IORING_SETUP_COOP_TASKRUN
+    params.flags |= IORING_SETUP_DEFER_TASKRUN
+    params.flags |= IORING_SETUP_SUBMIT_ALL
+    //params.flags |= IORING_SETUP_SQPOLL
+    printf("Flags: %d\n", params.flags)
+
+    assert(0 == io_uring_queue_init_params(32, &ring, &params))
+    //assert(0 == io_uring_queue_init(256, &ring, 0))
+
+    var space = io_uring_sq_space_left(&ring)
+    var ready = io_uring_sq_ready(&ring)
+    printf("Space remaining: %d and ready: %d\n", space, ready)
+
+    pthread_barrier_init(&barrier, null, NTHREADS + 1)
+    defer pthread_barrier_destroy(&barrier)
+
+    for(var i = 0; i < NTHREADS; i+=1) {
+        pthread_create(&threads[i], null, Worker, &ring)
+    }
+    // //Worker(&ring)
+
+    printf("Waiting for worker threads\n")
+    pthread_barrier_wait(&barrier)
+    printf("Done waiting\n")
+    for(var i = 0; i < NTHREADS; i+=1) {
+        var cqe: *io_uring_cqe = null;
+        io_uring_wait_cqe(&ring, &cqe);
+        rings[i] = io_uring_cqe_get_data64(cqe) as (i32)
+        io_uring_cqe_seen(&ring, cqe)
+    }
+
+    printf("Done with main ring:\n")
+    for(var i = 0; i < NTHREADS; i+=1) {
+        printf("Worker ring: %d\n", rings[i])
+    }
+
+    io_uring_queue_exit(&ring)
+}
+
+func Worker(arg: *void) : *void {
+    var rootRing = arg as (*io_uring)
+
+    var ring:io_uring;
+
+    var params = io_uring_params {}
+    params.flags |= IORING_SETUP_SINGLE_ISSUER
+    params.flags |= IORING_SETUP_COOP_TASKRUN
+    params.flags |= IORING_SETUP_DEFER_TASKRUN
+    params.flags |= IORING_SETUP_ATTACH_WQ
+    params.wq_fd = rootRing.ring_fd
+
+    assert(0 == io_uring_queue_init_params(1024, &ring, &params))
+
+    printf("Worker thread waiting: %d\n", ring.ring_fd)
+    pthread_barrier_wait(&barrier)
+    printf("Worker thread completed waiting\n")
+
+    //ThreadSleepMSec(55000)
+    var sqe = io_uring_get_sqe(&ring)
+    var space = io_uring_sq_space_left(&ring)
+    printf("Space remaining: %d\n", space)
+    assert(sqe)
+    io_uring_prep_msg_ring(
+        sqe,
+        rootRing.ring_fd,
+        0,
+        ring.ring_fd,
+        0
+    )
+    io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
+    io_uring_submit(&ring)
+
+    io_uring_queue_exit(&ring)
+}
+
+@test
+func testRing() {
+    mainRing()
+    printf("Hello\n")
+}

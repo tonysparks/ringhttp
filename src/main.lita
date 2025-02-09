@@ -256,8 +256,8 @@ func main(len: i32, args: **char) : i32 {
     var config = HttpConfig {
         .allocator = defaultAllocator,
         .port = 8080_u16,
-        .maxThreads = 1,
-        .ioQueueDepth = 64,
+        .numThreads = 8,
+        .ioQueueDepth = 32,
         .isLogEnabled = true,
         .maxPoolSize = 512,
         .keepAliveTimeoutInSec = 5,
