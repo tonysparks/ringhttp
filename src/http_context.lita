@@ -100,13 +100,17 @@ internal struct RequestContext {
 }
 
 // begining of a HTTP request cycle
-internal func (this: *RequestContext) begin() {
+internal func (this: *RequestContext) begin(
+    clientSocket: i32
+) {
     this.requestAllocator.clear()
 
     var allocator = &this.requestAllocator.allocator
     this.connection.init(allocator)
     this.response.init(allocator)
     this.request.reset()
+
+    this.connection.socket.socket = clientSocket
 
     this.isWebSocket = false
 
@@ -115,7 +119,6 @@ internal func (this: *RequestContext) begin() {
     this.requestLineIndex = 0
     this.headerIndex = 0
     this.bodyIndex = 0
-    this.workerIndex = -1
 
     this.state = RequestState.CONNECTED
 
@@ -220,6 +223,9 @@ func (this: *ContextPool) grow(oldSize: i32, newSize: i32) {
         memset(itemPtr, 0, sizeof(:RequestContext))
 
         this.initializer.allocx<RequestContext>(itemPtr)
+        itemPtr.index = i
+        itemPtr.requests = this
+
         this.freeList.add(i)
     }
 }

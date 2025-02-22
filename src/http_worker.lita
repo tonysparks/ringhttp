@@ -56,10 +56,31 @@ internal func (this: *WorkerThread) init(engine: *HttpRingEngine, index: i32) {
 
     this.ring = io_uring{}
 
+    this.requests.init(
+        this.config.maxPoolSize,
+        this,
+        this.config.allocator
+    )
+
     this.thread = Thread{}
     if(this.thread.create(WorkerFunction, this, this.engine.safeAllocator) != ThreadStatus.SUCCESS) {
         Panic("Error creating worker thread\n")
     }
+}
+
+public func (this: *WorkerThread) allocx(context: *RequestContext) {
+    var maxMemInBytes = this.config.maxRequestSizeInBytes
+
+    var mem = this.engine.safeAllocator.alloc(maxMemInBytes * sizeof(:char))
+    if(!mem) {
+        // TODO: Handle out of memory more gracefully
+        Panic("out of memory!\n")
+    }
+
+    context.requestAllocator.init(
+        mem,
+        maxMemInBytes
+    )
 }
 
 /**
@@ -116,44 +137,20 @@ internal func WorkerFunction(arg: *void) : i32 {
     return 0
 }
 
-func (this: *WorkerThread) queueClosePrep(ring: *io_uring, request: *RequestContext) {
-    if(request.state == RequestState.CLOSED ||
-       request.state == RequestState.PREP_CLOSE) {
-        Info("Connection state already closed for connection: %d state: %s\n", request.connection.handle(), RequestStateAsStr(request.state))
+func (this: *WorkerThread) queueCancelAndClose(
+    ring: *io_uring,
+    request: *RequestContext) {
+
+    if(request.state == RequestState.CLOSED || !request.connection.isConnected()) {
         return;
     }
 
+    request.state = RequestState.CLOSED
+
+    var response = &request.response
     var connection = &request.connection
-    Info("Prepping for closing connection: %d\n", connection.handle())
 
-    // stop managing this context
-    request.workerIndex = -1
-
-    // Dispatch the actual close and reclaim on the main ring
-    {
-        var sqe = io_uring_get_sqe(ring)
-        if(!sqe) {
-            Error("Error creating SQE for close prep socket: %d\n", connection.handle())
-            goto error;
-        }
-
-        request.state = RequestState.PREP_CLOSE
-
-        io_uring_prep_msg_ring(
-            sqe,
-            this.engine.ring.ring_fd,
-            0,
-            RingOperation {
-                .opcode = RingOpcode.MSG_RING,
-                .contextIndex = request.index,
-            }.data,
-            0
-        )
-
-        io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS|IOSQE_IO_LINK)
-    }
-
-    // Cancel any pending requests on this workers ring
+    Info("Setting connection to closed: %d\n", connection.handle())
     {
         var sqe = io_uring_get_sqe(ring)
         if(!sqe) {
@@ -166,6 +163,7 @@ func (this: *WorkerThread) queueClosePrep(ring: *io_uring, request: *RequestCont
             request,
             0
         )
+        //io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
 
         io_uring_sqe_set_data64(
             sqe,
@@ -174,14 +172,15 @@ func (this: *WorkerThread) queueClosePrep(ring: *io_uring, request: *RequestCont
                 .contextIndex = request.index,
             }.data
         )
-
-        io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
     }
+
+    request.submissions += 1
     io_uring_submit(ring)
 
 error:
     return;
 }
+
 
 func (this: *WorkerThread) queueReadHttpRequest(ring: *io_uring, request: *RequestContext) {
 
@@ -1082,10 +1081,24 @@ func (this: *WorkerThread) sendBadRequest(
     this.queueWriteHttpResponse(ring, context)
 }
 
+func (this: *WorkerThread) handleAccept(clientSocket: i32) : *RequestContext {
+    var index = this.requests.alloc()
+    if(index < 0) {
+        Warn("RequestContext Pool has been exhausted, delaying accept request\n")
+        return null
+    }
+
+    var request = this.requests.get(index)
+    assert(request != null)
+
+    request.begin(clientSocket)
+    return request
+}
+
 func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_cqe, result: i32) : Status {
     if(!cqe) {
         Error("Error reading completion queue: %d\n", result)
-        exit(1)
+        exit(1) // TODO
         return Status.ERROR_IO_ERROR;
     }
 
@@ -1101,7 +1114,8 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
             return Status.OK;
         }
 
-        var request = this.engine.requests.get(operation.contextIndex)
+        var request = this.requests.get(operation.contextIndex)
+        assert(request != null)
 
         switch(cqe.res) {
             case -ENOENT:
@@ -1110,8 +1124,8 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
                 Info("Unable to cancel operations for socket: %d due to already in progress or not found\n",
                     request.connection.handle()
                 )
-                //request.finish(.forceClose = true)
-                this.queueClosePrep(ring, request)
+
+                request.finish(.forceClose = true)
                 break
             }
             case -ECANCELED: {
@@ -1130,7 +1144,7 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
 
                 // Force close the connection
                 Error("Force closing connection: %d due to error\n", request.connection.handle())
-                this.queueClosePrep(ring, request)
+                request.finish(.forceClose = true)
                 break
             }
         }
@@ -1142,7 +1156,17 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
         .data = io_uring_cqe_get_data64(cqe)
     }
 
-    var request = this.engine.requests.get(operation.contextIndex)
+    var request: *RequestContext = null
+
+    // if we are receiving a msg from the accept ring,
+    // handle the new connection
+    if(operation.opcode == RingOpcode.MSG_RING) {
+        request = this.handleAccept(operation.contextIndex)
+    }
+    else {
+        request = this.requests.get(operation.contextIndex)
+    }
+
     assert(request != null)
 
     request.lastRequestTime = SystemTimeMSec()
@@ -1165,7 +1189,7 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
             // The client has gracefully closed their connection
             if(bytesRead == 0) {
                 Info("Client Closed socket: %d\n", connection.handle())
-                this.queueClosePrep(ring, request)
+                this.queueCancelAndClose(ring, request)
                 break;
             }
 
@@ -1237,14 +1261,14 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
                     // client closed the socket
                     if(bytesRead == 0) {
                         Info("Client Closed socket: %d\n", connection.handle())
-                        this.queueClosePrep(ring, request)
+                        this.queueCancelAndClose(ring, request)
                         break;
                     }
 
                     var status = this.handleWebSocketFrame(ring, request, bytesRead)
                     if(status == Status.WEB_SOCKET_CLOSED) {
                         Info("Client Closed socket: %d\n", connection.handle())
-                        this.queueClosePrep(ring, request)
+                        this.queueCancelAndClose(ring, request)
                         break;
                     }
                     else if(status != Status.OK) {
@@ -1253,7 +1277,8 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
                             connection.handle(),
                             StatusAsStr(status)
                         )
-                        exit(1); // TODO
+                        // TODO
+                        assert(false)
                     }
 
                     this.queueReadWebSocket(ring, request)
@@ -1286,11 +1311,20 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
             )
 
             if(request.submissions <= 0) {
-                request.begin() // ready to begin another HTTP request cycle
+                request.begin(connection.handle()) // ready to begin another HTTP request cycle
 
                 // listen for close socket from client
                 this.queueReadHttpRequest(ring, request)
             }
+            break
+        }
+        case RequestState.CLOSED: {
+            Info("Request is forcing closed for connection: %d\n", connection.handle())
+            if (!connection.isConnected()) {
+                break
+            }
+
+            request.finish(.forceClose = true)
             break
         }
         case RequestState.UNKNOWN: {
@@ -1306,9 +1340,6 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
 
     return Status.OK
 }
-
-
-
 
 func (this: *WorkerThread) queueTimeoutCheck(ring: *io_uring): bool {
     var sqe = io_uring_get_sqe(ring)
@@ -1349,10 +1380,6 @@ func (this: *WorkerThread) checkTimeouts(ring: *io_uring) {
 
     for(var i = 0; i < this.requests.pool.size(); i+=1) {
         var context = this.requests.pool.getPtr(i)
-        if(context.workerIndex != this.index) {
-            continue
-        }
-
         if(context.inUse && context.connection.isConnected()) {
             if(context.isWebSocket) {
                 timeout = 90 // TODO: Make this configurable via settings
@@ -1366,7 +1393,7 @@ func (this: *WorkerThread) checkTimeouts(ring: *io_uring) {
                     currentTime
                 )
 
-                this.queueClosePrep(ring, context)
+                this.queueCancelAndClose(ring, context)
             }
         }
     }

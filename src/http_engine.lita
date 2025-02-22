@@ -81,7 +81,7 @@ internal struct HttpRingEngine {
     serverSocket: Socket
 
     ring: io_uring
-    requests: ContextPool
+    // requests: ContextPool
 
     distribution: u64
     skippedAcceptRequest: i32
@@ -99,6 +99,9 @@ internal struct HttpRingEngine {
 
     workers: Array<WorkerThread>
     barrier: pthread_barrier_t
+
+    clientAddr: sockaddr_in;
+    clientAddrLen: socklen_t;
 }
 
 internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
@@ -107,7 +110,7 @@ internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
 
     this.safeAllocator.init(config.allocator)
     this.router.init(config.allocator)
-    this.requests.init(config.maxPoolSize, this, config.allocator)
+    //this.requests.init(config.maxPoolSize, this, config.allocator)
 
     this.filterHandlers.init(32, config.allocator)
 
@@ -120,22 +123,6 @@ internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
     if(!config.disableSignal) {
         signal(SIGINT, signal_handler);
     }
-}
-
-public func (this: *HttpRingEngine) allocx(context: *RequestContext) {
-    var maxMemInBytes = this.config.maxRequestSizeInBytes
-
-    var mem = this.safeAllocator.alloc(maxMemInBytes * sizeof(:char))
-    if(!mem) {
-        // TODO: Handle out of memory more gracefully
-        Error("out of memory!\n")
-        exit(1);
-    }
-
-    context.requestAllocator.init(
-        mem,
-        maxMemInBytes
-    )
 }
 
 internal func (this: *HttpRingEngine) addRequestHandler(
@@ -221,17 +208,9 @@ internal func (this: *HttpRingEngine) listen() : Status {
 
     // prime the pump, dispatch a request for socket accepts
     this.queueAcceptRequest(ring)
-    // this.queueTimeoutCheck(ring)
 
     var cqe: *io_uring_cqe = null;
-
     while(this.isRunning.get()) {
-        if(this.skippedAcceptRequest > 0) {
-            if(this.queueAcceptRequest(ring)) {
-                this.skippedAcceptRequest = 0
-            }
-        }
-
         var result = io_uring_wait_cqe(ring, &cqe);
         defer if(cqe) io_uring_cqe_seen(ring, cqe)
 
@@ -267,24 +246,6 @@ internal func (this: *HttpRingEngine) free() {
 
 
 func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): bool {
-    var index = this.requests.alloc()
-    if(index < 0) {
-        this.skippedAcceptRequest += 1
-
-        Warn("RequestContext Pool has been exhausted, delaying accept request. Number of skipped requests: %d\n", this.skippedAcceptRequest)
-        goto error;
-    }
-
-    var request = this.requests.get(index)
-    assert(request != null)
-
-    request.begin()
-
-    request.index = index
-    request.requests = &this.requests
-    request.state = RequestState.CONNECTED
-
-
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
         var space = io_uring_sq_space_left(ring)
@@ -295,8 +256,8 @@ func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): bool {
     io_uring_prep_accept(
         sqe,
         this.serverSocket.handle(),
-        (&request.clientAddr) as (*sockaddr),
-        &request.clientAddrLen,
+        (&this.clientAddr) as (*sockaddr),
+        &this.clientAddrLen,
         0
     )
 
@@ -306,7 +267,7 @@ func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): bool {
         sqe,
         RingOperation {
             .opcode = RingOpcode.ACCEPT,
-            .contextIndex = request.index,
+            .contextIndex = 0,
         }.data
     )
     io_uring_submit(ring)
@@ -320,15 +281,9 @@ error:
 
 func (this: *HttpRingEngine) queueHandleConnection(
     ring: *io_uring,
-    clientSocket: i32,
-    request: *RequestContext
+    clientSocket: i32
 ) {
-    Info("Delagating to worker thread for socket: %d state: %s\n", clientSocket, RequestStateAsStr(request.state))
-
-    request.state = RequestState.CONNECTED
-
-    var connection = &request.connection
-    connection.socket.socket = clientSocket
+    Info("Delagating to worker thread for socket: %d\n", clientSocket)
 
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
@@ -339,9 +294,8 @@ func (this: *HttpRingEngine) queueHandleConnection(
     this.distribution = (this.distribution + 1) % (this.workers.length as (u64))
     var worker = this.workers.getPtr(this.distribution as (i32))
 
-    request.workerIndex = worker.index
-
     Info("Handing off to thread: %d with ring %d\n", worker.thread.id(), worker.ring.ring_fd)
+
     // Dispatch to one of the worker threads about this connect
     io_uring_prep_msg_ring(
         sqe,
@@ -349,7 +303,7 @@ func (this: *HttpRingEngine) queueHandleConnection(
         0,
         RingOperation {
             .opcode = RingOpcode.MSG_RING,
-            .contextIndex = request.index,
+            .contextIndex = clientSocket,
         }.data,
         0
     )
@@ -357,65 +311,7 @@ func (this: *HttpRingEngine) queueHandleConnection(
     io_uring_submit(ring)
 
 error:
-    return;
-}
-
-
-func (this: *HttpRingEngine) queueCancelAndClose(
-    ring: *io_uring,
-    request: *RequestContext) {
-
-    if(request.state == RequestState.CLOSED) {
-        return;
-    }
-
-    request.state = RequestState.CLOSED
-
-    var response = &request.response
-    var connection = &request.connection
-
-    {
-        var sqe = io_uring_get_sqe(ring)
-        if(!sqe) {
-            Error("Error creating SQE for socket: %d\n", connection.handle())
-            goto error;
-        }
-
-        io_uring_prep_cancel(
-            sqe,
-            request,
-            0
-        )
-        io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
-
-        io_uring_sqe_set_data64(
-            sqe,
-            RingOperation {
-                .opcode = RingOpcode.CANCEL,
-                .contextIndex = request.index,
-            }.data
-        )
-    }
-
-    // {
-    //     var sqe = io_uring_get_sqe(ring)
-    //     if(!sqe) {
-    //         Error("Error creating SQE for socket: %d\n", connection.handle())
-    //         goto error;
-    //     }
-
-    //     io_uring_prep_close(
-    //         sqe,
-    //         connection.handle()
-    //     )
-
-    //     io_uring_sqe_set_data(sqe, request)
-    // }
-
-    request.submissions += 1
-    io_uring_submit(ring)
-
-error:
+// TODO
     return;
 }
 
@@ -440,15 +336,8 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
         .data = io_uring_cqe_get_data64(cqe)
     }
 
-    var request = this.requests.get(operation.contextIndex)
-    assert(request != null)
-
-    request.lastRequestTime = SystemTimeMSec()
-    var connection = &request.connection
-
-    switch(request.state) {
-        // Server just accepted a client connection
-        case RequestState.CONNECTED: {
+    switch(operation.opcode) {
+        case RingOpcode.ACCEPT: {
             this.acceptSubmits -= 1
             Info("CONNECTED: socket: %d accepts: %d\n", cqe.res, this.acceptSubmits)
 
@@ -456,23 +345,11 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
             this.queueAcceptRequest(ring)
 
             // queue up delegation of handling the connection
-            this.queueHandleConnection(ring, cqe.res, request)
-            break;
-        }
-        case RequestState.PREP_CLOSE: {
-            //Info("Prep closing for connection: %d\n", connection.handle())
-            Info("Request is now closed for connection: %d\n", connection.handle())
-            this.queueCancelAndClose(ring, request)
-            request.finish(.forceClose = true)
-            break
-        }
-        case RequestState.CLOSED: {
-            Info("Request is now closed for connection: %d\n", connection.handle())
-            request.finish(.forceClose = true)
+            this.queueHandleConnection(ring, cqe.res)
             break
         }
         default: {
-            Panic("Unknown state: %d\n", request.state)
+            Panic("Unhandled accept ring opcode: %d\n", RingOpcodeAsStr(operation.opcode))
             assert(false)
             break;
         }
