@@ -113,6 +113,7 @@ internal func WorkerFunction(arg: *void) : i32 {
 
     pthread_barrier_wait(&workerThread.engine.barrier)
     workerThread.queueTimeoutCheck(ring)
+    io_uring_submit(ring)
 
     var cqe: *io_uring_cqe = null;
     while(workerThread.engine.isRunning.get()) {
@@ -175,7 +176,6 @@ func (this: *WorkerThread) queueCancelAndClose(
     }
 
     request.submissions += 1
-    io_uring_submit(ring)
 
 error:
     return;
@@ -216,7 +216,6 @@ func (this: *WorkerThread) queueReadHttpRequest(ring: *io_uring, request: *Reque
             .contextIndex = request.index,
         }.data
     )
-    io_uring_submit(ring)
 
 error:
     return;
@@ -280,7 +279,6 @@ func (this: *WorkerThread) queueWriteHttpResponse(
     }
 
     request.submissions += 1
-    io_uring_submit(ring)
 
     if(moreContents) {
         if(response.type == ResponseType.FILE) {
@@ -374,7 +372,6 @@ func (this: *WorkerThread) queueWriteHttpStreamResponse(
     )
 
     request.submissions += 1
-    io_uring_submit(ring)
 
 error:
 // TODO: Handler error scenarios, either send back an http 500 or if no memory kill the
@@ -486,7 +483,6 @@ func (this: *WorkerThread) queueWriteHttpFileResponse(
     }
 
     request.submissions += 3
-    io_uring_submit(ring)
 
 error:
     return;
@@ -541,7 +537,6 @@ func (this: *WorkerThread) queueWriteWebSocket(
     )
 
     request.submissions += 1
-    io_uring_submit(ring)
 
 error:
 // TODO: Handler error scenarios, either send back an http 500 or if no memory kill the
@@ -582,7 +577,6 @@ func (this: *WorkerThread) queueReadWebSocket(
             .contextIndex = request.index,
         }.data
     )
-    io_uring_submit(ring)
 
 error:
     return;
@@ -1367,7 +1361,6 @@ func (this: *WorkerThread) queueTimeoutCheck(ring: *io_uring): bool {
         }.data
     )
 
-    io_uring_submit(ring)
     return true;
 
 error:

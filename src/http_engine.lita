@@ -81,11 +81,9 @@ internal struct HttpRingEngine {
     serverSocket: Socket
 
     ring: io_uring
-    // requests: ContextPool
 
     distribution: u64
     skippedAcceptRequest: i32
-    acceptSubmits: i32
 
     isRunning: Atomic<bool>
 
@@ -253,15 +251,13 @@ func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): bool {
         goto error;
     }
 
-    io_uring_prep_accept(
+    io_uring_prep_multishot_accept(
         sqe,
         this.serverSocket.handle(),
         (&this.clientAddr) as (*sockaddr),
         &this.clientAddrLen,
         0
     )
-
-    this.acceptSubmits += 1
 
     io_uring_sqe_set_data64(
         sqe,
@@ -308,7 +304,6 @@ func (this: *HttpRingEngine) queueHandleConnection(
         0
     )
     io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
-    io_uring_submit(ring)
 
 error:
 // TODO
@@ -338,11 +333,10 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
 
     switch(operation.opcode) {
         case RingOpcode.ACCEPT: {
-            this.acceptSubmits -= 1
-            Info("CONNECTED: socket: %d accepts: %d\n", cqe.res, this.acceptSubmits)
+            Info("CONNECTED: client socket: %d\n", cqe.res)
 
             // queue up another accept
-            this.queueAcceptRequest(ring)
+            //this.queueAcceptRequest(ring)
 
             // queue up delegation of handling the connection
             this.queueHandleConnection(ring, cqe.res)
