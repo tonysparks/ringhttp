@@ -9,6 +9,8 @@ import "http_request"
 import "http_response"
 import "http_common"
 import "http_parser"
+import "http_websocket"
+import "http_server"
 
 public struct RequestHandlerContext {
     allocator: *const Allocator
@@ -17,19 +19,31 @@ public struct RequestHandlerContext {
     userData: *void
 
     match: *RouteMatch
-}
 
-public struct HttpController {
-    userData: *void
-    callback: func(*RequestHandlerContext) : i32;
+    // internal structure
+    sessionIndex: i32
 }
 
 public struct RouteMatch {
     template: *HttpPathTemplate
     values: HttpPathValues
-    controller: HttpController
+    handler: RequestHandler
 }
 
+public enum RequestHandlerType {
+    HTTP_REQUEST,
+    WEB_SOCKET,
+}
+
+public struct RequestHandler {
+    type: RequestHandlerType
+    userData: *void
+
+    union {
+        controller: HttpController
+        webSocket: WebSocketController
+    }
+}
 
 internal const MAX_METHODS = 10
 
@@ -39,7 +53,7 @@ internal struct Router {
 
 struct Route {
     template: HttpPathTemplate
-    controller: HttpController
+    handler: RequestHandler
 }
 
 internal func (this: *Router) init(allocator: *const Allocator) {
@@ -57,7 +71,7 @@ internal func (this: *Router) free() {
 internal func (this: *Router) register(
     method: HttpMethod,
     route: *const char,
-    controller: HttpController) : bool {
+    handler: RequestHandler) : bool {
 
     var template: HttpPathTemplate;
     if(ParsePathTemplateStr(route, &template) != ParseStatus.OK) {
@@ -67,7 +81,7 @@ internal func (this: *Router) register(
 
     this.methods[method].add(Route {
         .template = template,
-        .controller = controller
+        .handler = handler
     })
 
     return true
@@ -88,7 +102,7 @@ internal func (this: *Router) match(
 
         if(CheckMatch(&route.template, path)) {
             result.template = &route.template
-            result.controller = route.controller
+            result.handler = route.handler
 
             return ParsePathValues(&route.template, path, &result.values) == ParseStatus.OK
         }

@@ -40,7 +40,7 @@
         const closeButton = document.getElementById('closeButton');
 
         // Create WebSocket connection
-        const ws = new WebSocket('ws://localhost:8080'); // Change URL as needed
+        const ws = new WebSocket('ws://localhost:8080/websocket'); // Change URL as needed
 
         // Append messages to the chat div
         function appendMessage(message, type = 'received') {

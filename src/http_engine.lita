@@ -35,42 +35,6 @@ import "http_context"
 import "http_websocket"
 import "http_worker"
 
-/*
-struct TestWebSocket {
-
-}
-var testWebSocket = TestWebSocket{}
-public func (this: *TestWebSocket) onFrame(session: *WebSocketSession, frame: *Frame) : i32 {
-    var text = StringInit(.buffer = frame.payload, .length = frame.payloadLength as (i32))
-    printf("Text: '%.*s'\n", text.length, text.buffer)
-
-    var writeBuffer = StringBuilderInit(256, session.context.requestAllocator.allocator)
-    writeBuffer.clear()
-
-    writeBuffer.append("Server says: '%.*s'\n", text.length, text.buffer)
-
-    var out = Frame{}
-    out.isFinal = true
-    out.masked = false
-    out.payload = writeBuffer.buffer
-    out.payloadLength = writeBuffer.length
-    out.opcode = Opcode.TEXT
-
-
-    return session.send(
-        &out
-    )
-}
-
-public func (this: *WebSocketSession) send(frame: *Frame) : i32 {
-    this.engine.queueWriteWebSocket(&this.engine.ring, this.context, frame)
-    // TODO: Error handling
-    return 1
-}
-
-public func (this: *WebSocketSession) close() {
-
-}*/
 
 @foreign
 func strerror(errnum: i32) : *const char;
@@ -108,7 +72,6 @@ internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
 
     this.safeAllocator.init(config.allocator)
     this.router.init(config.allocator)
-    //this.requests.init(config.maxPoolSize, this, config.allocator)
 
     this.filterHandlers.init(32, config.allocator)
 
@@ -126,9 +89,9 @@ internal func (this: *HttpRingEngine) init(config: *HttpConfig) {
 internal func (this: *HttpRingEngine) addRequestHandler(
     method: HttpMethod,
     path: *const char,
-    controller: *HttpController
+    handler: RequestHandler
 ) : Status {
-    if(!this.router.register(method, path, controller)) {
+    if(!this.router.register(method, path, handler)) {
         return Status.ERROR_UNABLE_TO_REGISTER_HANDLER
     }
 

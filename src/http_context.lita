@@ -15,7 +15,7 @@ import "http_common"
 import "http_request"
 import "http_response"
 import "http_websocket"
-
+import "http_server"
 
 
 public trait Initializer<T> {
@@ -43,7 +43,7 @@ internal union RingOperation {
 }
 
 @asStr
-internal enum RequestState {
+internal enum SessionState {
     UNKNOWN,
     CONNECTED,
     READ_REQUEST_LINE,
@@ -59,9 +59,9 @@ internal enum RequestState {
     CLOSED,
 }
 
-internal struct RequestContext {
+internal struct SessionContext {
     index: i32
-    requests: *ContextPool
+    sessions: *ContextPool
 
     // if this is currently in use by a request
     inUse: bool
@@ -73,9 +73,9 @@ internal struct RequestContext {
     connection: HttpConnection
     request: HttpRequest
     response: HttpResponse
-    state: RequestState
+    state: SessionState
 
-    socketHandler: WebSocketHandler
+    socketHandler: WebSocketController
     socketSession: WebSocketSession
 
     requestLineIndex: i32
@@ -100,7 +100,7 @@ internal struct RequestContext {
 }
 
 // begining of a HTTP request cycle
-internal func (this: *RequestContext) begin(
+internal func (this: *SessionContext) begin(
     clientSocket: i32
 ) {
     this.requestAllocator.clear()
@@ -111,6 +111,7 @@ internal func (this: *RequestContext) begin(
     this.request.reset()
 
     this.connection.socket.socket = clientSocket
+    this.socketSession.context = this
 
     this.isWebSocket = false
 
@@ -120,7 +121,7 @@ internal func (this: *RequestContext) begin(
     this.headerIndex = 0
     this.bodyIndex = 0
 
-    this.state = RequestState.CONNECTED
+    this.state = SessionState.CONNECTED
 
     if(this.pipes[0] > 0) {
         close(this.pipes[0])
@@ -142,7 +143,7 @@ internal func (this: *RequestContext) begin(
 }
 
 // ending of an HTTP request cycle, with optional force connection close
-internal func (this: *RequestContext) finish(forceClose: bool = false) {
+internal func (this: *SessionContext) finish(forceClose: bool = false) {
     Info("Finishing Request for socket: %d\n", this.connection.handle())
 
     this.isWebSocket = false
@@ -166,7 +167,7 @@ internal func (this: *RequestContext) finish(forceClose: bool = false) {
     }
     this.file = 0
 
-    this.state = RequestState.UNKNOWN
+    this.state = SessionState.UNKNOWN
 
     this.connection.reset()
     this.response.reset()
@@ -174,32 +175,32 @@ internal func (this: *RequestContext) finish(forceClose: bool = false) {
 
     if(!this.isKeepAlive() || forceClose) {
         this.connection.close()
-        this.requests.dealloc(this.index)
+        this.sessions.dealloc(this.index)
     }
 }
 
-internal func (this: *RequestContext) free() {
+internal func (this: *SessionContext) free() {
     this.finish(.forceClose = true)
 
     this.connection.free()
     this.response.free()
 }
 
-internal func (this: *RequestContext) isKeepAlive(): bool {
+internal func (this: *SessionContext) isKeepAlive(): bool {
     return !this.connection.disableKeepAlive
 }
 
 
 public struct ContextPool {
-    pool: Array<RequestContext>
+    pool: Array<SessionContext>
     freeList: Array<i32>
 
-    initializer: Initializer<RequestContext>
+    initializer: Initializer<SessionContext>
 }
 
 public func (this: *ContextPool) init(
     maxSize: i32,
-    initializer: Initializer<RequestContext>,
+    initializer: Initializer<SessionContext>,
     allocator: *const Allocator
 ) {
     this.initializer = initializer
@@ -216,15 +217,15 @@ public func (this: *ContextPool) free() {
 
 func (this: *ContextPool) grow(oldSize: i32, newSize: i32) {
     for(var i = oldSize; i < newSize; i+=1) {
-        var item: RequestContext;
+        var item: SessionContext;
         this.pool.add(item)
 
         var itemPtr = this.pool.lastPtr()
-        memset(itemPtr, 0, sizeof(:RequestContext))
+        memset(itemPtr, 0, sizeof(:SessionContext))
 
-        this.initializer.allocx<RequestContext>(itemPtr)
+        this.initializer.allocx<SessionContext>(itemPtr)
         itemPtr.index = i
-        itemPtr.requests = this
+        itemPtr.sessions = this
 
         this.freeList.add(i)
     }
@@ -244,7 +245,7 @@ public func (this: *ContextPool) alloc() : i32 {
     return index
 }
 
-public func (this: *ContextPool) get(index: i32) : *RequestContext {
+public func (this: *ContextPool) get(index: i32) : *SessionContext {
     if(index < 0 || index >= this.freeList.capacity) {
         return null;
     }

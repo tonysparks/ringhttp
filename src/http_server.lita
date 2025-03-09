@@ -20,18 +20,68 @@ import "http_response"
 import "http_file"
 import "http_engine"
 import "http_router"
+import "http_websocket"
 
-public struct HttpServer {
-    engine: HttpRingEngine
-}
 
+@doc("Catch all http handler for 404, 5xx")
 public trait HttpHandler {
     handle: func(*RequestHandlerContext, Status) : i32;
 }
 
+@doc("Middleware interceptor - allows for injecting in custom handling of http requests")
 public trait HttpFilterHandler {
     handleFilter: func(*RequestHandlerContext, *HttpFilterHandler) : i32;
 }
+
+@doc("Controller that can be bound to an http route")
+public struct HttpController {
+    @doc("Handle an http request from the client")
+    callback: func(*RequestHandlerContext) : i32;
+}
+
+@doc("Handler for web socket connection")
+public struct WebSocketController {
+    @doc("Handle receiving web socket frames from the client")
+    callback: func(*WebSocketSession, *Frame) : i32;
+}
+
+
+/*
+struct TestWebSocket {
+
+}
+var testWebSocket = TestWebSocket{}
+public func (this: *TestWebSocket) onFrame(session: *WebSocketSession, frame: *Frame) : i32 {
+    var text = StringInit(.buffer = frame.payload, .length = frame.payloadLength as (i32))
+    printf("Text: '%.*s'\n", text.length, text.buffer)
+
+    var writeBuffer = StringBuilderInit(256, session.context.requestAllocator.allocator)
+    writeBuffer.clear()
+
+    writeBuffer.append("Server says: '%.*s'\n", text.length, text.buffer)
+
+    var out = Frame{}
+    out.isFinal = true
+    out.masked = false
+    out.payload = writeBuffer.buffer
+    out.payloadLength = writeBuffer.length
+    out.opcode = Opcode.TEXT
+
+
+    return session.send(
+        &out
+    )
+}
+
+public func (this: *WebSocketSession) send(frame: *Frame) : i32 {
+    this.engine.queueWriteWebSocket(&this.engine.ring, this.context, frame)
+    // TODO: Error handling
+    return 1
+}
+
+public func (this: *WebSocketSession) close() {
+
+}*/
 
 public struct HttpConfig {
     allocator: *const Allocator //= defaultAllocator
@@ -71,6 +121,10 @@ public struct HttpConfig {
 }
 
 
+public struct HttpServer {
+    engine: HttpRingEngine
+}
+
 public func (this: *HttpServer) errorHandler(errorHandler: HttpHandler) {
     this.engine.setErrorHandler(errorHandler)
 }
@@ -79,12 +133,39 @@ public func (this: *HttpServer) notFoundHandler(notFoundHandler: HttpHandler) {
     this.engine.setNotFoundHandler(notFoundHandler)
 }
 
+public func (this: *HttpServer) addHttpController(
+    method: HttpMethod,
+    path: *const char,
+    userData: *void,
+    controller: HttpController) : Status {
+
+    var handler = RequestHandler {
+        .type = RequestHandlerType.HTTP_REQUEST,
+        .userData = userData,
+        .controller = controller
+    }
+    return this.addRequestHandler(method, path, handler)
+}
+
+public func (this: *HttpServer) addWebSocketController(
+    path: *const char,
+    userData: *void,
+    controller: WebSocketController) : Status {
+
+    var handler = RequestHandler {
+        .type = RequestHandlerType.WEB_SOCKET,
+        .userData = userData,
+        .webSocket = controller
+    }
+    return this.addRequestHandler(HttpMethod.GET, path, handler)
+}
+
 public func (this: *HttpServer) addRequestHandler(
     method: HttpMethod,
     path: *const char,
-    controller: HttpController) : Status {
+    handler: RequestHandler) : Status {
 
-    if(!this.engine.router.register(method, path, controller)) {
+    if(!this.engine.router.register(method, path, handler)) {
         return Status.ERROR_UNABLE_TO_REGISTER_HANDLER
     }
 

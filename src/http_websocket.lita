@@ -1,21 +1,37 @@
 import "std/libc"
 import "std/string/builder"
 import "std/string"
+import "std/mem"
 
 import "http_common"
 import "http_context"
 import "http_engine"
+import "http_worker"
+import "http_router"
 
 public const WEB_SOCKET_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-public trait WebSocketHandler {
-    onFrame: func(*WebSocketSession, *Frame) : i32;
+@doc("A client <-> server session which allows for sending/closing from the server")
+public struct WebSocketSession {
+    worker: *WorkerThread
+    context: *SessionContext
+
+    // public data
+    allocator: *const Allocator
+    userData: *void
 }
 
-public struct WebSocketSession {
-    engine: *HttpRingEngine
-    context: *RequestContext
+public func (this: *WebSocketSession) send(frame: *Frame) : i32 {
+    this.worker.sendWebSocketFrame(this.context, frame)
+
+    // TODO: Error handling
+    return 1
 }
+
+public func (this: *WebSocketSession) close() {
+    // TODO: Close out the socket connection
+}
+
 
 public enum Opcode {
     UNKNOWN = -1,

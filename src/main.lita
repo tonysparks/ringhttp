@@ -12,9 +12,6 @@ import "std/io"
 
 import "http_ring"
 
-
-
-
 struct FileStream {
     file: File
 }
@@ -71,6 +68,27 @@ func (this: *ServerHandler) handle(
         context.request.path.buffer
     )
     return 1
+}
+
+func TestWebSocketController(session: *WebSocketSession, frame: *Frame) : i32 {
+    var text = StringInit(.buffer = frame.payload, .length = frame.payloadLength as (i32))
+    printf("Text: '%.*s'\n", text.length, text.buffer)
+
+    var writeBuffer = StringBuilderInit(256, session.allocator)
+    writeBuffer.clear()
+
+    writeBuffer.append("Server says: '%.*s'\n", text.length, text.buffer)
+
+    var out = Frame{}
+    out.isFinal = true
+    out.masked = false
+    out.payload = writeBuffer.buffer
+    out.payloadLength = writeBuffer.length
+    out.opcode = Opcode.TEXT
+
+    return session.send(
+        &out
+    )
 }
 
 
@@ -270,39 +288,47 @@ func main(len: i32, args: **char) : i32 {
     server.errorHandler(&handler)
     server.notFoundHandler(&handler)
 
-    server.addRequestHandler(
+    server.addHttpController(
         HttpMethod.GET,
         "/echo",
+        &handler,
         HttpController {
-            .userData = &handler,
             .callback = EchoRequestHandler
         }
     )
 
-    server.addRequestHandler(
+    server.addHttpController(
         HttpMethod.POST,
         "/submit",
+        &handler,
         HttpController {
-            .userData = &handler,
             .callback = SubmitRequestHandler
         }
     )
 
-    server.addRequestHandler(
+    server.addHttpController(
         HttpMethod.GET,
         "/download",
+        &handler,
         HttpController {
-            .userData = &handler,
             .callback = DownloadRequestHandler
         }
     )
 
-    server.addRequestHandler(
+    server.addHttpController(
         HttpMethod.GET,
         "/path/{id}",
+        &handler,
         HttpController {
-            .userData = &handler,
             .callback = PathRequestHandler
+        }
+    )
+
+    server.addWebSocketController(
+        "/websocket",
+        &handler,
+        WebSocketController {
+            .callback = TestWebSocketController
         }
     )
 
