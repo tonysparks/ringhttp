@@ -45,44 +45,6 @@ public struct WebSocketController {
     callback: func(*WebSocketSession, *Frame) : i32;
 }
 
-
-/*
-struct TestWebSocket {
-
-}
-var testWebSocket = TestWebSocket{}
-public func (this: *TestWebSocket) onFrame(session: *WebSocketSession, frame: *Frame) : i32 {
-    var text = StringInit(.buffer = frame.payload, .length = frame.payloadLength as (i32))
-    printf("Text: '%.*s'\n", text.length, text.buffer)
-
-    var writeBuffer = StringBuilderInit(256, session.context.requestAllocator.allocator)
-    writeBuffer.clear()
-
-    writeBuffer.append("Server says: '%.*s'\n", text.length, text.buffer)
-
-    var out = Frame{}
-    out.isFinal = true
-    out.masked = false
-    out.payload = writeBuffer.buffer
-    out.payloadLength = writeBuffer.length
-    out.opcode = Opcode.TEXT
-
-
-    return session.send(
-        &out
-    )
-}
-
-public func (this: *WebSocketSession) send(frame: *Frame) : i32 {
-    this.engine.queueWriteWebSocket(&this.engine.ring, this.context, frame)
-    // TODO: Error handling
-    return 1
-}
-
-public func (this: *WebSocketSession) close() {
-
-}*/
-
 public struct HttpConfig {
     allocator: *const Allocator //= defaultAllocator
     port: u16 = 8080_u16
@@ -123,21 +85,29 @@ public struct HttpConfig {
 
 public struct HttpServer {
     engine: HttpRingEngine
+    config: *HttpConfig
+
+    router: Router
+
+    errorHandler: HttpHandler
+    notFoundHandler: HttpHandler
+    filterHandlers: Array<HttpFilterHandler>
 }
 
-public func (this: *HttpServer) errorHandler(errorHandler: HttpHandler) {
-    this.engine.setErrorHandler(errorHandler)
+public func (this: *HttpServer) setErrorHandler(errorHandler: HttpHandler) {
+    this.errorHandler = errorHandler
 }
 
-public func (this: *HttpServer) notFoundHandler(notFoundHandler: HttpHandler) {
-    this.engine.setNotFoundHandler(notFoundHandler)
+public func (this: *HttpServer) setNotFoundHandler(notFoundHandler: HttpHandler) {
+    this.notFoundHandler = notFoundHandler
 }
 
 public func (this: *HttpServer) addHttpController(
     method: HttpMethod,
     path: *const char,
     userData: *void,
-    controller: HttpController) : Status {
+    controller: HttpController
+) : Status {
 
     var handler = RequestHandler {
         .type = RequestHandlerType.HTTP_REQUEST,
@@ -150,7 +120,8 @@ public func (this: *HttpServer) addHttpController(
 public func (this: *HttpServer) addWebSocketController(
     path: *const char,
     userData: *void,
-    controller: WebSocketController) : Status {
+    controller: WebSocketController
+) : Status {
 
     var handler = RequestHandler {
         .type = RequestHandlerType.WEB_SOCKET,
@@ -163,9 +134,9 @@ public func (this: *HttpServer) addWebSocketController(
 public func (this: *HttpServer) addRequestHandler(
     method: HttpMethod,
     path: *const char,
-    handler: RequestHandler) : Status {
-
-    if(!this.engine.router.register(method, path, handler)) {
+    handler: RequestHandler
+) : Status {
+    if(!this.router.register(method, path, handler)) {
         return Status.ERROR_UNABLE_TO_REGISTER_HANDLER
     }
 
@@ -173,19 +144,32 @@ public func (this: *HttpServer) addRequestHandler(
 }
 
 public func (this: *HttpServer) init(config: *HttpConfig) : Status {
-    this.engine.init(config)
+    this.config = config
+
+    this.router.init(config.allocator)
+
+    this.filterHandlers.init(32, config.allocator)
+
+    this.engine.init(this)
     return Status.OK
 }
 
 public func (this: *HttpServer) start() : Status {
-    if(this.engine.config.isLogEnabled) {
-        LogInit(this.engine.config.logFilePath)
+    if(this.config.isLogEnabled) {
+        LogInit(this.config.logFilePath)
     }
 
-    Info("listening on port: %d\n", this.engine.config.port)
+    Info("listening on port: %d\n", this.config.port)
     return this.engine.listen()
 }
 
 public func (this: *HttpServer) close() {
+    this.engine.close()
+}
+
+public func (this: *HttpServer) free() {
+    this.filterHandlers.free()
+    this.router.free()
+
     this.engine.close()
 }

@@ -44,14 +44,14 @@ internal struct WorkerThread {
     thread: Thread
     index: i32
 
-    engine: *HttpRingEngine
+    server: *HttpServer
     config: *HttpConfig
     sessions: ContextPool
 }
 
-internal func (this: *WorkerThread) init(engine: *HttpRingEngine, index: i32) {
-    this.engine = engine
-    this.config = engine.config
+internal func (this: *WorkerThread) init(server: *HttpServer, index: i32) {
+    this.server = server
+    this.config = server.config
     this.index = index
 
     this.ring = io_uring{}
@@ -63,7 +63,7 @@ internal func (this: *WorkerThread) init(engine: *HttpRingEngine, index: i32) {
     )
 
     this.thread = Thread{}
-    if(this.thread.create(WorkerFunction, this, this.engine.safeAllocator) != ThreadStatus.SUCCESS) {
+    if(this.thread.create(WorkerFunction, this, this.server.engine.safeAllocator) != ThreadStatus.SUCCESS) {
         Panic("Error creating worker thread\n")
     }
 }
@@ -71,7 +71,7 @@ internal func (this: *WorkerThread) init(engine: *HttpRingEngine, index: i32) {
 public func (this: *WorkerThread) allocx(context: *SessionContext) {
     var maxMemInBytes = this.config.maxRequestSizeInBytes
 
-    var mem = this.engine.safeAllocator.alloc(maxMemInBytes * sizeof(:char))
+    var mem = this.server.engine.safeAllocator.alloc(maxMemInBytes * sizeof(:char))
     if(!mem) {
         // TODO: Handle out of memory more gracefully
         Panic("out of memory!\n")
@@ -102,7 +102,7 @@ internal func WorkerFunction(arg: *void) : i32 {
     params.flags |= IORING_SETUP_COOP_TASKRUN
     params.flags |= IORING_SETUP_DEFER_TASKRUN
     params.flags |= IORING_SETUP_ATTACH_WQ
-    params.wq_fd = workerThread.engine.ring.ring_fd
+    params.wq_fd = workerThread.server.engine.ring.ring_fd
 
     var ioStatus = io_uring_queue_init_params(workerThread.config.ioQueueDepth, ring, &params)
     if(ioStatus != 0) {
@@ -111,12 +111,12 @@ internal func WorkerFunction(arg: *void) : i32 {
 
     Info("Started worker thread: %d ringfd: %d\n", ThreadCurrent().id(), workerThread.ring.ring_fd)
 
-    pthread_barrier_wait(&workerThread.engine.barrier)
-    //workerThread.queueTimeoutCheck(ring)
+    pthread_barrier_wait(&workerThread.server.engine.barrier)
+    workerThread.queueTimeoutCheck(ring)
     io_uring_submit(ring)
 
     var cqe: *io_uring_cqe = null;
-    while(workerThread.engine.isRunning.get()) {
+    while(workerThread.server.engine.isRunning.get()) {
         var result = io_uring_wait_cqe(ring, &cqe);
         defer if(cqe)  {
             io_uring_cqe_seen(ring, cqe)
@@ -819,7 +819,7 @@ func (this: *WorkerThread) handleHttpRequest(
 
     if(httpRequest.method == HttpMethod.GET) {
         // the client is requesting a file
-        if(httpRequest.path.startsWith(this.engine.fileServerPath)) {
+        if(httpRequest.path.startsWith(this.server.config.fileServerPath)) {
             return this.handleFileRequest(request, ring, httpRequest)
         }
     }
@@ -834,7 +834,7 @@ func (this: *WorkerThread) handleHttpRequest(
     }
 
     var requestMatch: RouteMatch;
-    if(!this.engine.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
+    if(!this.server.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
         this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
     }
     else {
@@ -958,7 +958,7 @@ func (this: *WorkerThread) handleFileRequest(
 
     // TODO: Cache File contents
     var file: File;
-    var fileStatus = OpenFile(this.engine.fileServerPath, httpRequest.path, &file)
+    var fileStatus = OpenFile(this.config.fileServerPath, httpRequest.path, &file)
     if(fileStatus != Status.OK) {
         return fileStatus
     }
@@ -1009,8 +1009,8 @@ func (this: *WorkerThread) serverError(
 
     response.status = 500
 
-    if (this.engine.errorHandler.__this) {
-        this.engine.errorHandler.handle(
+    if (this.server.errorHandler.__this) {
+        this.server.errorHandler.handle(
             requestContext,
             status
         )
@@ -1036,8 +1036,8 @@ func (this: *WorkerThread) server404(
 
     response.status = 404
 
-    if (this.engine.notFoundHandler.__this) {
-        this.engine.notFoundHandler.handle(
+    if (this.server.notFoundHandler.__this) {
+        this.server.notFoundHandler.handle(
             requestContext,
             status
         )
