@@ -74,10 +74,13 @@ __Host machine__
 AMD Ryzen 5 2600 (6 cores) with 16 GiB RAM
 
 __Ring Configuration__
-Threads: 16
-IO_uring Queue Depth: 64
-Max Pool Size: 512
-Log: Disabled
+| Setting                | Value  |
+|------------------------|--------|
+| Threads               | 16     |
+| IO_uring Queue Depth  | 64     |
+| Max Pool Size         | 512    |
+| Log                  | Disabled |
+
 
 __Results__
 2 threads/20 connections: 151978.76 Request Per Second
