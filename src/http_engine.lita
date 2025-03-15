@@ -133,7 +133,10 @@ internal func (this: *HttpRingEngine) listen() : Status {
     var ring = &this.ring
 
     // prime the pump, dispatch a request for socket accepts
-    this.queueAcceptRequest(ring)
+    if(this.queueAcceptRequest(ring) != Status.OK) {
+        Error("Unable to queue server socket accept requests\n")
+        return Status.ERROR_IOURING_ERROR
+    }
 
     var cqe: *io_uring_cqe = null;
     while(this.isRunning.get()) {
@@ -169,7 +172,7 @@ internal func (this: *HttpRingEngine) free() {
 }
 
 
-func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): bool {
+func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): Status {
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
         var space = io_uring_sq_space_left(ring)
@@ -194,17 +197,17 @@ func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): bool {
     )
     io_uring_submit(ring)
 
-    return true;
+    return Status.OK;
 
 error:
-    return false;
+    return Status.ERROR_IOURING_ERROR;
 }
 
 
 func (this: *HttpRingEngine) queueHandleConnection(
     ring: *io_uring,
     clientSocket: i32
-) {
+) : Status {
     Info("Delagating to worker thread for socket: %d\n", clientSocket)
 
     var sqe = io_uring_get_sqe(ring)
@@ -231,25 +234,21 @@ func (this: *HttpRingEngine) queueHandleConnection(
     )
     io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
 
+    return Status.OK
+
 error:
-// TODO
-    return;
+    return Status.ERROR_IOURING_ERROR;
 }
 
-func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_uring_cqe, result: i32) : Status {
-    if(!cqe) {
-        Error("Error reading completion queue: %d\n", result)
-        return Status.ERROR_IO_ERROR;
-    }
+func (this: *HttpRingEngine) handleCompletionRing(
+    ring: *io_uring,
+    cqe: *io_uring_cqe,
+    result: i32
+): Status {
 
-    // Determine if this is a timeout or a socket error
-    if(cqe.res < 0) {
-        // no attached data, this should be a timeout check
-        var operation = RingOperation {
-            .data = io_uring_cqe_get_data64(cqe)
-        }
-
-        // TODO
+    if(!cqe || cqe.res < 0) {
+        Error("Error reading completion queue: %d (%s)\n", result, strerror(-result))
+        //assert(false)
         return Status.OK
     }
 
@@ -260,13 +259,12 @@ func (this: *HttpRingEngine) handleCompletionRing(ring: *io_uring, cqe: *io_urin
     switch(operation.opcode) {
         case RingOpcode.ACCEPT: {
             Info("CONNECTED: client socket: %d\n", cqe.res)
-
-            // queue up another accept
-            //this.queueAcceptRequest(ring)
+            if(cqe.res == 0) {
+                break
+            }
 
             // queue up delegation of handling the connection
-            this.queueHandleConnection(ring, cqe.res)
-            break
+            return this.queueHandleConnection(ring, cqe.res)
         }
         default: {
             Panic("Unhandled accept ring opcode: %d\n", RingOpcodeAsStr(operation.opcode))

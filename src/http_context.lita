@@ -17,11 +17,6 @@ import "http_response"
 import "http_websocket"
 import "http_server"
 
-
-public trait Initializer<T> {
-    allocx: func(*T) : void
-}
-
 @asStr
 internal enum RingOpcode {
     TIMEOUT,
@@ -103,6 +98,7 @@ internal struct SessionContext {
 internal func (this: *SessionContext) begin(
     clientSocket: i32
 ) {
+    assert(clientSocket > 0)
     this.requestAllocator.clear()
 
     var allocator = &this.requestAllocator.allocator
@@ -194,20 +190,15 @@ internal func (this: *SessionContext) isKeepAlive(): bool {
 public struct ContextPool {
     pool: Array<SessionContext>
     freeList: Array<i32>
-
-    initializer: Initializer<SessionContext>
 }
 
 public func (this: *ContextPool) init(
-    maxSize: i32,
-    initializer: Initializer<SessionContext>,
-    allocator: *const Allocator
-) {
-    this.initializer = initializer
-
-    this.pool.init(maxSize, allocator)
-    this.freeList.init(maxSize, allocator)
-    this.grow(0, maxSize)
+    server: *HttpServer
+): Status {
+    var maxSize = server.config.maxPoolSize
+    this.pool.init(maxSize, server.config.allocator)
+    this.freeList.init(maxSize, server.config.allocator)
+    return this.grow(server, 0, maxSize)
 }
 
 public func (this: *ContextPool) free() {
@@ -215,7 +206,12 @@ public func (this: *ContextPool) free() {
     this.freeList.free()
 }
 
-func (this: *ContextPool) grow(oldSize: i32, newSize: i32) {
+func (this: *ContextPool) grow(
+    server: *HttpServer,
+    oldSize: i32, newSize: i32
+): Status {
+    var maxMemInBytes = server.config.maxRequestSizeInBytes
+
     for(var i = oldSize; i < newSize; i+=1) {
         var item: SessionContext;
         this.pool.add(item)
@@ -223,12 +219,28 @@ func (this: *ContextPool) grow(oldSize: i32, newSize: i32) {
         var itemPtr = this.pool.lastPtr()
         memset(itemPtr, 0, sizeof(:SessionContext))
 
-        this.initializer.allocx<SessionContext>(itemPtr)
+        // setup the session context
+        {
+            var mem = server.engine.safeAllocator.alloc(maxMemInBytes * sizeof(:char))
+            if(!mem) {
+                // TODO: Handle out of memory more gracefully
+                Error("out of memory - unable to allocate session context pool entries\n")
+                return Status.ERROR_OUT_OF_MEMORY
+            }
+
+            itemPtr.requestAllocator.init(
+                mem,
+                maxMemInBytes
+            )
+        }
+
         itemPtr.index = i
         itemPtr.sessions = this
 
         this.freeList.add(i)
     }
+
+    return Status.OK
 }
 
 public func (this: *ContextPool) alloc() : i32 {

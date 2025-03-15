@@ -35,10 +35,6 @@ import "http_context"
 import "http_websocket"
 import "http_engine"
 
-
-@foreign
-func strerror(errnum: i32) : *const char;
-
 internal struct WorkerThread {
     ring: io_uring
     thread: Thread
@@ -49,38 +45,29 @@ internal struct WorkerThread {
     sessions: ContextPool
 }
 
-internal func (this: *WorkerThread) init(server: *HttpServer, index: i32) {
+internal func (this: *WorkerThread) init(
+    server: *HttpServer,
+    index: i32
+): Status {
+
     this.server = server
     this.config = server.config
     this.index = index
 
     this.ring = io_uring{}
 
-    this.sessions.init(
-        this.config.maxPoolSize,
-        this,
-        this.config.allocator
-    )
+    var status = this.sessions.init(this.server)
+    if(status != Status.OK) {
+        return status
+    }
 
     this.thread = Thread{}
     if(this.thread.create(WorkerFunction, this, this.server.engine.safeAllocator) != ThreadStatus.SUCCESS) {
-        Panic("Error creating worker thread\n")
-    }
-}
-
-public func (this: *WorkerThread) allocx(context: *SessionContext) {
-    var maxMemInBytes = this.config.maxRequestSizeInBytes
-
-    var mem = this.server.engine.safeAllocator.alloc(maxMemInBytes * sizeof(:char))
-    if(!mem) {
-        // TODO: Handle out of memory more gracefully
-        Panic("out of memory!\n")
+        Error("Error creating worker thread\n")
+        return Status.ERROR_CREATING_THREAD
     }
 
-    context.requestAllocator.init(
-        mem,
-        maxMemInBytes
-    )
+    return Status.OK
 }
 
 /**
@@ -92,9 +79,7 @@ public func (this: *WorkerThread) allocx(context: *SessionContext) {
 */
 internal func WorkerFunction(arg: *void) : i32 {
     var workerThread = arg as (*WorkerThread)
-    // defer workerThread.destroy()
 
-    //var ring:io_uring;
     var ring = &workerThread.ring
 
     var params = io_uring_params {}
@@ -106,14 +91,19 @@ internal func WorkerFunction(arg: *void) : i32 {
 
     var ioStatus = io_uring_queue_init_params(workerThread.config.ioQueueDepth, ring, &params)
     if(ioStatus != 0) {
-        Panic("Error initializing the io_uring queue: %d\n", ioStatus)
+        Error("Error initializing the io_uring queue: %d\n", ioStatus)
+        return -1
     }
 
     Info("Started worker thread: %d ringfd: %d\n", ThreadCurrent().id(), workerThread.ring.ring_fd)
 
+    // Signal we are ready
     pthread_barrier_wait(&workerThread.server.engine.barrier)
+
+    // Kick off connection timeout checks
     workerThread.queueTimeoutCheck(ring)
     io_uring_submit(ring)
+
 
     var cqe: *io_uring_cqe = null;
     while(workerThread.server.engine.isRunning.get()) {
@@ -140,10 +130,11 @@ internal func WorkerFunction(arg: *void) : i32 {
 
 func (this: *WorkerThread) queueCancelAndClose(
     ring: *io_uring,
-    request: *SessionContext) {
+    request: *SessionContext
+): Status {
 
     if(request.state == SessionState.CLOSED || !request.connection.isConnected()) {
-        return;
+        return Status.OK;
     }
 
     request.state = SessionState.CLOSED
@@ -176,13 +167,17 @@ func (this: *WorkerThread) queueCancelAndClose(
     }
 
     request.submissions += 1
+    return Status.OK
 
 error:
-    return;
+    return Status.ERROR_IOURING_ERROR;
 }
 
 
-func (this: *WorkerThread) queueReadHttpRequest(ring: *io_uring, request: *SessionContext) {
+func (this: *WorkerThread) queueReadHttpRequest(
+    ring: *io_uring,
+    request: *SessionContext
+): Status {
 
     request.state = SessionState.READ_REQUEST_LINE
 
@@ -216,15 +211,16 @@ func (this: *WorkerThread) queueReadHttpRequest(ring: *io_uring, request: *Sessi
             .contextIndex = request.index,
         }.data
     )
+    return Status.OK
 
 error:
-    return;
+    return Status.ERROR_IOURING_ERROR;
 }
 
 func (this: *WorkerThread) queueWriteHttpResponse(
     ring: *io_uring,
     session: *SessionContext
-) {
+): Status {
 
     session.state = SessionState.WRITTEN_HTTP_RESPONSE
 
@@ -284,7 +280,7 @@ func (this: *WorkerThread) queueWriteHttpResponse(
     if(moreContents) {
         if(response.type == ResponseType.FILE) {
             session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
-            this.queueWriteHttpFileResponse(ring, session)
+            return this.queueWriteHttpFileResponse(ring, session)
         }
         else {
             assert(response.type == ResponseType.STREAM)
@@ -292,14 +288,16 @@ func (this: *WorkerThread) queueWriteHttpResponse(
         }
     }
 
+    return Status.OK
+
 error:
-    return;
+    return Status.ERROR_IOURING_ERROR;
 }
 
 func (this: *WorkerThread) queueWriteHttpStreamResponse(
     ring: *io_uring,
     session: *SessionContext
-) {
+): Status {
 
     session.state = SessionState.WRITING_STREAM
 
@@ -307,7 +305,7 @@ func (this: *WorkerThread) queueWriteHttpStreamResponse(
     var response = &session.response
     if(!response.stream.__this) {
         Error("No stream attached to connection: %d\n", connection.handle())
-        goto error;
+        return Status.ERROR_NO_STREAM_HANDLER_FOUND
     }
 
     var writeBuffer = &connection.writeBuffer
@@ -324,13 +322,12 @@ func (this: *WorkerThread) queueWriteHttpStreamResponse(
     else {
 
         if(!writeBuffer.reserve(numberOfBytesRead + 16)) {
-            // Error out as we are not able to meet capacity requirements
             Error(
                 "Unable to handle stream of %d bytes due to out of memory for connection: %d\n",
                 numberOfBytesRead,
                 connection.handle()
             )
-            goto error;
+            return Status.ERROR_OUT_OF_MEMORY
         }
 
         writeBuffer.append("%08X\r\n", numberOfBytesRead)
@@ -375,15 +372,16 @@ func (this: *WorkerThread) queueWriteHttpStreamResponse(
 
     session.submissions += 1
 
+    return Status.OK
+
 error:
-// TODO: Handler error scenarios, either send back an http 500 or if no memory kill the
-// client connection..
-    return;
+    return Status.ERROR_IOURING_ERROR;
 }
 
 func (this: *WorkerThread) queueWriteHttpFileResponse(
     ring: *io_uring,
-    request: *SessionContext) {
+    request: *SessionContext
+): Status {
 
     request.state = SessionState.WRITTEN_FILE
 
@@ -402,7 +400,7 @@ func (this: *WorkerThread) queueWriteHttpFileResponse(
 
     if(pipe2(request.pipes, O_CLOEXEC | O_NONBLOCK) < 0) {
         Error("Error creating pipes!")
-        goto error;
+        return Status.ERROR_PIPE_ERROR
     }
 
 
@@ -485,24 +483,24 @@ func (this: *WorkerThread) queueWriteHttpFileResponse(
     }
 
     request.submissions += 3
+    return Status.OK
 
 error:
-    return;
+    return Status.ERROR_IOURING_ERROR;
 }
 
 public func (this: *WorkerThread) sendWebSocketFrame(
     session: *SessionContext,
     frame: *Frame
 ) : Status {
-    this.queueWriteWebSocket(&this.ring, session, frame)
-    return Status.OK
+    return this.queueWriteWebSocket(&this.ring, session, frame)
 }
 
 func (this: *WorkerThread) queueWriteWebSocket(
     ring: *io_uring,
     session: *SessionContext,
     frame: *Frame
-) {
+): Status {
 
     session.state = SessionState.WEB_SOCKET_OPERATION
 
@@ -512,8 +510,9 @@ func (this: *WorkerThread) queueWriteWebSocket(
     var writeBuffer = &connection.writeBuffer
     writeBuffer.clear()
 
-    if(frame.serialize(writeBuffer) != Status.OK) {
-        goto error;
+    var status = frame.serialize(writeBuffer)
+    if(status != Status.OK) {
+        return status
     }
 
     // Send the bytes over the TCP connection
@@ -549,20 +548,18 @@ func (this: *WorkerThread) queueWriteWebSocket(
     )
 
     session.submissions += 1
-    Info("Exit Queued writing of web socket: %d\n", connection.handle())
     io_uring_submit(ring)
-    return;
+
+    return Status.OK;
+
 error:
-    Error("Error writing out websocket frame for socket: %d\n", connection.handle())
-// TODO: Handler error scenarios, either send back an http 500 or if no memory kill the
-// client connection..
-    return;
+    return Status.ERROR_IOURING_ERROR;
 }
 
 func (this: *WorkerThread) queueReadWebSocket(
     ring: *io_uring,
     session: *SessionContext
-) {
+): Status {
 
     session.state = SessionState.WEB_SOCKET_OPERATION
     var connection = &session.connection
@@ -594,8 +591,10 @@ func (this: *WorkerThread) queueReadWebSocket(
         }.data
     )
 
+    return Status.OK
+
 error:
-    return;
+    return Status.ERROR_IOURING_ERROR;
 }
 
 
@@ -604,7 +603,7 @@ func (this: *WorkerThread) handleWebSocketFrame(
     ring: *io_uring,
     session: *SessionContext,
     bytesRead: i32
-) : Status {
+): Status {
 
     var requestAllocator = &session.requestAllocator.allocator
     var connection = &session.connection
@@ -641,6 +640,7 @@ func (this: *WorkerThread) handleWebSocketFrame(
                 )
                 Error("TODO: Grow buffer!\n")
                 exit(1) // TODO
+                return Status.ERROR_OUT_OF_MEMORY
             }
 
             // Partial read, need to wait for more bytes
@@ -652,11 +652,9 @@ func (this: *WorkerThread) handleWebSocketFrame(
     defer readBuffer.clear()
 
     if(session.socketHandler.callback) {
-        Info("calling callback\n")
         if(!session.socketHandler.callback(&session.socketSession, frame)) {
             return Status.ERROR_WEB_SOCKET_HANDLE_FRAME_ERROR
         }
-        Info("end calling callback\n")
     }
 
     if(frame.opcode == Opcode.CLOSE) {
@@ -668,9 +666,9 @@ func (this: *WorkerThread) handleWebSocketFrame(
 
 func (this: *WorkerThread) handlePartialHttpRequest(
     ring: *io_uring,
-    requestAllocator: *const Allocator,
     request: *SessionContext,
-    bytesRead: i32) : Status {
+    bytesRead: i32
+): Status {
 
     var connection = &request.connection
     var readBuffer = &connection.readBuffer
@@ -725,7 +723,7 @@ func (this: *WorkerThread) handlePartialHttpRequest(
     // we've read the http header part, now
     // let's ensure we've read the entire body
     var parser = HttpParser{}
-    parser.init(requestAllocator)
+    parser.init(&request.requestAllocator.allocator)
 
     var input = String {
         .buffer = readBuffer.buffer,
@@ -785,10 +783,10 @@ func (this: *WorkerThread) handlePartialHttpRequest(
 
 func (this: *WorkerThread) handleHttpRequest(
     ring: *io_uring,
-    requestAllocator: *const Allocator,
     request: *SessionContext
-) : Status {
+): Status {
 
+    var requestAllocator = &request.requestAllocator.allocator
     var connection = &request.connection
 
     var buffer = &connection.readBuffer
@@ -838,9 +836,7 @@ func (this: *WorkerThread) handleHttpRequest(
         this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
     }
     else {
-
         var handler = requestMatch.handler
-        Info("Found a match: %.*s\n", requestMatch.template.template.length, requestMatch.template.template.buffer)
 
         requestContext.userData = handler.userData
         requestContext.match = &requestMatch
@@ -863,8 +859,7 @@ func (this: *WorkerThread) handleHttpRequest(
                 // protocol
                 if(httpRequest.flags & HttpFlags.UPGRADE_REQUEST) {
                     if(!(httpRequest.flags & HttpFlags.WEB_SOCKET_PROTOCOL)) {
-                        this.sendBadRequest(request, Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL, ring)
-                        return Status.OK
+                        return this.sendBadRequest(request, Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL, ring)
                     }
 
                     return this.handleWebSocketUpgrade(
@@ -883,10 +878,7 @@ func (this: *WorkerThread) handleHttpRequest(
         }
     }
 
-    this.queueWriteHttpResponse(ring, request)
-
-    Info("Done handling HTTP Request for socket: %d\n", connection.handle())
-    return Status.OK
+    return this.queueWriteHttpResponse(ring, request)
 }
 
 import "std/crypto/sha1"
@@ -897,7 +889,7 @@ func (this: *WorkerThread) handleWebSocketUpgrade(
     ring: *io_uring,
     httpRequest: *HttpRequest,
     requestContext: *RequestHandlerContext
-) : Status {
+): Status {
 
     // TODO: Compiler should support compile time toString...
     var secKey = httpRequest.getHeaderValue(
@@ -947,6 +939,7 @@ func (this: *WorkerThread) handleWebSocketUpgrade(
 
     this.queueWriteHttpResponse(ring, context)
     context.state = SessionState.WEB_SOCKET_UPGRADED
+
     return Status.OK
 }
 
@@ -954,7 +947,7 @@ func (this: *WorkerThread) handleFileRequest(
     session: *SessionContext,
     ring: *io_uring,
     httpRequest: *HttpRequest
-) : Status {
+): Status {
 
     // TODO: Cache File contents
     var file: File;
@@ -972,8 +965,7 @@ func (this: *WorkerThread) handleFileRequest(
     response.fileSize = file.length()
 
     // TODO add mime type info..
-    this.queueWriteHttpResponse(ring, session)
-    return Status.OK
+    return this.queueWriteHttpResponse(ring, session)
 }
 
 
@@ -981,7 +973,7 @@ func (this: *WorkerThread) sendServerError(
     session: *SessionContext,
     status: Status,
     ring: *io_uring
-) {
+): Status {
     var httpRequest = HttpRequest{}
     var requestContext = RequestHandlerContext {
         .allocator = &session.requestAllocator.allocator,
@@ -992,7 +984,7 @@ func (this: *WorkerThread) sendServerError(
     }
 
     this.serverError(requestContext, status)
-    this.queueWriteHttpResponse(ring, session)
+    return this.queueWriteHttpResponse(ring, session)
 }
 
 func (this: *WorkerThread) serverError(
@@ -1053,7 +1045,7 @@ func (this: *WorkerThread) sendBadRequest(
     context: *SessionContext,
     status: Status,
     ring: *io_uring
-) {
+): Status {
     var httpRequest = HttpRequest{}
     var requestContext = RequestHandlerContext {
         .allocator = &context.requestAllocator.allocator,
@@ -1117,7 +1109,7 @@ func (this: *WorkerThread) sendBadRequest(
         }
     }
 
-    this.queueWriteHttpResponse(ring, context)
+    return this.queueWriteHttpResponse(ring, context)
 }
 
 func (this: *WorkerThread) handleAccept(clientSocket: i32) : *SessionContext {
@@ -1127,17 +1119,23 @@ func (this: *WorkerThread) handleAccept(clientSocket: i32) : *SessionContext {
         return null
     }
 
-    var request = this.sessions.get(index)
-    assert(request != null)
+    var session = this.sessions.get(index)
+    assert(session != null)
 
-    request.begin(clientSocket)
-    return request
+    session.begin(clientSocket)
+    return session
 }
 
-func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_cqe, result: i32) : Status {
+func (this: *WorkerThread) handleCompletionRing(
+    ring: *io_uring,
+    cqe: *io_uring_cqe,
+    result: i32
+): Status {
+
     if(!cqe) {
         Error("Error reading completion queue: %d\n", result)
-        exit(1) // TODO
+        assert(false)
+
         return Status.ERROR_IO_ERROR;
     }
 
@@ -1149,41 +1147,47 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
         }
 
         if(operation.opcode == RingOpcode.TIMEOUT) {
-            this.checkTimeouts(ring)
-            return Status.OK;
+            return this.checkTimeouts(ring)
         }
 
-        var request = this.sessions.get(operation.contextIndex)
-        assert(request != null)
+        var session = this.sessions.get(operation.contextIndex)
+        assert(session != null)
 
         switch(cqe.res) {
             case -ENOENT:
             case -EINVAL:
             case -EALREADY: {
+                if (!session.connection.isConnected()) {
+                    break
+                }
+
                 Info("Unable to cancel operations for socket: %d due to already in progress or not found\n",
-                    request.connection.handle()
+                    session.connection.handle()
                 )
 
-                request.finish(.forceClose = true)
+                session.finish(.forceClose = true)
                 break
             }
             case -ECANCELED: {
                 Info("Canceled request queue entries for socket: %d\n",
-                    request.connection.handle()
+                    session.connection.handle()
                 )
                 break
             }
             default: {
                 // otherwise we are experiencing a socket error
                 Error("Error with socket (%d) completion result: %d (%s)\n",
-                    request.connection.handle(),
+                    session.connection.handle(),
                     cqe.res,
                     strerror(-cqe.res)
                 )
 
                 // Force close the connection
-                Error("Force closing connection: %d due to error\n", request.connection.handle())
-                request.finish(.forceClose = true)
+                Error("Force closing connection: %d due to error\n", session.connection.handle())
+                if (!session.connection.isConnected()) {
+                    break
+                }
+                session.finish(.forceClose = true)
                 break
             }
         }
@@ -1195,55 +1199,49 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
         .data = io_uring_cqe_get_data64(cqe)
     }
 
-    var request: *SessionContext = null
+    var session: *SessionContext = null
 
     // if we are receiving a msg from the accept ring,
     // handle the new connection
     if(operation.opcode == RingOpcode.MSG_RING) {
-        request = this.handleAccept(operation.contextIndex)
+        session = this.handleAccept(operation.contextIndex)
     }
     else {
-        request = this.sessions.get(operation.contextIndex)
+        session = this.sessions.get(operation.contextIndex)
     }
 
-    assert(request != null)
+    assert(session != null)
 
-    request.lastRequestTime = SystemTimeMSec()
-    var connection = &request.connection
+    session.lastRequestTime = SystemTimeMSec()
+    var connection = &session.connection
 
-    switch(request.state) {
+    switch(session.state) {
         // Server just accepted a client connection
         case SessionState.CONNECTED: {
             Info("Reading HTTP request for socket: %d\n", connection.handle())
             // queue up delegation of handling the http request
-            this.queueReadHttpRequest(ring, request)
-            break;
+            return this.queueReadHttpRequest(ring, session)
         }
         // The connection was established, and we've read
         // the client socket contents for the HTTP request line
         case SessionState.READ_REQUEST_LINE: {
             var bytesRead = cqe.res
-            Info("READ_REQUEST_LINE: %d for socket: %d subs: %d\n", bytesRead, connection.handle(), request.submissions)
+            Info("READ_REQUEST_LINE: %d for socket: %d subs: %d\n", bytesRead, connection.handle(), session.submissions)
 
             // The client has gracefully closed their connection
             if(bytesRead == 0) {
                 Info("Client Closed socket: %d\n", connection.handle())
-                this.queueCancelAndClose(ring, request)
-                break;
+                return this.queueCancelAndClose(ring, session)
             }
-
-            var allocator = &request.requestAllocator.allocator
 
             var status = this.handlePartialHttpRequest(
                 ring,
-                allocator,
-                request,
+                session,
                 bytesRead
             )
 
             if(status == Status.PARTIAL_REQUEST_DISPATCHING_READ) {
-                this.queueReadHttpRequest(ring, request)
-                break
+                return this.queueReadHttpRequest(ring, session)
             }
 
             if(status != Status.OK) {
@@ -1252,34 +1250,30 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
                     case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT: {
-                        this.sendBadRequest(request, status, ring)
-                        break
+                        return this.sendBadRequest(session, status, ring)
                     }
                     default: {
-                        this.sendServerError(request, status, ring)
-                        break
+                        return this.sendServerError(session, status, ring)
                     }
                 }
-                break
+                return status
             }
 
             // queue up delegation of handling the http response
             status = this.handleHttpRequest(
                 ring,
-                allocator,
-                request
+                session
             )
 
             if(status != Status.OK) {
-                Error("HTTP Request Bad Status %s with index: %d\n", StatusAsStr(status), request.index)
-                this.sendServerError(request, status, ring)
+                Error("HTTP Request Bad Status %s with index: %d\n", StatusAsStr(status), session.index)
+                return this.sendServerError(session, status, ring)
             }
             break
         }
         case SessionState.WEB_SOCKET_UPGRADED: {
             Info("WebSocket upgraded for socket: %d\n", connection.handle())
-            this.queueReadWebSocket(ring, request)
-            break
+            return this.queueReadWebSocket(ring, session)
         }
         case SessionState.WEB_SOCKET_OPERATION: {
             switch(operation.opcode) {
@@ -1287,7 +1281,7 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
                     Info("WebSocket write completed for socket: %d\n",
                         connection.handle()
                     )
-                    request.submissions -= 1
+                    session.submissions -= 1
                     break
                 }
                 case RingOpcode.READ: {
@@ -1300,15 +1294,13 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
                     // client closed the socket
                     if(bytesRead == 0) {
                         Info("Client Closed socket: %d\n", connection.handle())
-                        this.queueCancelAndClose(ring, request)
-                        break;
+                        return this.queueCancelAndClose(ring, session)
                     }
 
-                    var status = this.handleWebSocketFrame(ring, request, bytesRead)
+                    var status = this.handleWebSocketFrame(ring, session, bytesRead)
                     if(status == Status.WEB_SOCKET_CLOSED) {
                         Info("Client Closed socket: %d\n", connection.handle())
-                        this.queueCancelAndClose(ring, request)
-                        break;
+                        return this.queueCancelAndClose(ring, session)
                     }
                     else if(status != Status.OK) {
                         Error(
@@ -1318,10 +1310,10 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
                         )
                         // TODO
                         assert(false)
+                        return status
                     }
 
-                    this.queueReadWebSocket(ring, request)
-                    break
+                    return this.queueReadWebSocket(ring, session)
                 }
                 default: {
                     Error("Unsupported web socket operation: %s\n", RingOpcodeAsStr(operation.opcode))
@@ -1331,30 +1323,29 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
             break
         }
         case SessionState.WRITING_STREAM: {
-            request.submissions -= 1
+            session.submissions -= 1
 
-            this.queueWriteHttpStreamResponse(ring, request)
-            break;
+            return this.queueWriteHttpStreamResponse(ring, session)
         }
         // The connection request was parsed, we have dispatched
         // an http response to the client socket
         case SessionState.WRITTEN_HTTP_RESPONSE:
         case SessionState.WRITTEN_HTTP_RESPONSE_MORE:
         case SessionState.WRITTEN_FILE: {
-            request.submissions -= 1
+            session.submissions -= 1
             Info("%s for socket: %d subs: %d index: %d\n",
-                SessionStateAsStr(request.state),
+                SessionStateAsStr(session.state),
                 connection.handle(),
-                request.submissions,
-                request.index
+                session.submissions,
+                session.index
             )
 
-            if(request.submissions <= 0) {
-                Info("Closing request due to no more submissions for socket: %d\n", connection.handle())
-                request.begin(connection.handle()) // ready to begin another HTTP request cycle
+            if(session.submissions <= 0) {
+                Info("Preparing connection for another HTTP request for socket: %d\n", connection.handle())
+                session.begin(connection.handle()) // ready to begin another HTTP request cycle
 
                 // listen for close socket from client
-                this.queueReadHttpRequest(ring, request)
+                return this.queueReadHttpRequest(ring, session)
             }
             break
         }
@@ -1364,7 +1355,7 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
                 break
             }
 
-            request.finish(.forceClose = true)
+            session.finish(.forceClose = true)
             break
         }
         case SessionState.UNKNOWN: {
@@ -1372,7 +1363,7 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
             break
         }
         default: {
-            Panic("Unknown state: %d\n", request.state)
+            Panic("Unknown state: %d\n", session.state)
             assert(false)
             break;
         }
@@ -1381,7 +1372,7 @@ func (this: *WorkerThread) handleCompletionRing(ring: *io_uring, cqe: *io_uring_
     return Status.OK
 }
 
-func (this: *WorkerThread) queueTimeoutCheck(ring: *io_uring): bool {
+func (this: *WorkerThread) queueTimeoutCheck(ring: *io_uring): Status {
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
         Error("Error creating SQE for timeout check\n")
@@ -1407,13 +1398,13 @@ func (this: *WorkerThread) queueTimeoutCheck(ring: *io_uring): bool {
         }.data
     )
 
-    return true;
+    return Status.OK;
 
 error:
-    return false;
+    return Status.ERROR_IOURING_ERROR;
 }
 
-func (this: *WorkerThread) checkTimeouts(ring: *io_uring) {
+func (this: *WorkerThread) checkTimeouts(ring: *io_uring): Status {
     var timeout = this.config.keepAliveTimeoutInSec
     const currentTime = SystemTimeMSec()
 
@@ -1437,5 +1428,5 @@ func (this: *WorkerThread) checkTimeouts(ring: *io_uring) {
         }
     }
 
-    this.queueTimeoutCheck(ring)
+    return this.queueTimeoutCheck(ring)
 }
