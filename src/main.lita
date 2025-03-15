@@ -74,6 +74,12 @@ func TestWebSocketController(session: *WebSocketSession, frame: *Frame) : i32 {
     var text = StringInit(.buffer = frame.payload, .length = frame.payloadLength as (i32))
     printf("Text: '%.*s'\n", text.length, text.buffer)
 
+    if (text.equalsIgnoreCase("exit")) {
+        printf("Closing\n")
+        session.close()
+        return 1
+    }
+
     var writeBuffer = StringBuilderInit(256, session.allocator)
     writeBuffer.clear()
 

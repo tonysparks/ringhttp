@@ -30,6 +30,15 @@ public func (this: *WebSocketSession) send(frame: *Frame) : i32 {
 
 public func (this: *WebSocketSession) close() {
     // TODO: Close out the socket connection
+    var out = Frame{}
+    out.isFinal = true
+    out.masked = false
+    out.payload = null
+    out.payloadLength = 0
+    out.opcode = Opcode.CLOSE
+
+    this.send(&out)
+    this.context.isWebSocket = false
 }
 
 

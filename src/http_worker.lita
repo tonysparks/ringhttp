@@ -1215,6 +1215,11 @@ func (this: *WorkerThread) handleCompletionRing(
     session.lastRequestTime = SystemTimeMSec()
     var connection = &session.connection
 
+    // this connection has been terminated
+    if(!connection.isConnected()) {
+        return Status.OK
+    }
+
     switch(session.state) {
         // Server just accepted a client connection
         case SessionState.CONNECTED: {
@@ -1282,6 +1287,11 @@ func (this: *WorkerThread) handleCompletionRing(
                         connection.handle()
                     )
                     session.submissions -= 1
+
+                    // we sent out a close operation, clean up
+                    if(!session.isWebSocket) {
+                        return this.queueCancelAndClose(ring, session)
+                    }
                     break
                 }
                 case RingOpcode.READ: {
