@@ -276,7 +276,7 @@ func main(len: i32, args: **char) : i32 {
         .port = 8080_u16,
         .numThreads = 8,
         .ioQueueDepth = 32,
-        .isLogEnabled = true,
+        .isLogEnabled = false,
         .maxPoolSize = 512,
         .keepAliveTimeoutInSec = 5,
     }
