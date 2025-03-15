@@ -83,8 +83,11 @@ __Ring Configuration__
 
 
 __Results__
-2 threads/20 connections: 151978.76 Request Per Second
-16 threads/200 connections: 311170.48 Request Per Second
+| Threads | Connections | Requests Per Second |
+|---------|------------|---------------------|
+| 2       | 20         | 151,978.76          |
+| 16      | 200        | 311,170.48          |
+
 
 ```
 tony@tony-ubuntu:~/projects/ring-http$ wrk -t2 -c20 -d30s --timeout 1s http://localhost:8080/echo?hello=world
