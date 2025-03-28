@@ -9,6 +9,7 @@ import "std/array"
 import "std/io"
 import "std/libc/signal"
 import "std/log"
+import "std/assert"
 
 import "liburing"
 
@@ -144,13 +145,14 @@ public func (this: *HttpServer) addRequestHandler(
 }
 
 public func (this: *HttpServer) init(config: *HttpConfig) : Status {
+    assert(config != null)
+
     this.config = config
 
     this.router.init(config.allocator)
-
     this.filterHandlers.init(32, config.allocator)
-
     this.engine.init(this)
+
     return Status.OK
 }
 

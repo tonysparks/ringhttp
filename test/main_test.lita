@@ -1,9 +1,118 @@
 
-import "main"
+import "std/http" as http
 import "std/assert"
+import "std/string"
+import "std/string/builder"
+import "std/string/buffer"
+import "std/libc"
+import "std/thread"
+import "std/io"
+import "std/mem"
+import "std/json"
 
-@test("project_test")
-func test() {
-    assert(true)
+import "http_ring"
+import "test_webserver"
+
+var testServer = TestServer{}
+var http = http::Http{}
+
+var defaultConfig = HttpConfig {
+    .port = 8080_u16,
+    .numThreads = 4,
+    .ioQueueDepth = 16,
+    .maxPoolSize = 32,
+    .keepAliveTimeoutInSec = 5,
+    .isLogEnabled = false,
+    .logFilePath = null
 }
 
+@module_init
+public func init_tests() {
+    printf("Init tests\n")
+    http.init(http::HttpOptions{})
+
+    testServer.config = &defaultConfig
+    launch(&testServer)
+    ThreadSleepMSec(250)
+}
+
+@module_destroy
+public func destroy_tests() {
+    printf("Cleanup tests\n")
+    http.free()
+}
+
+@test("test static webpage retrieval")
+func test_static_webpage() {
+    var body = StringBuilderInit(256)
+    defer body.free()
+
+    var resp = http::HttpResponse {
+        .body = body
+    }
+    http.get("http://localhost:8080/static/index.html", &resp)
+
+    var fileContents = StringBuilderInit(256)
+    defer fileContents.free()
+
+    var status = ReadFileFully("./static/index.html", &fileContents)
+    assert(status == FileStatus.Ok)
+    assert(resp.statusCode == 200)
+    assert(fileContents.equals(resp.body))
+}
+
+
+@test("test path parameters retrieval")
+func test_path_parameters() {
+    var body = StringBuilderInit(256)
+    defer body.free()
+
+    var resp = http::HttpResponse {
+        .body = body
+    }
+    http.get("http://localhost:8080/echo?hello=world", &resp)
+    assert(resp.statusCode == 200)
+
+    var parser = JsonParserInit()
+    defer parser.free()
+
+    var json = parser.parseJson(resp.body.cStr())
+    assert(json.isObject())
+    assert(json.contains("query"))
+
+    var query = json.get("query")
+    assert(query.isObject())
+    assert(query.contains("hello"))
+
+    var hello = query.get("hello")
+    assert(hello.isString())
+    assert(hello.asString().equals("world"))
+}
+
+
+@test("test path parameters retrieval with 🙂")
+func test_path_parameters_with_emoji() {
+    var body = StringBuilderInit(256)
+    defer body.free()
+
+    var resp = http::HttpResponse {
+        .body = body
+    }
+    http.get("http://localhost:8080/echo?hello=wor🙂ld", &resp)
+    assert(resp.statusCode == 200)
+
+    var parser = JsonParserInit()
+    defer parser.free()
+
+    var json = parser.parseJson(resp.body.cStr())
+    assert(json.isObject())
+    assert(json.contains("query"))
+
+    var query = json.get("query")
+    assert(query.isObject())
+    assert(query.contains("hello"))
+
+    var hello = query.get("hello")
+    assert(hello.isString())
+    assert(hello.asString().equals("wor🙂ld"))
+}

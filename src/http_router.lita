@@ -57,6 +57,7 @@ struct Route {
 }
 
 internal func (this: *Router) init(allocator: *const Allocator) {
+    assert(allocator != null)
     for(var i = 0; i < MAX_METHODS; i+=1) {
         this.methods[i].init(128, allocator)
     }
