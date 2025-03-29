@@ -316,8 +316,8 @@ func testQueryParams() {
 
         {
             var n = queryParam.params.get(0)
-            assert(n.name.equals("name"))
-            assert(n.value.equals("value"))
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("value"))
         }
     }
 
@@ -330,14 +330,14 @@ func testQueryParams() {
 
         {
             var n = queryParam.params.get(0)
-            assert(n.name.equals("name"))
-            assert(n.value.equals("value"))
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("value"))
         }
 
         {
             var n = queryParam.params.get(1)
-            assert(n.name.equals("thing1"))
-            assert(n.value.equals("thing2"))
+            assert(n.name.equalsString("thing1"))
+            assert(n.value.equalsString("thing2"))
         }
     }
 
@@ -350,8 +350,8 @@ func testQueryParams() {
         assert(queryParam.params.size() == 1)
         {
             var n = queryParam.params.get(0)
-            assert(n.name.equals("name"))
-            assert(n.value.equals(""))
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString(""))
         }
     }
 
@@ -364,13 +364,13 @@ func testQueryParams() {
         assert(queryParam.params.size() == 2)
         {
             var n = queryParam.params.get(0)
-            assert(n.name.equals("name"))
-            assert(n.value.equals(""))
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString(""))
         }
         {
             var n = queryParam.params.get(1)
-            assert(n.name.equals("value"))
-            assert(n.value.equals(""))
+            assert(n.name.equalsString("value"))
+            assert(n.value.equalsString(""))
         }
     }
 
@@ -383,8 +383,8 @@ func testQueryParams() {
         assert(queryParam.params.size() == 1)
         {
             var n = queryParam.params.get(0)
-            assert(n.name.equals("name"))
-            assert(n.value.equals("x=y"))
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("x=y"))
         }
     }
 
@@ -397,14 +397,14 @@ func testQueryParams() {
         assert(queryParam.params.size() == 2)
         {
             var n = queryParam.params.get(0)
-            assert(n.name.equals("name"))
-            assert(n.value.equals("x=y"))
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("x=y"))
         }
 
         {
             var n = queryParam.params.get(1)
-            assert(n.name.equals("thing1"))
-            assert(n.value.equals("thing2"))
+            assert(n.name.equalsString("thing1"))
+            assert(n.value.equalsString("thing2"))
         }
     }
 
@@ -417,8 +417,8 @@ func testQueryParams() {
         assert(queryParam.params.size() == 1)
         {
             var n = queryParam.params.get(0)
-            assert(n.name.equals("name"))
-            assert(n.value.equals("x"))
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("x"))
         }
     }
 
@@ -449,8 +449,8 @@ func testQueryParams() {
         assert(queryParam.params.size() == 1)
         {
             var n = queryParam.params.get(0)
-            assert(n.name.equals(""))
-            assert(n.value.equals("==="))
+            assert(n.name.equalsString(""))
+            assert(n.value.equalsString("==="))
         }
     }
 
@@ -463,18 +463,18 @@ func testQueryParams() {
         assert(queryParam.params.size() == 3)
         {
             var n = queryParam.params.get(0)
-            assert(n.name.equals(""))
-            assert(n.value.equals(""))
+            assert(n.name.equalsString(""))
+            assert(n.value.equalsString(""))
         }
         {
             var n = queryParam.params.get(1)
-            assert(n.name.equals(""))
-            assert(n.value.equals(""))
+            assert(n.name.equalsString(""))
+            assert(n.value.equalsString(""))
         }
         {
             var n = queryParam.params.get(2)
-            assert(n.name.equals(""))
-            assert(n.value.equals(""))
+            assert(n.name.equalsString(""))
+            assert(n.value.equalsString(""))
         }
     }
 }

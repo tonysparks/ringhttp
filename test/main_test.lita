@@ -10,6 +10,9 @@ import "std/io"
 import "std/mem"
 import "std/json"
 
+import "std/array"
+import "std/map"
+
 import "http_ring"
 import "test_webserver"
 
@@ -22,7 +25,7 @@ var defaultConfig = HttpConfig {
     .ioQueueDepth = 16,
     .maxPoolSize = 32,
     .keepAliveTimeoutInSec = 5,
-    .isLogEnabled = false,
+    .isLogEnabled = true,
     .logFilePath = null
 }
 
@@ -62,43 +65,20 @@ func test_static_webpage() {
 }
 
 
-@test("test path parameters retrieval")
-func test_path_parameters() {
-    var body = StringBuilderInit(256)
-    defer body.free()
 
-    var resp = http::HttpResponse {
-        .body = body
-    }
-    http.get("http://localhost:8080/echo?hello=world", &resp)
-    assert(resp.statusCode == 200)
-
-    var parser = JsonParserInit()
-    defer parser.free()
-
-    var json = parser.parseJson(resp.body.cStr())
-    assert(json.isObject())
-    assert(json.contains("query"))
-
-    var query = json.get("query")
-    assert(query.isObject())
-    assert(query.contains("hello"))
-
-    var hello = query.get("hello")
-    assert(hello.isString())
-    assert(hello.asString().equals("world"))
+struct Param {
+    key: *const char
+    value: *const char
 }
 
-
-@test("test path parameters retrieval with 🙂")
-func test_path_parameters_with_emoji() {
+func testPathParameters(url: *const char, params: *Array<Param>) {
     var body = StringBuilderInit(256)
     defer body.free()
 
     var resp = http::HttpResponse {
         .body = body
     }
-    http.get("http://localhost:8080/echo?hello=wor🙂ld", &resp)
+    http.get(url, &resp)
     assert(resp.statusCode == 200)
 
     var parser = JsonParserInit()
@@ -110,9 +90,131 @@ func test_path_parameters_with_emoji() {
 
     var query = json.get("query")
     assert(query.isObject())
-    assert(query.contains("hello"))
 
-    var hello = query.get("hello")
-    assert(hello.isString())
-    assert(hello.asString().equals("wor🙂ld"))
+    for(var i = 0; i < params.size(); i+=1) {
+        var param = params.getPtr(i)
+
+        assert(query.contains(param.key))
+
+        var value = query.get(param.key)
+        assert(value.isString())
+        assert(value.asString().equals(param.value))
+    }
+
+    params.clear()
+}
+
+@test("test path parameters retrieval")
+func test_path_parameters_retrieval() {
+    var params = ArrayInit<Param>()
+
+    params.add(Param {.key = "hello", .value = "wor🙂ld"})
+    testPathParameters("http://localhost:8080/echo?hello=wor🙂ld", params)
+
+    params.add(Param {.key = "hello", .value = "🙂"})
+    testPathParameters("http://localhost:8080/echo?hello=🙂", params)
+
+    params.add(Param {.key = "🙂", .value = "🙂"})
+    testPathParameters("http://localhost:8080/echo?🙂=🙂", params)
+
+    params.add(Param {.key = "🙂", .value = ""})
+    testPathParameters("http://localhost:8080/echo?🙂=", params)
+
+    params.add(Param {.key = "hello", .value = "world"})
+    testPathParameters("http://localhost:8080/echo?hello=world", params)
+}
+
+@test("test path parameters retrieval hit limit for request line")
+func test_path_parameters_retrieval_hit_limit() {
+    var urlBuilder = StringBuilderInit(MAX_URL_LENGTH_DEFAULT + 1)
+    urlBuilder.append("http://localhost:8080/echo?")
+
+    var i = 0
+    while(urlBuilder.length <= testServer.config.maxHttpRequestLineSizeInBytes) {
+        if(i > 0) {
+            urlBuilder.append("&")
+        }
+        urlBuilder.append("param_%d=%d", i, i)
+        i+=1
+    }
+
+    var body = StringBuilderInit(256)
+    var resp = http::HttpResponse {
+        .body = body
+    }
+    http.get(urlBuilder.cStr(), &resp)
+    var x = resp.body.trim().cStr()
+    printf("Resp: %d Body: '%s'\n", resp.statusCode, x)
+    assert(resp.statusCode == 400)
+    assert("Request exceeded the max request limit of 8192 bytes for request line".equals(x))
+}
+
+@test("test path parameters retrieval hit limit for header")
+func test_path_parameters_retrieval_hit_header_limit() {
+
+    const size = testServer.config.maxHttpHeaderSizeInBytes as (i32)
+    var headerBuilder = StringBuilderInit(size + 1)
+
+    var i = 0
+    while(headerBuilder.length <= size) {
+        headerBuilder.append("param_%d", i)
+        i+=1
+    }
+
+    var headers = http::HeadersInit(32)
+    headers.put("x-key".toString(), headerBuilder.toString())
+
+    var body = StringBuilderInit(256)
+    var resp = http::HttpResponse {
+        .body = body
+    }
+    var req = http::HttpRequest {
+        .url = "http://localhost:8080/echo?hello=world",
+        .type = http::HttpRequestType.GET,
+        .body = null,
+        .headers = headers
+    }
+    assert(http.makeRequest(&req, &resp) == true)
+
+    var x = resp.body.trim().cStr()
+    //printf("Resp: %d Body: '%s'\n", resp.statusCode, x)
+    assert(resp.statusCode == 400)
+    assert("Request exceeded the max request limit of 8192 bytes for headers".equals(x))
+}
+
+@test("test 404 handler")
+func test_404_handler() {
+    var resp = http::HttpResponse {
+        .body = StringBuilderInit(256)
+    }
+    http.get("http://localhost:8080/doesnotexist", &resp)
+
+    assert(resp.statusCode == 404)
+    assert(resp.body.contains("Unknown route for <b>/doesnotexist</b>"))
+}
+
+@test("test download file handler")
+func test_download_file() {
+    var resp = http::HttpResponse {
+        .body = StringBuilderInit(256),
+        .headers = http::HeadersInit(32)
+    }
+    http.get("http://localhost:8080/download", &resp)
+
+    assert(resp.statusCode == 200)
+
+    var fileContents = StringBuilderInit(256)
+    defer fileContents.free()
+
+    var status = ReadFileFully("../test/download_sample.txt", &fileContents)
+    assert(status == FileStatus.Ok)
+    assert(fileContents.equals(resp.body))
+    assert(fileContents.length > 0)
+    assert(resp.body.length > 0)
+
+    var encoding = resp.headers.get("Transfer-Encoding".toString())
+    assert(encoding.equalsString("chunked"))
+
+    var disposition = resp.headers.get("Content-Disposition".toString())
+    assert(disposition.contains("attachment; filename"))
 }

@@ -697,6 +697,7 @@ func (this: *WorkerThread) handlePartialHttpRequest(
         }
     }
 
+
     if(request.headerIndex < 1) {
         request.headerIndex = buffer.endIndexOf("\r\n\r\n")
         if(request.headerIndex < 0) {
@@ -707,8 +708,9 @@ func (this: *WorkerThread) handlePartialHttpRequest(
             Info("Headers not fully read, dispatching another io-read for connection: %d\n", connection.handle())
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
         }
-
-        if(request.headerIndex > this.config.maxHttpHeaderSizeInBytes) {
+        var headerSize = request.headerIndex - request.requestLineIndex
+        Info("Request Line: %d HeaderIndex: %d Size: %d\n", request.requestLineIndex, request.headerIndex, headerSize)
+        if(headerSize > this.config.maxHttpHeaderSizeInBytes) {
             Error("Headers of size '%d' exceeded max request limit of '%d' for connection: %d\n",
                 request.headerIndex,
                 this.config.maxHttpHeaderSizeInBytes,

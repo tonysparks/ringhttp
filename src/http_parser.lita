@@ -142,51 +142,51 @@ func ToHttpMethod(method: *String) : HttpMethod {
     switch(method.length) {
         case 3: {
             // GET
-            if(method.equals("GET", method.length)) {
+            if(method.equalsString("GET", method.length)) {
                 return HttpMethod.GET
             }
             // PUT
-            else if(method.equals("PUT", method.length)) {
+            else if(method.equalsString("PUT", method.length)) {
                 return HttpMethod.PUT
             }
             break;
         }
         case 4: {
             // HEAD
-            if(method.equals("HEAD", method.length)) {
+            if(method.equalsString("HEAD", method.length)) {
                 return HttpMethod.HEAD
             }
             // POST
-            else if(method.equals("POST", method.length)) {
+            else if(method.equalsString("POST", method.length)) {
                 return HttpMethod.POST
             }
             break;
         }
         case 5: {
             // TRACE
-            if(method.equals("TRACE", method.length)) {
+            if(method.equalsString("TRACE", method.length)) {
                 return HttpMethod.TRACE
             }
             // PATCH
-            else if(method.equals("PATCH", method.length)) {
+            else if(method.equalsString("PATCH", method.length)) {
                 return HttpMethod.PATCH
             }
             break;
         }
         case 6: {
             // DELETE
-            if(method.equals("DELETE", method.length)) {
+            if(method.equalsString("DELETE", method.length)) {
                 return HttpMethod.DELETE
             }
             break;
         }
         case 7: {
             // OPTIONS
-            if(method.equals("OPTIONS", method.length)) {
+            if(method.equalsString("OPTIONS", method.length)) {
                 return HttpMethod.OPTIONS
             }
             // CONNECT
-            else if(method.equals("CONNECT", method.length)) {
+            else if(method.equalsString("CONNECT", method.length)) {
                 return HttpMethod.CONNECT
             }
             break;
@@ -275,10 +275,10 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
 
 func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
     if (header.name.equalsIgnoreCase("content-type")) {
-        if(header.values.equals("application/x-www-form-urlencoded")) {
+        if(header.values.equalsString("application/x-www-form-urlencoded")) {
             body.bodyType = BodyType.FORM_URLENCODED
         }
-        else if(header.values.equals("application/json")) {
+        else if(header.values.equalsString("application/json")) {
             body.bodyType = BodyType.JSON
         }
         else if(header.values.startsWith("multipart/form-data")) {
