@@ -677,7 +677,7 @@ func (this: *WorkerThread) handlePartialHttpRequest(
 
     var buffer = readBuffer.asString()
     if(request.requestLineIndex < 1) {
-        request.requestLineIndex = buffer.endIndexOf("\r\n")
+        request.requestLineIndex = buffer.endIndexOf($"\r\n")
         if(request.requestLineIndex < 0) {
             if(readBuffer.remaining() < this.config.maxHttpRequestLineSizeInBytes) {
                 readBuffer.reserve(readBuffer.capacity + this.config.maxHttpRequestLineSizeInBytes as (i32))
@@ -699,7 +699,7 @@ func (this: *WorkerThread) handlePartialHttpRequest(
 
 
     if(request.headerIndex < 1) {
-        request.headerIndex = buffer.endIndexOf("\r\n\r\n")
+        request.headerIndex = buffer.endIndexOf($"\r\n\r\n")
         if(request.headerIndex < 0) {
             if(readBuffer.remaining() < this.config.maxHttpHeaderSizeInBytes) {
                 readBuffer.reserve(readBuffer.capacity + this.config.maxHttpHeaderSizeInBytes as (i32))
@@ -819,7 +819,7 @@ func (this: *WorkerThread) handleHttpRequest(
 
     if(httpRequest.method == HttpMethod.GET) {
         // the client is requesting a file
-        if(httpRequest.path.startsWith(this.server.config.fileServerPath)) {
+        if(httpRequest.path.startsWith(this.server.config.fileServerPath.toString())) {
             return this.handleFileRequest(request, ring, httpRequest)
         }
     }

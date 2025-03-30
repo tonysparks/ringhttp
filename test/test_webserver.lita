@@ -77,7 +77,7 @@ public func (this: *ServerHandler) handle(
 func TestWebSocketController(session: *WebSocketSession, frame: *Frame) : i32 {
     var text = StringInit(.buffer = frame.payload, .length = frame.payloadLength as (i32))
 
-    if (text.equalsIgnoreCase("exit")) {
+    if (text.equalsIgnoreCase($"exit")) {
         session.close()
         return 1
     }

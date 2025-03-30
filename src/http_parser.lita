@@ -46,7 +46,7 @@ public func (this: *HttpParser) init(allocator: *const Allocator) {
 }
 
 public func (this: *HttpParser) parse(input: String, result: *HttpRequest) :  ParseStatus {
-    var index = input.indexOf("\r\n", 2)
+    var index = input.indexOf($"\r\n")
     if(index < 0) {
         return ParseStatus.ERROR_INVALID_REQUEST_LINE
     }
@@ -54,12 +54,12 @@ public func (this: *HttpParser) parse(input: String, result: *HttpRequest) :  Pa
     // The Request Line (Method Path Http/Version)
     var requestLine = input.substring(0, index)
 
-    var methodIndex = requestLine.indexOf(" ", 1)
+    var methodIndex = requestLine.indexOf($" ")
     if(methodIndex < 0) {
         return ParseStatus.ERROR_INVALID_REQUEST_LINE
     }
 
-    var pathIndex = requestLine.indexOfAt(" ", 1, methodIndex + 1)
+    var pathIndex = requestLine.indexOfAt($" ", methodIndex + 1)
     if(pathIndex < 0) {
         return ParseStatus.ERROR_INVALID_REQUEST_LINE
     }
@@ -69,7 +69,7 @@ public func (this: *HttpParser) parse(input: String, result: *HttpRequest) :  Pa
     result.path = requestLine.substring(methodIndex + 1, pathIndex)
     result.version = requestLine.substring(pathIndex + 1, index)
 
-    var queryIndex = result.path.indexOf("?")
+    var queryIndex = result.path.indexOf($"?")
     if(queryIndex >= 0) {
         result.query = result.path.substring(queryIndex + 1)
         result.path = result.path.substring(0, queryIndex)
@@ -91,7 +91,7 @@ public func (this: *HttpParser) parseBody(input: String, result: *HttpRequest): 
 
 
 public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) :  ParseStatus {
-    if(!input.endsWith("\r\n\r\n", 4)) {
+    if(!input.endsWith($"\r\n\r\n")) {
         return ParseStatus.CHUNK_INCOMPLETE
     }
 
@@ -103,7 +103,7 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
             break
         }
 
-        var index = input.indexOf("\r\n", 2)
+        var index = input.indexOf($"\r\n")
         if(index < 0) {
             return ParseStatus.ERROR_INVALID_CHUNK
         }
@@ -114,7 +114,7 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
         // check to see if we are at the end of the stream
         if(size < 1) {
             input = input.substring(index + 2)
-            if(!input.startsWith("\r\n", 2)) {
+            if(!input.startsWith($"\r\n")) {
                 return ParseStatus.ERROR_INVALID_CHUNK
             }
 
@@ -130,7 +130,7 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
         var chunkEndIndex = index + 2 + size
         input = input.substring(chunkEndIndex)
 
-        if(!input.startsWith("\r\n", 2)) {
+        if(!input.startsWith($"\r\n")) {
             return ParseStatus.ERROR_INVALID_CHUNK
         }
 
@@ -206,7 +206,7 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : Pa
 
     result.headers.init(16, this.allocator)
 
-    var headers = input.split("\r\n", 2)
+    var headers = input.split($"\r\n")
     while(headers.hasNext()) {
         var header = headers.next()
         if(header.empty()) {
@@ -216,7 +216,7 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : Pa
 
         var currentHeader = HttpHeader{}
 
-        var pair = header.split(":", 1)
+        var pair = header.split($":")
         if(!pair.hasNext()) {
             return ParseStatus.ERROR_INVALID_HEADER_PARAM
         }
@@ -239,33 +239,33 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : Pa
 
 func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) {
     // TODO: Optimize case insensitivity
-    if (header.name.equalsIgnoreCase("connection")) {
-        if (header.values.contains("close")) {
+    if (header.name.equalsIgnoreCase($"connection")) {
+        if (header.values.contains($"close")) {
             result.flags |= HttpFlags.DISABLE_KEEP_ALIVE
         }
-        else if (header.values.contains("Upgrade")) {
+        else if (header.values.contains($"Upgrade")) {
             result.flags |= HttpFlags.UPGRADE_REQUEST
         }
     }
-    else if (header.name.equalsIgnoreCase("content-length")) {
+    else if (header.name.equalsIgnoreCase($"content-length")) {
         result.bodyLength = MAX(0, strtol(header.values.buffer, null, 10) as (i32))
         result.flags |= HttpFlags.CONTENT_LENGTH_PROVIDED
     }
-    else if (header.name.equalsIgnoreCase("transfer-encoding")) {
-        if(header.values.startsWith("chunked")) {
+    else if (header.name.equalsIgnoreCase($"transfer-encoding")) {
+        if(header.values.startsWith($"chunked")) {
             result.flags |= HttpFlags.CHUNKED_ENCODING
         }
-        else if(header.values.startsWith("gzip")) {
+        else if(header.values.startsWith($"gzip")) {
             result.flags |= HttpFlags.GZIP_ENCODING
         }
-        else if(header.values.startsWith("deflate")) {
+        else if(header.values.startsWith($"deflate")) {
             result.flags |= HttpFlags.DEFLATE_ENCODING
         }
-        else if(header.values.startsWith("compressed")) {
+        else if(header.values.startsWith($"compressed")) {
             result.flags |= HttpFlags.COMPRESSED_ENCODING
         }
     }
-    else if (header.name.equalsIgnoreCase("upgrade") && header.values.contains("websocket")) {
+    else if (header.name.equalsIgnoreCase($"upgrade") && header.values.contains($"websocket")) {
         result.flags |= HttpFlags.WEB_SOCKET_PROTOCOL
     }
     else {
@@ -274,16 +274,16 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
 }
 
 func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
-    if (header.name.equalsIgnoreCase("content-type")) {
-        if(header.values.equalsString("application/x-www-form-urlencoded")) {
+    if (header.name.equalsIgnoreCase($"content-type")) {
+        if(header.values.equals($"application/x-www-form-urlencoded")) {
             body.bodyType = BodyType.FORM_URLENCODED
         }
-        else if(header.values.equalsString("application/json")) {
+        else if(header.values.equals($"application/json")) {
             body.bodyType = BodyType.JSON
         }
-        else if(header.values.startsWith("multipart/form-data")) {
+        else if(header.values.startsWith($"multipart/form-data")) {
             body.bodyType = BodyType.MULTIPART_FORMDATA
-            var boundaryIndex = header.values.endIndexOf("boundary=")
+            var boundaryIndex = header.values.endIndexOf($"boundary=")
             if(boundaryIndex < 0) {
                 return;
             }
@@ -301,7 +301,7 @@ func (this: *HttpParser) parseBodyInternal(input: String, body: *Body) : ParseSt
 
             body.formParams = ArrayInit<FormParam>(16, this.allocator)
 
-            var params = input.split("&", 1)
+            var params = input.split($"&")
             while(params.hasNext()) {
                 var param = params.next()
                 if(param.empty()) {
@@ -310,7 +310,7 @@ func (this: *HttpParser) parseBodyInternal(input: String, body: *Body) : ParseSt
 
                 var currentParam = FormParam{}
 
-                var pair = param.split("=", 1)
+                var pair = param.split($"=")
                 if(!pair.hasNext()) {
                     return ParseStatus.ERROR_INVALID_FORM_URLENCODED_PARAM
                 }
@@ -372,7 +372,7 @@ func (this: *HttpParser) parseMultipart(input: *String, multipart: *MultiPart) :
 
         // exit if --boundary--
         {
-            if(input.startsWith("--", 2)) {
+            if(input.startsWith($"--")) {
                 break
             }
         }
@@ -400,20 +400,20 @@ func (this: *HttpParser) parseMultipart(input: *String, multipart: *MultiPart) :
 }
 
 func (this: *HttpParser) parseMultipartBoundary(input: *String, boundary: String) : ParseStatus {
-    if(!input.startsWith("--", 2)) {
+    if(!input.startsWith($"--")) {
         return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
     }
 
     *input = input.substring(2)
 
-    var index = input.endIndexOf(boundary.buffer, boundary.length)
+    var index = input.endIndexOf(boundary)
     if(index < 0) {
         return ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY
     }
 
     *input = input.substring(index)
 
-    if(input.startsWith("\r\n", 2)) {
+    if(input.startsWith($"\r\n")) {
        *input = input.substring(2)
     }
 
@@ -423,7 +423,7 @@ func (this: *HttpParser) parseMultipartBoundary(input: *String, boundary: String
 func (this: *HttpParser) parseMultipartHeaders(input: *String, part: *Part) : ParseStatus {
     part.headers.init(4, this.allocator)
 
-    var it = input.split("\r\n", 2)
+    var it = input.split($"\r\n")
     while(it.hasNext()) {
         var rawHeader = it.next()
 
@@ -432,7 +432,7 @@ func (this: *HttpParser) parseMultipartHeaders(input: *String, part: *Part) : Pa
             break
         }
 
-        var nameValue = rawHeader.split(":", 1)
+        var nameValue = rawHeader.split($":")
 
         if(!nameValue.hasNext()) {
             return ParseStatus.ERROR_INVALID_MULTIPART_HEADER
@@ -457,24 +457,24 @@ func (this: *HttpParser) parseMultipartHeaders(input: *String, part: *Part) : Pa
 }
 
 func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundary: String) : ParseStatus {
-    var it = input.split(boundary.buffer, boundary.length)
+    var it = input.split(boundary)
     var formData = &part.formData
 
-    var disposition = part.getHeaderValue(StringInit("content-disposition"))
-    if(disposition.contains("form-data")) {
+    var disposition = part.getHeaderValue($"content-disposition")
+    if(disposition.contains($"form-data")) {
         part.bodyType = BodyType.FORMDATA
 
         // name
         {
-            var index = disposition.endIndexOf(" name=")
+            var index = disposition.endIndexOf($" name=")
             if(index > -1) {
-                var endIndex = disposition.indexOfAt(";", 1, index)
+                var endIndex = disposition.indexOfAt($";", index)
                 if(endIndex < 0) {
                     endIndex = disposition.length
                 }
 
                 formData.name = disposition.substring(index, endIndex)
-                if(formData.name.startsWith("\"") && formData.name.endsWith("\"")) {
+                if(formData.name.startsWith($"\"") && formData.name.endsWith($"\"")) {
                     formData.name.buffer += 1
                     formData.name.length -= 2
                 }
@@ -483,16 +483,16 @@ func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundar
 
         // filename
         {
-            var index = disposition.endIndexOf("filename=")
+            var index = disposition.endIndexOf($"filename=")
             if(index > -1) {
-                var endIndex = disposition.indexOfAt(";", 1, index)
+                var endIndex = disposition.indexOfAt($";", index)
                 if(endIndex < 0) {
                     endIndex = disposition.length
                 }
 
                 formData.filename = disposition.substring(index, endIndex)
                 // TODO: Allow for encoded characters
-                if(formData.filename.startsWith("\"") && formData.filename.endsWith("\"")) {
+                if(formData.filename.startsWith($"\"") && formData.filename.endsWith($"\"")) {
                     formData.filename.buffer += 1
                     formData.filename.length -= 2
                 }

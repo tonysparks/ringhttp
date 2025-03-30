@@ -212,9 +212,9 @@ func test_download_file() {
     assert(fileContents.length > 0)
     assert(resp.body.length > 0)
 
-    var encoding = resp.headers.get("Transfer-Encoding".toString())
-    assert(encoding.equalsString("chunked"))
+    var encoding = resp.headers.get($"Transfer-Encoding")
+    assert(encoding.equals($"chunked"))
 
-    var disposition = resp.headers.get("Content-Disposition".toString())
-    assert(disposition.contains("attachment; filename"))
+    var disposition = resp.headers.get($"Content-Disposition")
+    assert(disposition.contains($"attachment; filename"))
 }

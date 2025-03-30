@@ -14,7 +14,7 @@ import "http_response"
 import "http_connection"
 
 public func OpenFile(fileServerPath: *const char, path: String, file: *File) : Status {
-    if(path.contains("..") || path.length >= MAX_PATH) {
+    if(path.contains($"..") || path.length >= MAX_PATH) {
         return Status.ERROR_REQUEST_PATH_NOT_ALLOWED
     }
 

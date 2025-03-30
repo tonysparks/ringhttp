@@ -159,7 +159,7 @@ public struct HttpPathTemplate {
 public func (this: *Payload) getHeaderValue(name: String) : String {
     for(var i = 0; i < this.headers.size(); i+=1) {
         var header = this.headers.getPtr(i)
-        if(header.name.equalsIgnoreCase(name.buffer, name.length)) {
+        if(header.name.equalsIgnoreCase(name)) {
             return header.values
         }
     }
@@ -269,14 +269,14 @@ public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : ParseStatus {
         return ParseStatus.OK;
     }
 
-    var params = this.query.split("&", 1)
+    var params = this.query.split($"&")
     while(params.hasNext()) {
         var entry = params.next()
         if(entry.empty()) {
             continue
         }
 
-        var valueIndex = entry.endIndexOf("=", 1)
+        var valueIndex = entry.endIndexOf($"=")
 
         var queryParam = QueryParam{}
         if(valueIndex  < 0) {
