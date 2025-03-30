@@ -190,7 +190,7 @@ func test_404_handler() {
     http.get("http://localhost:8080/doesnotexist", &resp)
 
     assert(resp.statusCode == 404)
-    assert(resp.body.contains("Unknown route for <b>/doesnotexist</b>"))
+    assert(resp.body.contains($"Unknown route for <b>/doesnotexist</b>"))
 }
 
 @test("test download file handler")
