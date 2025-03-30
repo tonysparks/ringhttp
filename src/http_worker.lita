@@ -893,10 +893,7 @@ func (this: *WorkerThread) handleWebSocketUpgrade(
     requestContext: *RequestHandlerContext
 ): Status {
 
-    // TODO: Compiler should support compile time toString...
-    var secKey = httpRequest.getHeaderValue(
-        StringInit("Sec-WebSocket-Key")
-    )
+    var secKey = httpRequest.getHeaderValue($"Sec-WebSocket-Key")
 
     if (secKey.empty()) {
         return Status.ERROR_WEB_SOCKET_SECURITY_KEY
