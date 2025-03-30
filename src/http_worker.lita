@@ -675,7 +675,7 @@ func (this: *WorkerThread) handlePartialHttpRequest(
 
     readBuffer.length += bytesRead
 
-    var buffer = readBuffer.asString()
+    var buffer = readBuffer.toString()
     if(request.requestLineIndex < 1) {
         request.requestLineIndex = buffer.endIndexOf($"\r\n")
         if(request.requestLineIndex < 0) {
@@ -740,7 +740,7 @@ func (this: *WorkerThread) handlePartialHttpRequest(
     }
 
     if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
-        var status = parser.parseChunk(readBuffer.asString().substring(request.headerIndex), httpRequest)
+        var status = parser.parseChunk(readBuffer.toString().substring(request.headerIndex), httpRequest)
         if(status == ParseStatus.CHUNK_INCOMPLETE) {
             Info("Chunked Body not fully read, dispatching another io-read for connection: %d\n", connection.handle())
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
@@ -772,7 +772,7 @@ func (this: *WorkerThread) handlePartialHttpRequest(
         }
     }
     else  {
-        var body = readBuffer.asString().substring(request.headerIndex)
+        var body = readBuffer.toString().substring(request.headerIndex)
         if(!body.empty()) {
             // No chunked encoding and no content-length header, return back invalid request
             return Status.ERROR_UNKNOWN_BODY_LENGTH
@@ -806,7 +806,7 @@ func (this: *WorkerThread) handleHttpRequest(
     // the client, don't use the raw readBuffer, instead use the
     // chunkData buffer that contains the decoded data
     if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
-        input = httpRequest.body.chunkData.asString()
+        input = httpRequest.body.chunkData.toString()
     }
 
     var ok = parser.parseBody(input, httpRequest)

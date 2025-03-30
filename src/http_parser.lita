@@ -118,7 +118,7 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
                 return ParseStatus.ERROR_INVALID_CHUNK
             }
 
-            result.body.body = result.chunkData.asString()
+            result.body.body = result.chunkData.toString()
             return ParseStatus.OK
         }
 
@@ -520,7 +520,7 @@ func (this: String) decodeFormUrl(allocator: *const Allocator): String {
     var sb = StringBuilderInit(this.length + 16, allocator)
     FormUrlDecode(this, sb)
 
-    return sb.asString()
+    return sb.toString()
 }
 
 

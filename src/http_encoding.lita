@@ -102,7 +102,7 @@ func testUrlEncoding(unencoded: *const char, expected: *const char) {
     UrlEncode(StringInit(unencoded), result)
     printf("Encoded: %.*s\n", result.length, result.buffer)
 
-    var encoded = result.asString()
+    var encoded = result.toString()
     assert(encoded.equalsString(expected))
 
     var result2 = StringBuilderInit(1024)
@@ -110,7 +110,7 @@ func testUrlEncoding(unencoded: *const char, expected: *const char) {
 
     UrlDecode(encoded, result2)
     printf("Decoded: %.*s\n", result2.length, result2.buffer)
-    assert(result2.asString().equalsString(unencoded))
+    assert(result2.toString().equalsString(unencoded))
 }
 
 func testFormUrlEncoding(unencoded: *const char, expected: *const char) {
@@ -120,7 +120,7 @@ func testFormUrlEncoding(unencoded: *const char, expected: *const char) {
     FormUrlEncode(StringInit(unencoded), result)
     printf("Encoded: %.*s\n", result.length, result.buffer)
 
-    var encoded = result.asString()
+    var encoded = result.toString()
     assert(encoded.equalsString(expected))
 
     var result2 = StringBuilderInit(1024)
@@ -128,7 +128,7 @@ func testFormUrlEncoding(unencoded: *const char, expected: *const char) {
 
     FormUrlDecode(encoded, result2)
     printf("Decoded: %.*s\n", result2.length, result2.buffer)
-    assert(result2.asString().equalsString(unencoded))
+    assert(result2.toString().equalsString(unencoded))
 }
 
 @test
