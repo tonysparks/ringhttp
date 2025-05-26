@@ -34,6 +34,7 @@ import "http_router"
 import "http_context"
 import "http_websocket"
 import "http_engine"
+import "mime"
 
 internal struct WorkerThread {
     ring: io_uring
@@ -43,6 +44,8 @@ internal struct WorkerThread {
     server: *HttpServer
     config: *HttpConfig
     sessions: ContextPool
+
+    rootPath: String
 }
 
 internal func (this: *WorkerThread) init(
@@ -53,8 +56,13 @@ internal func (this: *WorkerThread) init(
     this.server = server
     this.config = server.config
     this.index = index
-
     this.ring = io_uring{}
+
+    // What's the root path we look for static assets, it can
+    // either be defined via configuration or defaults to the current working
+    // directory
+    this.rootPath = this.server.config.fileServerPath.empty()
+        ? CurrentWorkingPath().toString() : this.server.config.fileServerPath
 
     var status = this.sessions.init(this.server)
     if(status != Status.OK) {
@@ -819,7 +827,7 @@ func (this: *WorkerThread) handleHttpRequest(
 
     if(httpRequest.method == HttpMethod.GET) {
         // the client is requesting a file
-        if(httpRequest.path.startsWith(this.server.config.fileServerPath.toString())) {
+        if(httpRequest.path.startsWith(this.server.config.publicServerPath)) {
             return this.handleFileRequest(request, ring, httpRequest)
         }
     }
@@ -950,7 +958,12 @@ func (this: *WorkerThread) handleFileRequest(
 
     // TODO: Cache File contents
     var file: File;
-    var fileStatus = OpenFile(this.config.fileServerPath, httpRequest.path, &file)
+    var fileStatus = OpenFile(
+        this.rootPath,
+        this.config.publicServerPath,
+        httpRequest.path,
+        &file
+    )
     if(fileStatus != Status.OK) {
         return fileStatus
     }
@@ -962,6 +975,11 @@ func (this: *WorkerThread) handleFileRequest(
     response.type = ResponseType.FILE
     response.fileHandle = file.handle()
     response.fileSize = file.length()
+
+    var mime = this.server.mime.getMimeType(httpRequest.path)
+    if(!mime.empty()) {
+        response.addHeader($"Content-Type", mime)
+    }
 
     // TODO add mime type info..
     return this.queueWriteHttpResponse(ring, session)

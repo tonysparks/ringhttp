@@ -13,14 +13,27 @@ import "http_common"
 import "http_response"
 import "http_connection"
 
-public func OpenFile(fileServerPath: *const char, path: String, file: *File) : Status {
+public func OpenFile(
+    rootPath: String,
+    publicServerPath: String,
+    path: String,
+    file: *File
+) : Status {
+
     if(path.contains($"..") || path.length >= MAX_PATH) {
         return Status.ERROR_REQUEST_PATH_NOT_ALLOWED
     }
 
+    if (publicServerPath.length > 0 && path.length >= publicServerPath.length) {
+        path = path.substring(publicServerPath.length)
+    }
+
     var buffer = [MAX_PATH]char{}
     var filepath = StringBufferInit(buffer, MAX_PATH, 0)
-    filepath.format("%s%.*s", CurrentWorkingPath(), path.length, path.buffer)
+    filepath.format("%.*s%.*s",
+        rootPath.length, rootPath.buffer,
+        path.length, path.buffer
+    )
 
     var fileStatus = file.open(filepath.cStr(), FileOpenOp.READ_ONLY)
     if(fileStatus != FileStatus.Ok) {

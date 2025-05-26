@@ -22,6 +22,7 @@ import "http_file"
 import "http_engine"
 import "http_router"
 import "http_websocket"
+import "mime"
 
 
 @doc("Catch all http handler for 404, 5xx")
@@ -65,7 +66,8 @@ public struct HttpConfig {
     requestBucketSizeInBytes: usize = 2 * MiB
 
     // static file directory
-    fileServerPath: *const char = "/static/"
+    fileServerPath: String = $""            // the FileSystem path to look for static assets
+    publicServerPath: String = $"/static/"  // the URI path that denotes we're looking for static assets
 
     // the server side keep alive time in seconds
     keepAliveTimeoutInSec: i32 = 5
@@ -88,6 +90,7 @@ public struct HttpServer {
     engine: HttpRingEngine
     config: *HttpConfig
 
+    mime: MimeDB
     router: Router
 
     errorHandler: HttpHandler
@@ -153,6 +156,8 @@ public func (this: *HttpServer) init(config: *HttpConfig) : Status {
     this.filterHandlers.init(32, config.allocator)
     this.engine.init(this)
 
+    this.mime.init(config.allocator)
+
     return Status.OK
 }
 
@@ -170,8 +175,9 @@ public func (this: *HttpServer) close() {
 }
 
 public func (this: *HttpServer) free() {
+    this.engine.close()
+
     this.filterHandlers.free()
     this.router.free()
-
-    this.engine.close()
+    this.mime.free()
 }
