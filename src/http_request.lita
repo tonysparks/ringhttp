@@ -46,6 +46,9 @@ public enum HttpFlags {
 
     UPGRADE_REQUEST         = (1<<6),
     WEB_SOCKET_PROTOCOL     = (1<<7),
+
+    ACCEPT_GZIP_ENCODING    = (1<<8),
+    ACCEPT_DEFLATE_ENCODING = (1<<9),
 }
 
 /**

@@ -65,6 +65,11 @@ public struct HttpConfig {
     // the bucket size for the bucket memory allocator for request allocator
     requestBucketSizeInBytes: usize = 2 * MiB
 
+    // the zlib compression level to use
+    compressionLevel: i32 = 6
+    // the size of a payload in order to trigger compression response
+    compressionEnabledOnBodySizeInBytes: usize = 1 * KiB
+
     // static file directory
     fileServerPath: String = $""            // the FileSystem path to look for static assets
     publicServerPath: String = $"/static/"  // the URI path that denotes we're looking for static assets

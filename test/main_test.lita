@@ -26,7 +26,8 @@ var defaultConfig = HttpConfig {
     .maxPoolSize = 32,
     .keepAliveTimeoutInSec = 5,
     .isLogEnabled = true,
-    .logFilePath = null
+    .logFilePath = null,
+    .fileServerPath = $"./static",
 }
 
 @module_init
@@ -217,4 +218,44 @@ func test_download_file() {
 
     var disposition = resp.headers.get($"Content-Disposition")
     assert(disposition.contains($"attachment; filename"))
+}
+
+
+@test("test gzip response")
+func test_gzip_response() {
+    var headers = http::HeadersInit(32)
+    //headers.put($"Accept-Encoding", $"gzip, deflate")
+
+    var body = StringBuilderInit(256)
+    var resp = http::HttpResponse {
+        .body = body,
+        .headers = http::HeadersInit(32)
+    }
+    var req = http::HttpRequest {
+        .url = "http://localhost:8080/gzip",
+        .type = http::HttpRequestType.GET,
+        .body = null,
+        .headers = headers
+    }
+//http.makeRequest(&req, &resp)
+    assert(http.makeRequest(&req, &resp) == true)
+    assert(resp.statusCode == 200)
+    printf("Body: \n%.*s\n", resp.body.length, resp.body.buffer)
+
+    var fileContents = StringBuilderInit(256)
+    defer fileContents.free()
+
+    const size = 2 * KiB;
+    for(var i = 0; i < size; i += 1) {
+        var b = (i % (127 - 32)) + 32
+        fileContents.appendChar(b as (char))
+    }
+//printf("Contents: \n%.*s\n", fileContents.length, fileContents.buffer)
+    assert(fileContents.equals(resp.body))
+    assert(fileContents.length > 0)
+    assert(resp.body.length > 0)
+
+    var encoding = resp.headers.get($"Content-Encoding")
+    printf("Encoding: '%.*s'\n", encoding.length, encoding.buffer)
+    assert(encoding.equals($"gzip"))
 }

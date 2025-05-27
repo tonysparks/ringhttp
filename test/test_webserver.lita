@@ -147,6 +147,23 @@ func DownloadRequestHandler(context: *RequestHandlerContext) : i32 {
     return 1
 }
 
+func GzipRequestHandler(context: *RequestHandlerContext) : i32 {
+    var req = context.request
+    var res = context.response
+
+    res.status = 200
+    res.type = ResponseType.BODY
+    res.addHeaderStr("Content-Type", "text/plain")
+
+    const size = 2 * KiB;
+    for(var i = 0; i < size; i += 1) {
+        var b = (i % (127 - 32)) + 32
+        res.body.appendChar(b as (char))
+    }
+
+    return 1
+}
+
 
 func SubmitRequestHandler(context: *RequestHandlerContext) : i32 {
     var req = context.request
@@ -279,7 +296,11 @@ func PathRequestHandler(context: *RequestHandlerContext) : i32 {
 
 func WebServerFunction(arg: *void) : i32 {
     var testServer = arg as (*TestServer)
+    return runServer(testServer)
+}
 
+@doc("Runs the test server on the current thread")
+public func runServer(testServer: *TestServer) : i32 {
     var server = HttpServer{};
     server.init(testServer.config)
 
@@ -311,6 +332,15 @@ func WebServerFunction(arg: *void) : i32 {
         &handler,
         HttpController {
             .callback = DownloadRequestHandler
+        }
+    )
+
+    server.addHttpController(
+        HttpMethod.GET,
+        "/gzip",
+        &handler,
+        HttpController {
+            .callback = GzipRequestHandler
         }
     )
 
@@ -353,9 +383,11 @@ var defaultConfig = HttpConfig {
     .maxPoolSize = 32,
     .keepAliveTimeoutInSec = 5,
     .isLogEnabled = true,
-    .logFilePath = null
+    .logFilePath = null,
+    .fileServerPath = $"static",
 }
 
+@doc("Launch the test web server on a new thread")
 public func launch(testServer: *TestServer) {
     if(!testServer.config) {
         testServer.config = &defaultConfig
@@ -375,4 +407,27 @@ public func launch(testServer: *TestServer) {
     }
 
     pthread_barrier_wait(&testServer.barrier)
+}
+
+
+@test("Example Server")
+func testExample() {
+    var config = HttpConfig {
+        .allocator = defaultAllocator,
+        .port = 8080_u16,
+        .numThreads = 8,
+        .ioQueueDepth = 32,
+        .isLogEnabled = true,
+        .logFilePath = null,
+        .maxPoolSize = 512,
+        .keepAliveTimeoutInSec = 5,
+        .fileServerPath = $"./static/",
+    }
+
+    var testServer = TestServer{
+        .config = &config
+    }
+    //runServer(&testServer)
+    launch(&testServer)
+    ThreadSleepMSec(2500000)
 }

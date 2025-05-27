@@ -30,7 +30,8 @@ public func OpenFile(
 
     var buffer = [MAX_PATH]char{}
     var filepath = StringBufferInit(buffer, MAX_PATH, 0)
-    filepath.format("%.*s%.*s",
+
+    filepath.format("%.*s/%.*s",
         rootPath.length, rootPath.buffer,
         path.length, path.buffer
     )

@@ -64,6 +64,10 @@ internal func (this: *WorkerThread) init(
     this.rootPath = this.server.config.fileServerPath.empty()
         ? CurrentWorkingPath().toString() : this.server.config.fileServerPath
 
+    if(this.rootPath.endsWith($"/")) {
+        this.rootPath.length -= 1
+    }
+
     var status = this.sessions.init(this.server)
     if(status != Status.OK) {
         return status
@@ -233,14 +237,16 @@ func (this: *WorkerThread) queueWriteHttpResponse(
     session.state = SessionState.WRITTEN_HTTP_RESPONSE
 
     var connection = &session.connection
+    var request = &session.request
     var response = &session.response
 
-    connection.bufferContents(response)
+    connection.bufferContents(request, response, this.config)
 
-    Info("Writing Http Response (%d): \n%.*s\n",
+    Info("Writing Http Response (socket: %d, length: %d):\n%.*s\n",
         connection.handle(),
-        connection.writeBuffer.length, connection.writeBuffer.buffer)
-
+        connection.writeBuffer.length,
+        connection.writeBuffer.length, connection.writeBuffer.buffer
+    )
 
     var iov = iovec {
         .iov_base = connection.writeBuffer.buffer,
@@ -981,7 +987,6 @@ func (this: *WorkerThread) handleFileRequest(
         response.addHeader($"Content-Type", mime)
     }
 
-    // TODO add mime type info..
     return this.queueWriteHttpResponse(ring, session)
 }
 

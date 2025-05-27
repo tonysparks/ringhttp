@@ -1,19 +1,25 @@
 import "std/net"
 import "std/array"
 import "std/string/builder"
+import "std/string/buffer"
+import "std/string"
 import "std/thread"
 import "std/mem"
 import "std/io"
 import "std/libc"
+import "std/zip"
+import "std/log"
 
 import "http_request"
 import "http_response"
 import "http_common"
 import "http_file"
+import "http_server"
 
 
 public const READ_BUFFER_SIZE = 16 * KiB as (i32)
 public const WRITE_BUFFER_SIZE = 8 * KiB as (i32)
+public const COMPRESSION_SIZE = 1 * KiB as (i32)
 
 public struct HttpConnection {
     id: u32
@@ -58,7 +64,11 @@ public func (this: *HttpConnection) isConnected() : bool {
 }
 
 
-public func (this: *HttpConnection) bufferContents(response: *HttpResponse) {
+public func (this: *HttpConnection) bufferContents(
+    request: *HttpRequest,
+    response: *HttpResponse,
+    config: *HttpConfig
+) {
     this.writeBuffer.clear()
 
     if(response.status < 0 || response.status >= MAX_STATUS_CODES) {
@@ -79,41 +89,66 @@ public func (this: *HttpConnection) bufferContents(response: *HttpResponse) {
         )
     }
 
-    switch(response.type) {
-        case ResponseType.NONE: break;
-        case ResponseType.BODY: {
-            this.writeBuffer.append("Content-Length: %zu\r\n", response.body.length)
-            break;
-        }
-        case ResponseType.FILE: {
-            this.writeBuffer.append("Content-Length: %zu\r\n", response.fileSize)
-            break;
-        }
-        case ResponseType.STREAM: {
-            this.writeBuffer.append("Transfer-Encoding: chunked\r\n")
-            break;
-        }
-        default: break;
-    }
-
     // TODO: Default headers
     this.writeBuffer.append("Server: Ring/0.0.1 (Linux)\r\n")
 
-
-    // Blank Line
-    this.writeBuffer.append("\r\n")
-
-    // Body (if applicable)
+    // Body
     switch(response.type) {
+        case ResponseType.NONE: break;
         case ResponseType.BODY: {
+
+            if(request.flags & HttpFlags.ACCEPT_DEFLATE_ENCODING) {
+                if(response.body.length > config.compressionEnabledOnBodySizeInBytes) {
+                    var position = this.writeBuffer.length
+
+                    this.writeBuffer.append("Content-Encoding: deflate\r\n")
+                    this.writeBuffer.append("\r\n")
+
+                    var bodyStartPosition = this.writeBuffer.length
+                    var zipStatus = ZipCompress(
+                        this.writeBuffer,
+                        response.body.toString(),
+                        config.compressionLevel as (ZipCompressionLevel)
+                    )
+                    var bodyEndPosition = this.writeBuffer.length
+                    if(zipStatus == ZipStatus.OK) {
+                        this.writeBuffer.insert(
+                            position,
+                            "Content-Length: %zu\r\n",
+                            this.writeBuffer.length - bodyStartPosition
+                        )
+                        Info("Compressed info: Full length: %d, Body length: %d\n",
+                            this.writeBuffer.length,
+                            bodyEndPosition - bodyStartPosition
+                        )
+                        return;
+                    }
+
+                    // reposition and try without compression
+                    this.writeBuffer.length = position
+                }
+            }
+
+            // Blank Line
+            this.writeBuffer.append("Content-Length: %zu\r\n", response.body.length)
+            this.writeBuffer.append("\r\n")
             this.writeBuffer.append("%.*s",
                 response.body.length, response.body.buffer
             )
             break;
         }
-        default: {
-            /* handled in queueWriteHttpResponse */
+        case ResponseType.FILE: {
+            this.writeBuffer.append("Content-Length: %zu\r\n", response.fileSize)
+            // Blank Line
+            this.writeBuffer.append("\r\n")
             break;
         }
+        case ResponseType.STREAM: {
+            this.writeBuffer.append("Transfer-Encoding: chunked\r\n")
+            // Blank Line
+            this.writeBuffer.append("\r\n")
+            break;
+        }
+        default: break;
     }
 }

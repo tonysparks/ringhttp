@@ -255,7 +255,9 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
         if(header.values.startsWith($"chunked")) {
             result.flags |= HttpFlags.CHUNKED_ENCODING
         }
-        else if(header.values.startsWith($"gzip")) {
+    }
+    else if (header.name.equalsIgnoreCase($"content-encoding")) {
+        if(header.values.startsWith($"gzip")) {
             result.flags |= HttpFlags.GZIP_ENCODING
         }
         else if(header.values.startsWith($"deflate")) {
@@ -263,6 +265,14 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
         }
         else if(header.values.startsWith($"compressed")) {
             result.flags |= HttpFlags.COMPRESSED_ENCODING
+        }
+    }
+    else if (header.name.equalsIgnoreCase($"accept-encoding")) {
+        if(header.values.contains($"gzip")) {
+            result.flags |= HttpFlags.ACCEPT_GZIP_ENCODING
+        }
+        if(header.values.contains($"deflate")) {
+            result.flags |= HttpFlags.ACCEPT_DEFLATE_ENCODING
         }
     }
     else if (header.name.equalsIgnoreCase($"upgrade") && header.values.contains($"websocket")) {
