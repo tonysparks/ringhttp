@@ -30,6 +30,9 @@ public const EINVAL:i32;
 
 
 @foreign
+public const SPLICE_F_MORE:i32;
+
+@foreign
 public struct pthread_barrier_t;
 
 @foreign

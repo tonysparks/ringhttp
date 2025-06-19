@@ -417,61 +417,70 @@ func (this: *WorkerThread) queueWriteHttpFileResponse(
         return Status.ERROR_PIPE_ERROR
     }
 
+    var bufferSize = this.config.fileSpliceSizeInBytes
+    var remainingBytes = fileSize
+    while(remainingBytes > 0) {
+        var spliceSize = (remainingBytes > bufferSize)
+            ? bufferSize : remainingBytes;
+        defer remainingBytes -= spliceSize;
 
-    // move the file to the pipe
-    {
-        var sqe = io_uring_get_sqe(ring)
-        if(!sqe) {
-            Error("Error creating SQE for socket: %d\n", socketFd)
-            goto error;
+        // move the file to the pipe
+        {
+            var sqe = io_uring_get_sqe(ring)
+            if(!sqe) {
+                Error("Error creating SQE for socket: %d\n", socketFd)
+                goto error;
+            }
+
+            io_uring_prep_splice(
+                sqe,
+                response.fileHandle,
+                (fileSize - remainingBytes) as (i64),
+                request.pipes[1],
+                -1_i64,
+                spliceSize as (u32),
+                SPLICE_F_MORE
+            )
+            sqe.flags |= IOSQE_IO_LINK
+
+            io_uring_sqe_set_data64(
+                sqe,
+                RingOperation {
+                    .opcode = RingOpcode.SPLICE,
+                    .contextIndex = request.index,
+                }.data
+            )
         }
 
-        io_uring_prep_splice(
-            sqe,
-            response.fileHandle,
-            0_i64,
-            request.pipes[1],
-            -1_i64,
-            response.fileSize as (u32),
-            0
-        )
-        sqe.flags |= IOSQE_IO_LINK
+        // move the pipe to the socket
+        {
+            var sqe = io_uring_get_sqe(ring)
+            if(!sqe) {
+                Error("Error creating SQE for socket: %d\n", socketFd)
+                goto error;
+            }
 
-        io_uring_sqe_set_data64(
-            sqe,
-            RingOperation {
-                .opcode = RingOpcode.SPLICE,
-                .contextIndex = request.index,
-            }.data
-        )
-    }
+            io_uring_prep_splice(
+                sqe,
+                request.pipes[0],
+                -1_i64,
+                connection.handle(),
+                -1_i64,
+                spliceSize as (u32),
+                SPLICE_F_MORE
+            )
+            sqe.flags |= IOSQE_IO_LINK
 
-    // move the pipe to the socket
-    {
-        var sqe = io_uring_get_sqe(ring)
-        if(!sqe) {
-            Error("Error creating SQE for socket: %d\n", socketFd)
-            goto error;
+            io_uring_sqe_set_data64(
+                sqe,
+                RingOperation {
+                    .opcode = RingOpcode.SPLICE,
+                    .contextIndex = request.index,
+                }.data
+            )
         }
 
-        io_uring_prep_splice(
-            sqe,
-            request.pipes[0],
-            -1_i64,
-            connection.handle(),
-            -1_i64,
-            response.fileSize as (u32),
-            0
-        )
-        sqe.flags |= IOSQE_IO_LINK
-
-        io_uring_sqe_set_data64(
-            sqe,
-            RingOperation {
-                .opcode = RingOpcode.SPLICE,
-                .contextIndex = request.index,
-            }.data
-        )
+        request.submissions += 2
     }
 
     // close out the file
@@ -494,9 +503,9 @@ func (this: *WorkerThread) queueWriteHttpFileResponse(
                 .contextIndex = request.index,
             }.data
         )
+        request.submissions += 1
     }
 
-    request.submissions += 3
     return Status.OK
 
 error:
@@ -983,6 +992,10 @@ func (this: *WorkerThread) handleFileRequest(
     response.fileSize = file.length()
 
     var mime = this.server.mime.getMimeType(httpRequest.path)
+    Info("Mime type: '%.*s' for path: '%.*s'\n",
+        mime.length, mime.buffer,
+        httpRequest.path.length, httpRequest.path.buffer
+    )
     if(!mime.empty()) {
         response.addHeader($"Content-Type", mime)
     }

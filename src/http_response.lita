@@ -112,6 +112,7 @@ public struct HttpResponse {
         struct {
             fileHandle: i32
             fileSize: usize
+            fileBytesSent: i64
         }
 
         // Stream
@@ -158,6 +159,7 @@ public func (this: *HttpResponse) reset() {
     this.body.clear()
     this.type = ResponseType.NONE
     this.numberOfHeaders = 0
+    this.fileBytesSent = 0
     // if(this.fileHandle > 0) {
     //     close(this.fileHandle)
     // }

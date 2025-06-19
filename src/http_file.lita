@@ -36,7 +36,7 @@ public func OpenFile(
         path.length, path.buffer
     )
 
-    var fileStatus = file.open(filepath.cStr(), FileOpenOp.READ_ONLY)
+    var fileStatus = file.open(filepath.cStr(), FileOpenOp.READ_ONLY_BINARY)
     if(fileStatus != FileStatus.Ok) {
         if(fileStatus == FileStatus.IOError) {
             return Status.ERROR_IO_ERROR
