@@ -953,14 +953,17 @@ func (this: *WorkerThread) handleWebSocketUpgrade(
     var requestMatch = requestContext.match
     assert(requestMatch.handler.type == RequestHandlerType.WEB_SOCKET)
     context.socketHandler = requestMatch.handler.webSocket
+    context.state = SessionState.WEB_SOCKET_UPGRADED
     context.isWebSocket = true
 
     var connection = &context.connection
     var readBuffer = &connection.readBuffer
     readBuffer.clear()
 
-    this.queueWriteHttpResponse(ring, context)
-    context.state = SessionState.WEB_SOCKET_UPGRADED
+    var status = this.queueWriteHttpResponse(ring, context)
+    if (status != Status.OK) {
+        return status
+    }
 
     return Status.OK
 }
