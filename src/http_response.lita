@@ -146,6 +146,9 @@ public func (this: *HttpResponse) asStream(stream: Stream) {
     this.type = ResponseType.STREAM
 }
 
+public func (this: *HttpResponse) asTemplate(template: String) {
+}
+
 public func (this: *HttpResponse) free() {
     this.body.free()
 

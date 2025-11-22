@@ -1,0 +1,158 @@
+import "std/libc"
+import "std/string"
+import "std/string/builder"
+import "std/string/buffer"
+import "std/system"
+import "std/fs"
+import "std/io"
+import "std/map"
+import "std/mem"
+
+import "http_common"
+
+public struct Template {
+    fileBuffer: StringBuilder
+    generatedCode: StringBuilder
+
+    templates: Map<String, String>
+}
+
+public func (this: *Template) init(allocator: *Allocator) {
+    this.fileBuffer = StringBuilderInit(1024, allocator)
+    this.generatedCode = StringBuilderInit(1024, allocator)
+
+    this.templates = StringMap($"", 16, allocator)
+}
+
+public func ScanForTemplates(template: *Template, assetPath: String) : Status {
+    var temp:[MAX_PATH]char;
+    var path = StringBufferInit(temp, MAX_PATH, 0)
+    path.append("%s", assetPath)
+}
+
+func ScanDirectory(template: *Template, path: *StringBuffer) : Status {
+    if(!FileExists(path.cStr())) {
+        return Status.OK
+    }
+
+    var templateDir = FileHandle{}
+    if(!templateDir.open(path.toString())) {
+        return Status.ERROR_FILE_NOT_FOUND
+    }
+    defer templateDir.close()
+
+    while(templateDir.next()) {
+        var len = path.length
+        path.append("/%s", templateDir.name())
+        defer path.length = len
+
+        if(templateDir.isDirectory()) {
+            var status = ScanDirectory(template, path)
+            if(status != Status.OK) {
+                return status
+            }
+        }
+
+        if(templateDir.isFile()) {
+            var fileName = templateDir.name().toString()
+            if(!fileName.endsWith($".lt")) {
+                continue
+            }
+
+            template.fileBuffer.clear()
+
+            var status = ReadFileFully(path.cStr(), template.fileBuffer)
+            if(status != FileStatus.Ok) {
+                return Status.ERROR_FILE_NOT_FOUND
+            }
+
+            var templateStatus = GenerateFromTemplate(
+                fileName,
+                template.fileBuffer.toString(),
+                &template.generatedCode
+            )
+
+            if(templateStatus != Status.OK) {
+                return templateStatus
+            }
+        }
+    }
+}
+
+public func GenerateFromTemplate(
+    name: String,
+    template: String,
+    output: *StringBuilder
+) : Status {
+
+    output.append("""
+    public func %.*s_WriteTemplate<T>(
+        resp: *HttpResponse,
+        input: T
+    ) : Status {
+        var out = resp.body
+    """, name.length, name.buffer)
+
+    var iter = template.split($"<%")
+    while(iter.hasNext()) {
+        var s = iter.next()
+        output.append("output.append(\"%%s\", \"\"\"%.*s\"\"\")\n", s.length, s.buffer)
+
+        var extra = iter.remaining()
+        if (!extra.empty()) {
+            var endIndex = extra.indexOf($"%>")
+            if(endIndex < 0) {
+                return Status.ERROR_TEMPLATE_NO_END_TAG
+            }
+
+            // check if there is an embedded <%
+            var startIndex = extra.indexOf($"<%")
+            if(startIndex > -1 && startIndex < endIndex) {
+                return Status.ERROR_TEMPLATE_START_TAG_BEFORE_END_TAG
+            }
+
+            // output the escaped code
+            var code = extra.substring(0, endIndex)
+            output.append("%.*s\n", code.length, code.buffer)
+
+            // move the iterator to the start of the next unescaped section
+            iter = extra.substring(endIndex + 2).split($"<%")
+        }
+    }
+
+    output.append("""
+        return Status.OK
+    }
+    """)
+
+    return Status.OK
+}
+
+@test
+func testTemplate() {
+
+    var output = StringBuilderInit(1024)
+    var status = GenerateFromTemplate(
+        $"Tony",
+        """
+        <html>
+            <%@import "/title.lt" %>
+            <body>
+                <%
+                    for(var i = 0; i < input.length; i+=1) {
+                        var element = input.getPtr(i)
+                %>
+                        <li>
+                            <% out.append("%.*s", element.name.length, element.name.buffer) %>
+                        </li>
+                <%
+                    }
+                %>
+            </body>
+        </html>
+        """.toString(),
+        output
+    )
+    printf("Status: %s\n", StatusAsStr(status))
+    printf("%.*s\n", output.length, output.buffer)
+}
