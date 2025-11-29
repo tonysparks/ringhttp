@@ -18,11 +18,12 @@ Features/TODO
 * ✅ Serve static files
 * ✅ Connection Keep-Alive (with timeouts)
 * ✅ Configurable max request sizes
-* ❌ Currently all requests are given max amount of memory - split into segments: static and dynamic to minimize overall memory footprint
+* ❌ Split into segments: static and dynamic to minimize overall memory footprint
+    * Currently all requests are given max/equal amount of memory
 * ❌ Clean handling of Out of Memory
     * ❌ OOM for a request
     * ❌ OOM for the server
-* ✅ ~311K Request/Second on single instance (Request Kind: parse Query Params and echo back in JSON on: CPU: Ryzen 5 2600 RAM: 16 GiB)
+* ✅ __~840K__ Request/Second on single instance (Request Kind: parse Query Params and echo back in JSON)
     * ✅ Support multi-threading
 * ❌ Do performance tuning
     * ❌ SIMD for HTTP parsing
@@ -79,14 +80,15 @@ __Ring Configuration__
 | Threads               | 16     |
 | IO_uring Queue Depth  | 64     |
 | Max Pool Size         | 512    |
-| Log                  | Disabled |
+| Log                   | Disabled |
 
 
 __Results__
-| Threads | Connections | Requests Per Second |
-|---------|------------|---------------------|
-| 2       | 20         | 151,978.76          |
-| 16      | 200        | 311,170.48          |
+| Threads | Connections | Requests Per Second | CPU                 |
+|---------|------------|---------------------|----------------------|
+| 2       | 20         | 151,978.76          | AMD Ryzen 5 2600     |
+| 16      | 200        | 311,170.48          | AMD Ryzen 5 2600     |
+| 16      | 200        | 844,053.43          | AMD Ryzen 7 8845HS   |
 
 
 ```
