@@ -9,7 +9,7 @@ Features/TODO
     * ✅ From Request
     * ✅ From Response
 * ❌ Transfer-Encoding: Gzip
-* ❌ Transfer-Encoding: Deflate
+* ✅ Transfer-Encoding: Deflate
 * ✅ Form URL Encoded bodies
 * ✅ Path Values
 * ✅ Path Templates
