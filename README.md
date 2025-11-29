@@ -109,3 +109,19 @@ Running 30s test @ http://localhost:8080/echo?hello=world
 Requests/sec: 311170.48
 Transfer/sec:     38.28MB
 ```
+
+
+On my new machine:
+AMD Ryzen 7 8845HS w/ Radeon 780M Graphics (16) @ 5.102GHz with 32 GiB RAM
+
+```
+tony@mini:~$ wrk -t16 -c200 -d30s --timeout 1s http://localhost:8080/echo?hello=world
+Running 30s test @ http://localhost:8080/echo?hello=world
+  16 threads and 200 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     1.79ms    8.62ms 427.95ms   96.19%
+    Req/Sec    53.11k    16.36k  137.52k    78.23%
+  25401875 requests in 30.10s, 3.05GB read
+Requests/sec: 844053.43
+Transfer/sec:    103.84MB
+```

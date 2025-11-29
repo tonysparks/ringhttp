@@ -172,7 +172,7 @@ func test_path_parameters_retrieval_hit_header_limit() {
     var req = http::HttpRequest {
         .url = "http://localhost:8080/echo?hello=world",
         .type = http::HttpRequestType.GET,
-        .body = null,
+        .body = http::HttpBody {},
         .headers = headers
     }
     assert(http.makeRequest(&req, &resp) == true)
@@ -224,7 +224,7 @@ func test_download_file() {
 @test("test gzip response")
 func test_gzip_response() {
     var headers = http::HeadersInit(32)
-    //headers.put($"Accept-Encoding", $"gzip, deflate")
+    headers.put($"Accept-Encoding", $"gzip, deflate")
 
     var body = StringBuilderInit(256)
     var resp = http::HttpResponse {
@@ -234,7 +234,7 @@ func test_gzip_response() {
     var req = http::HttpRequest {
         .url = "http://localhost:8080/gzip",
         .type = http::HttpRequestType.GET,
-        .body = null,
+        .body = http::HttpBody {},
         .headers = headers
     }
 //http.makeRequest(&req, &resp)
@@ -257,5 +257,5 @@ func test_gzip_response() {
 
     var encoding = resp.headers.get($"Content-Encoding")
     printf("Encoding: '%.*s'\n", encoding.length, encoding.buffer)
-    assert(encoding.equals($"gzip"))
+    assert(encoding.equals($"gzip") || encoding.equals($"deflate"))
 }
