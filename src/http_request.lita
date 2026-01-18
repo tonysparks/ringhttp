@@ -175,15 +175,15 @@ public func ParsePathTemplateStr(
     result: *HttpPathTemplate
 ) : ParseStatus {
     var template = StringInit(pathTemplate)
-    return ParsePathTemplate(&template, result)
+    return ParsePathTemplate(template, result)
 }
 
 public func ParsePathTemplate(
-    pathTemplate: *String,
+    pathTemplate: String,
     result: *HttpPathTemplate
 ) : ParseStatus {
 
-    result.template = *pathTemplate
+    result.template = pathTemplate
     result.numberOfEntries = 0
 
     var index = 0
@@ -229,7 +229,7 @@ public func ParsePathTemplate(
 
 public func ParsePathValues(
     template: *HttpPathTemplate,
-    path: *String,
+    path: String,
     result: *HttpPathValues) : ParseStatus {
 
     var index = 0

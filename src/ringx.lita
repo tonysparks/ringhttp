@@ -131,6 +131,8 @@ func Worker(arg: *void) : *void {
     io_uring_submit(&ring)
 
     io_uring_queue_exit(&ring)
+
+    return null
 }
 
 @test

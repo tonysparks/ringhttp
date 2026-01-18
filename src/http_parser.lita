@@ -136,6 +136,8 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
 
         input = input.substring(2)
     }
+
+    return ParseStatus.ERROR_INVALID_CHUNK
 }
 
 func ToHttpMethod(method: *String) : HttpMethod {

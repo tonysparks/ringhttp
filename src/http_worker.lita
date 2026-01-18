@@ -930,7 +930,7 @@ func (this: *WorkerThread) handleWebSocketUpgrade(
     var ctx: sha1_ctx;
 
     sha1_init(&ctx)
-    sha1_update(&ctx, keyString.cStr(), keyString.length)
+    sha1_update(&ctx, keyString.cStr() as (*u8), keyString.length)
     sha1_final(&ctx, hashResult)
 
     var keyAccept = context.requestAllocator.alloc(sizeof(:u8) * 64) as (*u8)
