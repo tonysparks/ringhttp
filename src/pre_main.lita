@@ -1,0 +1,31 @@
+import "std/libc"
+import "std/mem"
+import "std/string"
+import "std/string/buffer"
+import "std/string/builder"
+
+import "http_common"
+import "template"
+
+func main(len: i32, args: **char) : i32 {
+    var templateInputDir = "static/templates/"
+    if(len > 1) {
+        templateInputDir = args[1]
+    }
+    printf("Generating templates from '%s'...\n", templateInputDir)
+
+    var allocator = defaultAllocator
+
+    var template: Template{}
+    template.init(allocator)
+    var status = template.build(templateInputDir.toString()) ?: {
+        printf("Error building templates: %s\n", StatusAsStr(status))
+        return 1
+    }
+
+    printf("Generated code:\n")
+    printf("%s\n", template.generatedCode.cStr())
+    // TODO: generate lookup table for each template
+    // resp.template(TemplateId.PATH_TO_TEMPLATE], input)
+    return 0
+}

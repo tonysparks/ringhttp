@@ -4,6 +4,21 @@
     "type" : "executable",
     "repo" : "",
 
+    "pre_build_command": {
+        "default" : {
+            "default" : {
+                "default" : {
+                    "cc" : "gcc",
+                    "cc_options" : "-g -std=gnu99 %input% -o %output% -D_CRT_SECURE_NO_WARNINGS",
+                    "lita_options" : [
+                        "-verbose",
+                        "-run"
+                    ]
+                }
+            }
+        }
+    },
+
     "build_command" : {
         "default" : {
             "default" : {

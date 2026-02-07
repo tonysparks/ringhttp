@@ -59,4 +59,5 @@ public enum Status {
     // Template parsing
     ERROR_TEMPLATE_NO_END_TAG,
     ERROR_TEMPLATE_START_TAG_BEFORE_END_TAG,
+    ERROR_TEMPLATE_INVALID_COMMAND,
 }

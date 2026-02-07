@@ -7,38 +7,47 @@ import "std/fs"
 import "std/io"
 import "std/map"
 import "std/mem"
+import "std/assert"
+import "std/ascii"
 
 import "http_common"
 
 public struct Template {
+    allocator: *const Allocator
     fileBuffer: StringBuilder
     generatedCode: StringBuilder
 
     templates: Map<String, String>
 }
 
-public func (this: *Template) init(allocator: *Allocator) {
+public func (this: *Template) init(allocator: *const Allocator) {
+    this.allocator = allocator
     this.fileBuffer = StringBuilderInit(1024, allocator)
     this.generatedCode = StringBuilderInit(1024, allocator)
 
     this.templates = StringMap($"", 16, allocator)
 }
 
-public func ScanForTemplates(template: *Template, assetPath: String) : Status {
+public func (this: *Template) build(assetPath: String): Status {
+    return ScanForTemplates(this, assetPath)
+}
+
+func ScanForTemplates(template: *Template, assetPath: String) : Status {
     var temp:[MAX_PATH]char;
     var path = StringBufferInit(temp, MAX_PATH, 0)
     path.append("%s", assetPath)
+
+    return ScanDirectory(template, path)
 }
 
 func ScanDirectory(template: *Template, path: *StringBuffer) : Status {
     if(!FileExists(path.cStr())) {
-        return Status.OK
+        return Status.ERROR_FILE_NOT_FOUND
     }
 
     var templateDir = FileHandle{}
-    if(!templateDir.open(path.toString())) {
-        return Status.ERROR_FILE_NOT_FOUND
-    }
+    !templateDir.open(path.toString())
+        ?: return Status.ERROR_FILE_NOT_FOUND
     defer templateDir.close()
 
     while(templateDir.next()) {
@@ -48,9 +57,7 @@ func ScanDirectory(template: *Template, path: *StringBuffer) : Status {
 
         if(templateDir.isDirectory()) {
             var status = ScanDirectory(template, path)
-            if(status != Status.OK) {
-                return status
-            }
+                ?: return status
         }
 
         if(templateDir.isFile()) {
@@ -62,41 +69,79 @@ func ScanDirectory(template: *Template, path: *StringBuffer) : Status {
             template.fileBuffer.clear()
 
             var status = ReadFileFully(path.cStr(), template.fileBuffer)
-            if(status != FileStatus.Ok) {
-                return Status.ERROR_FILE_NOT_FOUND
-            }
+                ?: return Status.ERROR_FILE_NOT_FOUND
 
             var templateStatus = GenerateFromTemplate(
+                template.allocator,
                 fileName,
                 template.fileBuffer.toString(),
                 &template.generatedCode
-            )
-
-            if(templateStatus != Status.OK) {
-                return templateStatus
-            }
+            ) ?: return templateStatus
         }
     }
+    return Status.OK
+}
+
+func LoadTemplate(
+    allocator: *const Allocator,
+    path: String,
+    fileBuffer: *StringBuilder,
+    output: *StringBuilder
+) : Status {
+
+    var status = ReadFileFullyStr(path, fileBuffer)
+        ?: return Status.ERROR_FILE_NOT_FOUND
+
+    var templateStatus = GenerateBody(
+        allocator,
+        fileBuffer.toString(),
+        output
+    ) ?: return templateStatus
+
+    return Status.OK
 }
 
 public func GenerateFromTemplate(
+    allocator: *const Allocator,
     name: String,
     template: String,
     output: *StringBuilder
 ) : Status {
 
+    var sname = SanatizeName(name)
+    // TODO: Escape function name
     output.append("""
     public func %.*s_WriteTemplate<T>(
         resp: *HttpResponse,
         input: T
     ) : Status {
         var out = resp.body
-    """, name.length, name.buffer)
+    """, sname.length, sname.buffer)
 
+    var status = GenerateBody(allocator, template, output)
+        ?: return status
+
+    output.append("""
+        return Status.OK
+    }
+    """)
+
+    return Status.OK
+}
+
+public func GenerateBody(
+    allocator: *const Allocator,
+    template: String,
+    output: *StringBuilder
+) : Status {
     var iter = template.split($"<%")
     while(iter.hasNext()) {
-        var s = iter.next()
-        output.append("output.append(\"%%s\", \"\"\"%.*s\"\"\")\n", s.length, s.buffer)
+        var s = iter.next().trim()
+
+        output.append(
+            "\n        output.append(\"%%s\", \"\"\"%.*s\"\"\")\n",
+            s.length, s.buffer
+        )
 
         var extra = iter.remaining()
         if (!extra.empty()) {
@@ -113,19 +158,94 @@ public func GenerateFromTemplate(
 
             // output the escaped code
             var code = extra.substring(0, endIndex)
+            var status = HandleDirective(allocator, &code, output)
+                ?: return status
+
             output.append("%.*s\n", code.length, code.buffer)
 
             // move the iterator to the start of the next unescaped section
             iter = extra.substring(endIndex + 2).split($"<%")
         }
     }
+    return Status.OK
+}
 
-    output.append("""
+
+func HandleDirective(
+    allocator: *const Allocator,
+    code: *String,
+    output: *StringBuilder
+) : Status {
+    var block = *code;
+    block = block.trim()
+    printf("Processing: '%.*s'\n", block.length, block.buffer)
+
+    if(!block.startsWith($"$")) {
         return Status.OK
     }
-    """)
+    printf("**********************\n")
+    // load another template
+    if(block.startsWith($"$load ")) {
+        var index = block.endIndexOf($"$load ")
+        assert(index > -1)
 
+        var filename = ReadString(block.substring(index))
+        if(filename.empty()) {
+            printf(
+                "The template command '$load' must be followed by a string representing the file path to the template to load"
+            )
+            return Status.ERROR_TEMPLATE_INVALID_COMMAND
+        }
+
+        var fileBuffer = StringBuilderInit(1024, allocator)
+        var status = LoadTemplate(
+            allocator,
+            filename,
+            fileBuffer,
+            output
+        ) ?: return status
+
+        ;*code = block.substring(index + filename.length + 2)
+    }
     return Status.OK
+}
+
+func ReadString(str: String) : String {
+    str = str.trim()
+    if(str.buffer[0] != '"') {
+        return String{}
+    }
+
+    var length = 0
+    for(var i = 1; i < str.length; i += 1) {
+        var c = str.buffer[i]
+        if(c == '"') { //"
+            break;
+        }
+        length += 1
+    }
+    return String {
+        .buffer = str.buffer + 1,
+        .length = length
+    }
+}
+
+// no thread-safe, uses static value
+func SanatizeName(
+    name: String
+) : String {
+    @static
+    var buffer:[MAX_PATH]char;
+
+    var str = StringBufferInit(buffer, MAX_PATH, 0)
+    for(var i = 0; i < name.length; i+=1) {
+        var c = name.buffer[i]
+        if(!c.isAlphanumeric()) {
+            c = '_'
+        }
+        str.appendChar(c)
+    }
+    return str.toString()
 }
 
 @test

@@ -8,3 +8,6 @@ notes.txt
 *.out.*
 perf.data
 .build.json
+*.dSYM/
+bin/pre_build
+bin/pre_build.c
