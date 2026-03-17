@@ -49,6 +49,8 @@ public enum HttpFlags {
 
     ACCEPT_GZIP_ENCODING    = (1<<8),
     ACCEPT_DEFLATE_ENCODING = (1<<9),
+
+    SSE                     = (1<<10),
 }
 
 /**

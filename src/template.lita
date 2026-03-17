@@ -253,6 +253,7 @@ func testTemplate() {
 
     var output = StringBuilderInit(1024)
     var status = GenerateFromTemplate(
+        defaultAllocator,
         $"Tony",
         """
         <html>

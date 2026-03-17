@@ -93,6 +93,7 @@ public enum ResponseType {
     BODY,
     FILE,
     STREAM,
+    SSE,
 }
 
 public trait Stream {

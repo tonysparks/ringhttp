@@ -285,7 +285,8 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
     }
 }
 
-func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
+func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, result: *HttpRequest) {
+    var body = &result.body
     if (header.name.equalsIgnoreCase($"content-type")) {
         if(header.values.equals($"application/x-www-form-urlencoded")) {
             body.bodyType = BodyType.FORM_URLENCODED
@@ -301,6 +302,9 @@ func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
             }
 
             body.multipart.boundary = header.values.substring(boundaryIndex)
+        }
+        else if(header.values.startsWith($"event/stream")) {
+            result.flags |= HttpFlags.SSE
         }
     }
 }

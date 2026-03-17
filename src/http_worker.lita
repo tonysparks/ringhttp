@@ -296,6 +296,9 @@ func (this: *WorkerThread) queueWriteHttpResponse(
             session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
             return this.queueWriteHttpFileResponse(ring, session)
         }
+        else if(response.type == ResponseType.SSE) {
+            session.state = SessionState.WRITING_SSE
+        }
         else {
             assert(response.type == ResponseType.STREAM)
             session.state = SessionState.WRITING_STREAM
@@ -314,6 +317,90 @@ func (this: *WorkerThread) queueWriteHttpStreamResponse(
 ): Status {
 
     session.state = SessionState.WRITING_STREAM
+
+    var connection = &session.connection
+    var response = &session.response
+    if(!response.stream.__this) {
+        Error("No stream attached to connection: %d\n", connection.handle())
+        return Status.ERROR_NO_STREAM_HANDLER_FOUND
+    }
+
+    var writeBuffer = &connection.writeBuffer
+    writeBuffer.clear()
+
+    // Read the stream contents
+    var numberOfBytesRead = response.stream.read(response.body.buffer, response.body.capacity)
+    var moreContents = numberOfBytesRead > 0
+
+    if(!moreContents) {
+        session.state = SessionState.WRITTEN_HTTP_RESPONSE
+        writeBuffer.append("0\r\n\r\n")
+    }
+    else {
+
+        if(!writeBuffer.reserve(numberOfBytesRead + 16)) {
+            Error(
+                "Unable to handle stream of %d bytes due to out of memory for connection: %d\n",
+                numberOfBytesRead,
+                connection.handle()
+            )
+            return Status.ERROR_OUT_OF_MEMORY
+        }
+
+        writeBuffer.append("%08X\r\n", numberOfBytesRead)
+        response.body.length = numberOfBytesRead
+        response.body.copyTo(writeBuffer.buffer + writeBuffer.length, numberOfBytesRead, false)
+
+        writeBuffer.length += numberOfBytesRead
+        writeBuffer.appendStrn("\r\n", 2)
+    }
+
+    // Send the bytes over the TCP connection
+    var iov = iovec {
+        .iov_base = connection.writeBuffer.buffer,
+        .iov_len  = connection.writeBuffer.length,
+    }
+
+    var msg = msghdr {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    }
+
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for socket: %d\n", connection.handle())
+        goto error;
+    }
+
+    io_uring_prep_sendmsg(
+        sqe,
+        connection.handle(),
+        &msg,
+        moreContents ? SocketFlags.MSG_MORE : 0
+    )
+
+    io_uring_sqe_set_data64(
+        sqe,
+        RingOperation {
+            .opcode = RingOpcode.SENDMSG,
+            .contextIndex = session.index,
+        }.data
+    )
+
+    session.submissions += 1
+
+    return Status.OK
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+func (this: *WorkerThread) queueWriteHttpSseResponse(
+    ring: *io_uring,
+    session: *SessionContext
+): Status {
+
+    session.state = SessionState.WRITING_SSE
 
     var connection = &session.connection
     var response = &session.response
