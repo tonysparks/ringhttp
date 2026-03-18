@@ -21,7 +21,7 @@
 
     "build_command" : {
         "default" : {
-            "default" : {
+            "linux" : {
                 "default" : {
                     "cc" : "gcc",
                     "cc_options" : "-g -std=gnu99 %input% -o %output% -D_CRT_SECURE_NO_WARNINGS",
@@ -29,9 +29,66 @@
                         "-verbose"
                     ]
                 }
+            },
+            "mac" : {
+                "default" : {
+                    "cc" : "clang",
+                    "cc_options" : "-g -std=gnu99 %input% -o %output% -D_CRT_SECURE_NO_WARNINGS -D_DARWIN_C_SOURCE",
+                    "lita_options" : [
+                        "-verbose",
+                        "-profile"
+                    ]
+                }
+            },
+            "default" : {
+                "default" : {
+                    "cc" : "gcc",
+                    "cc_options" : "-g -std=gnu99 %input% -o %output% -D_CRT_SECURE_NO_WARNINGS",
+                    "lita_options" : [
+                        "-verbose",
+                        "-profile"
+                    ]
+                }
             }
         },
         "release" : {
+            "linux" : {
+                "default" : {
+                    "cc" : "gcc",
+                    "cc_options": [
+                        "-std=gnu99",
+                        "-O3",
+                        "-march=native",
+                        "-mtune=native",
+                        "%input%",
+                        "-o",
+                        "%output%",
+                        "-D_CRT_SECURE_NO_WARNINGS"
+                    ],
+                    "lita_options" : [
+                        "-verbose"
+                    ]
+                }
+            },
+            "macos" : {
+                "default" : {
+                    "cc" : "clang",
+                    "cc_options": [
+                        "-std=gnu99",
+                        "-O3",
+                        "-march=native",
+                        "-mtune=native",
+                        "%input%",
+                        "-o",
+                        "%output%",
+                        "-D_CRT_SECURE_NO_WARNINGS",
+                        "-D_DARWIN_C_SOURCE"
+                    ],
+                    "lita_options" : [
+                        "-verbose"
+                    ]
+                }
+            },
             "default" : {
                 "default" : {
                     "cc" : "gcc",

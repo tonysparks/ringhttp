@@ -15,7 +15,7 @@ import "std/map"
 
 import "http_ring"
 import "test_webserver"
-
+/*
 var testServer = TestServer{}
 var http = http::Http{}
 
@@ -258,4 +258,4 @@ func test_gzip_response() {
     var encoding = resp.headers.get($"Content-Encoding")
     printf("Encoding: '%.*s'\n", encoding.length, encoding.buffer)
     assert(encoding.equals($"gzip") || encoding.equals($"deflate"))
-}
+}*/

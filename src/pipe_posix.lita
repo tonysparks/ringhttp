@@ -1,19 +1,10 @@
-@include("<fcntl.h>", "<unistd.h>");
+@include("<fcntl.h>", "<unistd.h>", "<errno.h>");
 
 @foreign
 public const O_CLOEXEC:i32;
 
 @foreign
-public const O_DIRECT:i32;
-
-@foreign
 public const O_NONBLOCK:i32;
-
-@foreign
-public const O_NOTIFICATION_PIPE:i32;
-
-@foreign
-public func pipe2(pipefd: [2]i32, flags: i32) : i32;
 
 // TODO: Move these to stdlib
 @foreign
@@ -28,6 +19,16 @@ public const ENOENT:i32;
 @foreign
 public const EINVAL:i32;
 
+#if (OS == "LINUX")
+
+@foreign
+public const O_DIRECT:i32;
+
+@foreign
+public const O_NOTIFICATION_PIPE:i32;
+
+@foreign
+public func pipe2(pipefd: [2]i32, flags: i32) : i32;
 
 @foreign
 public const SPLICE_F_MORE:i32;
@@ -59,3 +60,5 @@ public func pthread_barrierattr_getpshared(attr: *const pthread_barrierattr_t, p
 
 @foreign
 public func pthread_barrierattr_setpshared(attr: *pthread_barrierattr_t, pshared: i32): i32;
+
+#end

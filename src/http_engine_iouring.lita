@@ -1,0 +1,286 @@
+import "std/net"
+import "std/libc"
+import "std/thread"
+import "std/thread/thread_pool"
+import "std/mem"
+import "std/mem/bucket_allocator"
+import "std/mem/linear_allocator"
+import "std/mem/thread_safe_allocator"
+import "std/string/builder"
+import "std/string/buffer"
+import "std/string"
+import "std/array"
+import "std/io"
+import "std/libc/signal"
+import "std/atomic"
+import "std/assert"
+import "std/system"
+import "std/log"
+
+// posix specific
+import "std/net/posix_socket"
+import "pipe_posix"
+
+import "liburing"
+
+import "http_connection"
+import "http_parser"
+import "http_common"
+import "http_request"
+import "http_response"
+import "http_file"
+import "http_server"
+import "http_router"
+import "http_context"
+import "http_websocket"
+import "http_worker"
+
+internal struct HttpRingEngine {
+    config: using *HttpConfig
+    safeAllocator: ThreadSafeAllocator
+    serverSocket: Socket
+
+    ring: io_uring
+
+    isRunning: Atomic<bool>
+
+    distribution: u64
+    workers: Array<WorkerThread>
+    barrier: pthread_barrier_t
+
+    clientAddr: sockaddr_in;
+    clientAddrLen: socklen_t;
+
+    server: *HttpServer
+}
+
+internal func (this: *HttpRingEngine) init(
+    server: *HttpServer
+) {
+    this.server = server
+    this.config = server.config
+
+    this.distribution = 0_u64
+
+    this.safeAllocator.init(this.config.allocator)
+
+    var maxWorkers = MAX(this.config.numThreads, 1)
+    this.workers.init(
+        maxWorkers,
+        this.safeAllocator
+    )
+
+    if(!this.config.disableSignal) {
+        signal(SIGINT, signal_handler);
+    }
+}
+
+internal func (this: *HttpRingEngine) listen() : Status {
+    this.close()
+
+    this.isRunning.init(true)
+
+    var params = io_uring_params {}
+    params.flags |= IORING_SETUP_SINGLE_ISSUER
+    params.flags |= IORING_SETUP_COOP_TASKRUN
+    params.flags |= IORING_SETUP_DEFER_TASKRUN
+    params.flags |= IORING_SETUP_SUBMIT_ALL
+
+    var ioStatus = io_uring_queue_init_params(this.config.ioQueueDepth, &this.ring, &params)
+    if(ioStatus != 0) {
+        Panic("Error initializing the io_uring queue: %d\n", ioStatus)
+    }
+
+    pthread_barrier_init(&this.barrier, null, this.config.numThreads + 1)
+    defer pthread_barrier_destroy(&this.barrier)
+
+    var maxWorkers = MAX(this.config.numThreads, 1)
+    for(var i = 0; i < maxWorkers; i+=1) {
+        this.workers.add(WorkerThread{})
+
+        var worker = this.workers.getPtr(i)
+        worker.init(this.server, i)
+    }
+
+    pthread_barrier_wait(&this.barrier)
+
+    for(var i = 0; i < this.workers.length; i+=1) {
+        var worker = this.workers.getPtr(i)
+        Info("Initialized worker thread: %d with ringfd: %d\n", worker.thread.id(), worker.ring.ring_fd)
+    }
+
+    if(!this.serverSocket.create()) {
+        return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
+    }
+
+    defer this.serverSocket.close()
+
+    var enableReuse = 1
+    this.serverSocket.setSocketOpt(SocketOption.SO_REUSEADDR, &enableReuse, sizeof(:i32))
+
+    if(!FromPort(this.config.port, &this.serverSocket.address)) {
+        return Status.ERROR_CREATING_ADDRESS
+    }
+
+    if(!this.serverSocket.bind()) {
+        return Status.ERROR_SOCKET_BIND
+    }
+
+    if(!this.serverSocket.listen()) {
+        return Status.ERROR_SOCKET_LISTEN
+    }
+
+    var ring = &this.ring
+
+    // prime the pump, dispatch a request for socket accepts
+    if(this.queueAcceptRequest(ring) != Status.OK) {
+        Error("Unable to queue server socket accept requests\n")
+        return Status.ERROR_IOURING_ERROR
+    }
+
+    var cqe: *io_uring_cqe = null;
+    while(this.isRunning.get()) {
+        var result = io_uring_wait_cqe(ring, &cqe);
+        defer if(cqe) io_uring_cqe_seen(ring, cqe)
+
+        var status = this.handleCompletionRing(ring, cqe, result)
+        if(status != Status.OK) {
+            continue
+        }
+
+        io_uring_submit(ring)
+    }
+
+    return Status.OK
+}
+
+
+internal func (this: *HttpRingEngine) close() {
+    this.isRunning.set(false)
+
+    this.serverSocket.close()
+    this.safeAllocator.free()
+
+    if(this.ring.ring_fd > 0) {
+        io_uring_queue_exit(&this.ring)
+    }
+}
+
+internal func (this: *HttpRingEngine) free() {
+    this.close()
+    this.workers.free()
+}
+
+
+func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): Status {
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        var space = io_uring_sq_space_left(ring)
+        Error("Error creating SQE for server socket, space remaining: %d\n", space)
+        goto error;
+    }
+
+    io_uring_prep_multishot_accept(
+        sqe,
+        this.serverSocket.handle(),
+        (&this.clientAddr) as (*sockaddr),
+        &this.clientAddrLen,
+        0
+    )
+
+    io_uring_sqe_set_data64(
+        sqe,
+        RingOperation {
+            .opcode = RingOpcode.ACCEPT,
+            .contextIndex = 0,
+        }.data
+    )
+    io_uring_submit(ring)
+
+    return Status.OK;
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+
+func (this: *HttpRingEngine) queueHandleConnection(
+    ring: *io_uring,
+    clientSocket: i32
+) : Status {
+    Info("Delagating to worker thread for socket: %d\n", clientSocket)
+
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for socket: %d\n", clientSocket)
+        goto error;
+    }
+
+    this.distribution = (this.distribution + 1) % (this.workers.length as (u64))
+    var worker = this.workers.getPtr(this.distribution as (i32))
+
+    Info("Handing off to thread: %d with ring %d\n", worker.thread.id(), worker.ring.ring_fd)
+
+    // Dispatch to one of the worker threads about this connect
+    io_uring_prep_msg_ring(
+        sqe,
+        worker.ring.ring_fd,
+        0,
+        RingOperation {
+            .opcode = RingOpcode.MSG_RING,
+            .contextIndex = clientSocket,
+        }.data,
+        0
+    )
+    io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
+
+    return Status.OK
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+func (this: *HttpRingEngine) handleCompletionRing(
+    ring: *io_uring,
+    cqe: *io_uring_cqe,
+    result: i32
+): Status {
+
+    if(!cqe || cqe.res < 0) {
+        Error("Error reading completion queue: %d (%s)\n", result, strerror(-result))
+        //assert(false)
+        return Status.OK
+    }
+
+    var operation = RingOperation {
+        .data = io_uring_cqe_get_data64(cqe)
+    }
+
+    switch(operation.opcode) {
+        case RingOpcode.ACCEPT: {
+            Info("CONNECTED: client socket: %d\n", cqe.res)
+            if(cqe.res == 0) {
+                break
+            }
+
+            // queue up delegation of handling the connection
+            return this.queueHandleConnection(ring, cqe.res)
+        }
+        default: {
+            Panic("Unhandled accept ring opcode: %d\n", RingOpcodeAsStr(operation.opcode))
+            assert(false)
+            break;
+        }
+    }
+
+    return Status.OK
+}
+
+func signal_handler(signo: i32) {
+    Info("Caught signal SIGPIPE for %d\n", signo)
+    if(signo == SIGINT) {
+        Info("Signal for shutdown received\n")
+        printf("Shutdown completed\n")
+        exit(0)
+    }
+}

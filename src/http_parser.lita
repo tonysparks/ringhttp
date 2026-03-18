@@ -280,13 +280,15 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
     else if (header.name.equalsIgnoreCase($"upgrade") && header.values.contains($"websocket")) {
         result.flags |= HttpFlags.WEB_SOCKET_PROTOCOL
     }
+    else if (header.name.equalsIgnoreCase($"accept") && header.values.contains($"text/event-stream")) {
+        result.flags |= HttpFlags.SSE
+    }
     else {
-        this.checkHeaderBody(header, &result.body)
+        this.checkHeaderBody(header, result)
     }
 }
 
-func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, result: *HttpRequest) {
-    var body = &result.body
+func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
     if (header.name.equalsIgnoreCase($"content-type")) {
         if(header.values.equals($"application/x-www-form-urlencoded")) {
             body.bodyType = BodyType.FORM_URLENCODED
@@ -302,9 +304,6 @@ func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, result: *HttpReque
             }
 
             body.multipart.boundary = header.values.substring(boundaryIndex)
-        }
-        else if(header.values.startsWith($"event/stream")) {
-            result.flags |= HttpFlags.SSE
         }
     }
 }

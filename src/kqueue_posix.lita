@@ -1,0 +1,141 @@
+@include(
+    "<sys/event.h>",
+    "<sys/time.h>",
+    "<sys/types.h>",
+    "<sys/socket.h>",
+    "<unistd.h>",
+    "<fcntl.h>",
+    "<errno.h>",
+    "<pthread.h>"
+);
+
+@raw(
+    """
+    typedef struct kevent kevent_t;
+    """
+);
+
+@foreign("kevent_t")
+public struct kevent {
+    ident:  usize   // identifier for this event (fd, timer id, etc.)
+    filter: i16     // filter for event
+    flags:  u16     // general flags
+    fflags: u32     // filter-specific flags
+    data:   i64     // filter-specific data (bytes available for EVFILT_READ)
+    udata:  *void   // opaque user data
+}
+
+@foreign
+public func kqueue() : i32;
+
+@foreign("kevent")
+public func KEventCall(
+    kq:         i32,
+    changelist: *const kevent,
+    nchanges:   i32,
+    eventlist:  *kevent,
+    nevents:    i32,
+    timeout:    *const timespec
+) : i32;
+
+@foreign public const EVFILT_READ:  i16;
+@foreign public const EVFILT_WRITE: i16;
+@foreign public const EVFILT_TIMER: i16;
+
+@foreign public const EV_ADD:     u16;
+@foreign public const EV_DELETE:  u16;
+@foreign public const EV_ENABLE:  u16;
+@foreign public const EV_DISABLE: u16;
+@foreign public const EV_ONESHOT: u16;
+@foreign public const EV_CLEAR:   u16;
+@foreign public const EV_EOF:     u16;
+@foreign public const EV_ERROR:   u16;
+
+// fflags for EVFILT_TIMER — by default data is in milliseconds (fflags = 0)
+// These allow overriding the unit:
+@foreign public const NOTE_SECONDS:  u32;
+@foreign public const NOTE_USECONDS: u32;
+@foreign public const NOTE_NSECONDS: u32;
+
+// macOS sendfile:  int sendfile(int fd, int s, off_t offset, off_t *len, struct sf_hdtr *hdtr, int flags)
+@foreign
+public func sendfile(fd: i32, s: i32, offset: i64, len: *i64, hdtr: *void, flags: i32) : i32;
+
+@foreign public const EAGAIN:    i32;
+@foreign public const EINTR:     i32;
+@foreign public const ECANCELED: i32;
+@foreign public const EALREADY:  i32;
+@foreign public const ENOENT:    i32;
+@foreign public const EINVAL:    i32;
+@foreign public const EPIPE:     i32;
+
+@foreign public const O_CLOEXEC:  i32;
+@foreign public const O_NONBLOCK: i32;
+@foreign public const F_GETFL:    i32;
+@foreign public const F_SETFL:    i32;
+
+@foreign public func pipe(pipefd: [2]i32) : i32;
+@foreign public func fcntl(fd: i32, cmd: i32, arg: i32) : i32;
+//@foreign public func close(fd: i32) : i32;
+@foreign public func read(fd: i32, buf: *void, count: usize) : i64;
+@foreign public func write(fd: i32, buf: *const void, count: usize) : i64;
+//@foreign public func accept(sockfd: i32, addr: *sockaddr, addrlen: *socklen_t) : i32;
+//@foreign public func recv(sockfd: i32, buf: *void, len: usize, flags: i32) : i64;
+//@foreign public func send(sockfd: i32, buf: *const void, len: usize, flags: i32) : i64;
+
+@foreign
+public struct timespec {
+    tv_sec:  i64
+    tv_nsec: i64
+}
+
+// ------------------------------------------------------------
+// Custom barrier (macOS does not provide pthread_barrier_t)
+// ------------------------------------------------------------
+
+@foreign public struct pthread_mutex_t;
+@foreign public struct pthread_cond_t;
+@foreign public struct pthread_mutexattr_t;
+@foreign public struct pthread_condattr_t;
+
+@foreign public func pthread_mutex_init(mutex: *pthread_mutex_t, attr: *pthread_mutexattr_t) : i32;
+@foreign public func pthread_mutex_destroy(mutex: *pthread_mutex_t) : i32;
+@foreign public func pthread_mutex_lock(mutex: *pthread_mutex_t) : i32;
+@foreign public func pthread_mutex_unlock(mutex: *pthread_mutex_t) : i32;
+
+@foreign public func pthread_cond_init(cond: *pthread_cond_t, attr: *pthread_condattr_t) : i32;
+@foreign public func pthread_cond_destroy(cond: *pthread_cond_t) : i32;
+@foreign public func pthread_cond_wait(cond: *pthread_cond_t, mutex: *pthread_mutex_t) : i32;
+@foreign public func pthread_cond_broadcast(cond: *pthread_cond_t) : i32;
+
+public struct Barrier {
+    mutex:    pthread_mutex_t
+    cond:     pthread_cond_t
+    count:    i32   // total threads to wait for
+    waiting:  i32   // threads currently waiting
+}
+
+public func (this: *Barrier) init(count: i32) {
+    pthread_mutex_init(&this.mutex, null)
+    pthread_cond_init(&this.cond, null)
+    this.count   = count
+    this.waiting = 0
+}
+
+public func (this: *Barrier) destroy() {
+    pthread_mutex_destroy(&this.mutex)
+    pthread_cond_destroy(&this.cond)
+}
+
+public func (this: *Barrier) wait() {
+    pthread_mutex_lock(&this.mutex)
+    this.waiting += 1
+    if(this.waiting >= this.count) {
+        this.waiting = 0
+        pthread_cond_broadcast(&this.cond)
+    }
+    else {
+        pthread_cond_wait(&this.cond, &this.mutex)
+    }
+    pthread_mutex_unlock(&this.mutex)
+}
