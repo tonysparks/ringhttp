@@ -31,7 +31,7 @@ jobs:
         run: |
           cd $HOME/litac-lang
           chmod +x bootstrap.sh build.sh
-          ./bootstrap.sh && ./build.sh
+          ./build_bootstrap.sh && ./build.sh
           echo "$HOME/litac-lang/bin" >> $GITHUB_PATH
 
       - name: Clone litac liburing bindings
@@ -64,7 +64,7 @@ jobs:
         run: |
           cd $HOME/litac-lang
           chmod +x bootstrap.sh build.sh
-          ./bootstrap.sh && ./build.sh
+          ./build_bootstrap.sh && ./build.sh
           echo "$HOME/litac-lang/bin" >> $GITHUB_PATH
 
       - name: Clone litac liburing bindings
