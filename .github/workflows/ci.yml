@@ -28,8 +28,8 @@ jobs:
         run: git clone https://github.com/tonysparks/litac-lang $HOME/litac-lang
 
       - name: Build litac compiler
-        working-directory: ${{ env.HOME }}/litac-lang
         run: |
+          cd $HOME/litac-lang
           chmod +x bootstrap.sh build.sh
           ./bootstrap.sh && ./build.sh
           echo "$HOME/litac-lang/bin" >> $GITHUB_PATH
@@ -61,8 +61,8 @@ jobs:
         run: git clone https://github.com/tonysparks/litac-lang $HOME/litac-lang
 
       - name: Build litac compiler
-        working-directory: ${{ env.HOME }}/litac-lang
         run: |
+          cd $HOME/litac-lang
           chmod +x bootstrap.sh build.sh
           ./bootstrap.sh && ./build.sh
           echo "$HOME/litac-lang/bin" >> $GITHUB_PATH
