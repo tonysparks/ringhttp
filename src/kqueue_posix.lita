@@ -58,7 +58,14 @@ public func KEventCall(
 @foreign public const NOTE_USECONDS: u32;
 @foreign public const NOTE_NSECONDS: u32;
 
-// macOS sendfile:  int sendfile(int fd, int s, off_t offset, off_t *len, struct sf_hdtr *hdtr, int flags)
+// macOS sendfile declaration — emitted directly to avoid header-macro visibility issues
+// (sys/socket.h gates it on !_POSIX_C_SOURCE || _DARWIN_C_SOURCE)
+@raw("""
+#ifndef _KQUEUE_POSIX_SENDFILE_DECL
+#define _KQUEUE_POSIX_SENDFILE_DECL
+int sendfile(int fd, int s, off_t offset, off_t *len, void *hdtr, int flags);
+#endif
+""");
 @foreign
 public func sendfile(fd: i32, s: i32, offset: i64, len: *i64, hdtr: *void, flags: i32) : i32;
 
