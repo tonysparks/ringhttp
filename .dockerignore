@@ -1,0 +1,13 @@
+bin/*.c
+bin/*.dSYM
+bin/ring
+bin/ring.dSYM
+bin/pre_build
+bin/pre_build.c
+bin/pre_build.dSYM
+bin/litac_test_file
+bin/litac_test_file.c
+bin/litac_test_file.dSYM
+*.dSYM
+.git
+Dockerfile

@@ -982,6 +982,10 @@ func (this: *WorkerThread) handleHttpRequest(
                     )
                 }
 
+                // Non-upgrade GET to a WebSocket-only endpoint
+                requestContext.response.status = 400
+                requestContext.response.type = ResponseType.BODY
+                requestContext.response.body.append("WebSocket upgrade required\n")
                 break
             }
             default: {
@@ -1219,6 +1223,15 @@ func (this: *WorkerThread) sendBadRequest(
             )
             break
         }
+        case Status.ERROR_PARSING_HTTP_REQUEST: {
+            response.status = 422
+            response.body.append("Unprocessable request body\n")
+            break
+        }
+        case Status.ERROR_WEB_SOCKET_SECURITY_KEY: {
+            response.body.append("Missing or invalid Sec-WebSocket-Key\n")
+            break
+        }
         case Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL:
             response.status = 426
             response.body.append(
@@ -1379,7 +1392,8 @@ func (this: *WorkerThread) handleCompletionRing(
                     case Status.ERROR_UNKNOWN_BODY_LENGTH:
                     case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
-                    case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT: {
+                    case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT:
+                    case Status.ERROR_PARSING_HTTP_REQUEST: {
                         return this.sendBadRequest(session, status, ring)
                     }
                     default: {
@@ -1397,6 +1411,10 @@ func (this: *WorkerThread) handleCompletionRing(
 
             if(status != Status.OK) {
                 Error("HTTP Request Bad Status %s with index: %d\n", StatusAsStr(status), session.index)
+                if(status == Status.ERROR_PARSING_HTTP_REQUEST ||
+                   status == Status.ERROR_WEB_SOCKET_SECURITY_KEY) {
+                    return this.sendBadRequest(session, status, ring)
+                }
                 return this.sendServerError(session, status, ring)
             }
             break

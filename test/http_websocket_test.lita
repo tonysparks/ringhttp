@@ -1,0 +1,403 @@
+
+import "std/libc"
+import "std/assert"
+import "std/string"
+import "std/string/builder"
+import "std/string/buffer"
+import "std/mem"
+import "std/thread"
+import "std/io"
+
+import "std/net"
+import "std/net/posix_socket"
+import "std/crypto/sha1"
+import "std/encoding/base64"
+
+import "http_ring"
+import "test_webserver"
+
+// connect() is not in posix_socket.lita, declare it here
+@foreign
+func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
+
+var wsTestServer = TestServer{}
+var wsConfig = HttpConfig {
+    .allocator = null,
+    .port = 8082_u16,
+    .numThreads = 4,
+    .ioQueueDepth = 16,
+    .maxPoolSize = 32,
+    .keepAliveTimeoutInSec = 5,
+    .isLogEnabled = false,
+    .logFilePath = null,
+    .fileServerPath = $"./static",
+}
+
+@module_init
+public func init_ws_tests() {
+    wsTestServer.config = &wsConfig
+    launch(&wsTestServer)
+    ThreadSleepMSec(250)
+}
+
+// Compute the Sec-WebSocket-Accept value for a given key string.
+// accept = base64(sha1(key + WEB_SOCKET_MAGIC))
+func computeAccept(key: *const char, keyLen: i32, out: *StringBuilder) {
+    var input = StringBuilderInit(keyLen + 40)
+    defer input.free()
+
+    input.appendStrn(key, keyLen)
+    input.append(WEB_SOCKET_MAGIC)
+
+    var hash: [20]u8
+    var ctx: sha1_ctx
+    sha1_init(&ctx)
+    sha1_update(&ctx, input.cStr() as (*u8), input.length)
+    sha1_final(&ctx, hash)
+
+    var encoded: [32]u8
+    var encodedLen = base64_encode(hash, encoded, SHA1_BLOCK_SIZE, 0)
+    out.appendStrn(encoded as (*const char), encodedLen as (i32))
+}
+
+// Read from socket until the response contains "\r\n\r\n" (end of HTTP headers).
+func readHttpResponse(sock: i32, out: *StringBuilder) : bool {
+    var buf: [4096]char
+    while(true) {
+        var n = recv(sock, buf, 4096, 0)
+        if (n <= 0) {
+            return false
+        }
+        out.appendStrn(buf, n as (i32))
+        // Check for end of HTTP headers
+        if (out.contains($"\r\n\r\n")) {
+            return true
+        }
+    }
+    return false
+}
+
+// Build a minimal masked WebSocket text frame.
+// Returns the total frame length written into buf.
+func buildTextFrame(payload: *const char, payloadLen: i32, buf: *char, mask: [4]u8) : i32 {
+    var offset = 0
+
+    // Byte 0: FIN=1, opcode=TEXT(1)
+    buf[offset] = 0x81 as (char)
+    offset += 1
+
+    // Byte 1: MASK=1, payload length (assuming < 126)
+    buf[offset] = (0x80 | payloadLen) as (char)
+    offset += 1
+
+    // Masking key (4 bytes)
+    buf[offset]     = mask[0] as (char)
+    buf[offset + 1] = mask[1] as (char)
+    buf[offset + 2] = mask[2] as (char)
+    buf[offset + 3] = mask[3] as (char)
+    offset += 4
+
+    // Masked payload
+    for (var i = 0; i < payloadLen; i += 1) {
+        buf[offset] = (payload[i] ^ (mask[i % 4] as (char))) as (char)
+        offset += 1
+    }
+
+    return offset
+}
+
+// Read a WebSocket frame from the socket.
+// Returns the payload length (unmasked), fills payloadOut with text.
+// Only handles small frames (payload < 126 bytes) with no server masking.
+func readWebSocketFrame(sock: i32, payloadOut: *StringBuilder, opcodeOut: *i32) : i32 {
+    var header: [2]char
+    var n = recv(sock, header, 2, 0)
+    if (n < 2) {
+        return -1
+    }
+
+    *opcodeOut = header[0] & 0xF
+
+    var payloadLen = header[1] & 0x7F
+    if (payloadLen > 125) {
+        // Extended length not supported in this test helper
+        return -1
+    }
+
+    if (payloadLen == 0) {
+        return 0  // caller must use opcodeOut to distinguish empty-payload frames
+    }
+
+    var payload: [256]char
+    var received = 0
+    while (received < payloadLen) {
+        var r = recv(sock, &payload[received], payloadLen - received, 0)
+        if (r <= 0) {
+            return -1
+        }
+        received += r as (i32)
+    }
+
+    payloadOut.appendStrn(payload, payloadLen)
+    return payloadLen
+}
+
+@test("test WebSocket upgrade handshake returns 101")
+func test_websocket_handshake() {
+    // Use the known RFC 6455 test key
+    const testKey = "dGhlIHNhbXBsZSBub25jZQ=="
+    const testKeyLen = 24
+
+    // Compute expected Accept header
+    var expectedAccept = StringBuilderInit(64)
+    defer expectedAccept.free()
+    computeAccept(testKey, testKeyLen, &expectedAccept)
+
+    // Open TCP connection to ws server on port 8082
+    var sock = socket(AF_INET, SOCK_STREAM, 0)
+    assert(sock >= 0)
+    defer close(sock)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(addr))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(8082_u16)
+    inet_pton(AF_INET, "127.0.0.1", (&addr.sin_addr) as (*void))
+
+    var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
+    assert(ret == 0)
+
+    // Send HTTP Upgrade request
+    var reqBuilder = StringBuilderInit(512)
+    defer reqBuilder.free()
+    reqBuilder.append("GET /websocket HTTP/1.1\r\n")
+    reqBuilder.append("Host: localhost:8082\r\n")
+    reqBuilder.append("Upgrade: websocket\r\n")
+    reqBuilder.append("Connection: Upgrade\r\n")
+    reqBuilder.append("Sec-WebSocket-Key: %s\r\n", testKey)
+    reqBuilder.append("Sec-WebSocket-Version: 13\r\n")
+    reqBuilder.append("\r\n")
+
+    var sent = send(sock, reqBuilder.buffer, reqBuilder.length, 0)
+    assert(sent > 0)
+
+    // Read HTTP response
+    var responseBuilder = StringBuilderInit(1024)
+    defer responseBuilder.free()
+    assert(readHttpResponse(sock, &responseBuilder))
+
+    // Verify 101 Switching Protocols
+    assert(responseBuilder.contains($"101"))
+    assert(responseBuilder.contains($"Upgrade"))
+    assert(responseBuilder.contains($"websocket"))
+
+    // Verify Sec-WebSocket-Accept matches
+    assert(responseBuilder.contains(expectedAccept.toString()))
+}
+
+@test("test WebSocket echo text frame")
+func test_websocket_echo() {
+    const testKey = "dGhlIHNhbXBsZSBub25jZQ=="
+    const testKeyLen = 24
+
+    var sock = socket(AF_INET, SOCK_STREAM, 0)
+    assert(sock >= 0)
+    defer close(sock)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(addr))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(8082_u16)
+    inet_pton(AF_INET, "127.0.0.1", (&addr.sin_addr) as (*void))
+
+    var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
+    assert(ret == 0)
+
+    // Send upgrade request
+    var reqBuilder = StringBuilderInit(512)
+    defer reqBuilder.free()
+    reqBuilder.append("GET /websocket HTTP/1.1\r\n")
+    reqBuilder.append("Host: localhost:8082\r\n")
+    reqBuilder.append("Upgrade: websocket\r\n")
+    reqBuilder.append("Connection: Upgrade\r\n")
+    reqBuilder.append("Sec-WebSocket-Key: %s\r\n", testKey)
+    reqBuilder.append("Sec-WebSocket-Version: 13\r\n")
+    reqBuilder.append("\r\n")
+    send(sock, reqBuilder.buffer, reqBuilder.length, 0)
+
+    // Consume 101 response
+    var upgradeResp = StringBuilderInit(1024)
+    defer upgradeResp.free()
+    readHttpResponse(sock, &upgradeResp)
+
+    // Send a masked TEXT frame with payload "hello"
+    const payload = "hello"
+    const payloadLen = 5
+    var mask = [4]u8 {0x37_u8, 0xfa_u8, 0x21_u8, 0x3d_u8}
+    var frameBuf: [32]char
+    var frameLen = buildTextFrame(payload, payloadLen, frameBuf, mask)
+    assert(frameLen > 0)
+
+    var sentBytes = send(sock, frameBuf, frameLen, 0)
+    assert(sentBytes == frameLen)
+
+    // Read the echo frame
+    var echoPayload = StringBuilderInit(64)
+    defer echoPayload.free()
+    var opcode = 0
+    var echoLen = readWebSocketFrame(sock, &echoPayload, &opcode)
+
+    assert(echoLen > 0)
+    assert(opcode == 0x1)  // TEXT opcode
+
+    // Server echoes: "Server says: 'hello'\n"
+    assert(echoPayload.contains($"hello"))
+}
+
+@test("test WebSocket close via exit message")
+func test_websocket_close() {
+    const testKey = "dGhlIHNhbXBsZSBub25jZQ=="
+    const testKeyLen = 24
+
+    var sock = socket(AF_INET, SOCK_STREAM, 0)
+    assert(sock >= 0)
+    defer close(sock)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(addr))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(8082_u16)
+    inet_pton(AF_INET, "127.0.0.1", (&addr.sin_addr) as (*void))
+
+    var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
+    assert(ret == 0)
+
+    // Send upgrade request
+    var reqBuilder = StringBuilderInit(512)
+    defer reqBuilder.free()
+    reqBuilder.append("GET /websocket HTTP/1.1\r\n")
+    reqBuilder.append("Host: localhost:8082\r\n")
+    reqBuilder.append("Upgrade: websocket\r\n")
+    reqBuilder.append("Connection: Upgrade\r\n")
+    reqBuilder.append("Sec-WebSocket-Key: %s\r\n", testKey)
+    reqBuilder.append("Sec-WebSocket-Version: 13\r\n")
+    reqBuilder.append("\r\n")
+    send(sock, reqBuilder.buffer, reqBuilder.length, 0)
+
+    // Consume 101 response
+    var upgradeResp = StringBuilderInit(1024)
+    defer upgradeResp.free()
+    readHttpResponse(sock, &upgradeResp)
+
+    // Send "exit" text frame — the test handler calls session.close() which
+    // sends a CLOSE frame back to the client before tearing down.
+    const exitPayload = "exit"
+    const exitLen = 4
+    var mask = [4]u8 {0x11_u8, 0x22_u8, 0x33_u8, 0x44_u8}
+    var frameBuf: [32]char
+    var frameLen = buildTextFrame(exitPayload, exitLen, frameBuf, mask)
+    send(sock, frameBuf, frameLen, 0)
+
+    // Server should respond with a CLOSE frame (opcode 0x8)
+    var closePayload = StringBuilderInit(64)
+    defer closePayload.free()
+    var opcode = 0
+    readWebSocketFrame(sock, &closePayload, &opcode)
+
+    assert(opcode == 0x8)  // CLOSE opcode
+}
+
+// Helper: open a TCP connection to the ws server on port 8082
+func connectToWsServer() : i32 {
+    var sock = socket(AF_INET, SOCK_STREAM, 0)
+    if (sock < 0) {
+        return -1
+    }
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(addr))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(8082_u16)
+    inet_pton(AF_INET, "127.0.0.1", (&addr.sin_addr) as (*void))
+
+    if (connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t)) != 0) {
+        close(sock)
+        return -1
+    }
+    return sock
+}
+
+@test("test WebSocket upgrade with non-websocket protocol returns 426")
+func test_websocket_wrong_upgrade_protocol() {
+    var sock = connectToWsServer()
+    assert(sock >= 0)
+    defer close(sock)
+
+    // Connection: Upgrade is present but Upgrade is "ftp", not "websocket".
+    // Server sets UPGRADE_REQUEST but NOT WEB_SOCKET_PROTOCOL flag →
+    // sendBadRequest(ERROR_UNSUPPORTED_UPGRADE_PROTOCOL) → 426.
+    var req = StringBuilderInit(256)
+    defer req.free()
+    req.append("GET /websocket HTTP/1.1\r\n")
+    req.append("Host: localhost:8082\r\n")
+    req.append("Connection: Upgrade\r\n")
+    req.append("Upgrade: ftp\r\n")
+    req.append("\r\n")
+    send(sock, req.buffer, req.length, 0)
+
+    var resp = StringBuilderInit(1024)
+    defer resp.free()
+    readHttpResponse(sock, &resp)
+
+    assert(resp.contains($"426"))
+}
+
+@test("test WebSocket upgrade with missing Sec-WebSocket-Key returns 400")
+func test_websocket_missing_key() {
+    var sock = connectToWsServer()
+    assert(sock >= 0)
+    defer close(sock)
+
+    // All WebSocket upgrade headers present except Sec-WebSocket-Key.
+    // handleWebSocketUpgrade finds an empty key and returns
+    // ERROR_WEB_SOCKET_SECURITY_KEY → sendBadRequest → 400.
+    var req = StringBuilderInit(256)
+    defer req.free()
+    req.append("GET /websocket HTTP/1.1\r\n")
+    req.append("Host: localhost:8082\r\n")
+    req.append("Connection: Upgrade\r\n")
+    req.append("Upgrade: websocket\r\n")
+    req.append("Sec-WebSocket-Version: 13\r\n")
+    req.append("\r\n")
+    send(sock, req.buffer, req.length, 0)
+
+    var resp = StringBuilderInit(1024)
+    defer resp.free()
+    readHttpResponse(sock, &resp)
+
+    assert(resp.contains($"400"))
+    assert(resp.contains($"Sec-WebSocket-Key"))
+}
+
+@test("test plain GET to WebSocket route without upgrade does not return 101")
+func test_websocket_route_no_upgrade() {
+    var sock = connectToWsServer()
+    assert(sock >= 0)
+    defer close(sock)
+
+    // A plain GET to /websocket with no upgrade headers — the WEB_SOCKET
+    // handler finds UPGRADE_REQUEST is not set, does nothing, so no 101.
+    var req = StringBuilderInit(256)
+    defer req.free()
+    req.append("GET /websocket HTTP/1.1\r\n")
+    req.append("Host: localhost:8082\r\n")
+    req.append("Connection: keep-alive\r\n")
+    req.append("\r\n")
+    send(sock, req.buffer, req.length, 0)
+
+    var resp = StringBuilderInit(1024)
+    defer resp.free()
+    readHttpResponse(sock, &resp)
+
+    assert(resp.contains($"400"))
+}

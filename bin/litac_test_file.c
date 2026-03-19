@@ -1,6 +1,6 @@
 #ifndef _LITAC_HEADER_H
 #define _LITAC_HEADER_H
-// Generated on 2026-03-18T20:37:51
+// Generated on 2026-03-19T18:19:57
 
 #include <stdint.h>
 #include <stddef.h>
@@ -133,19 +133,6 @@ litaC_i64 litaC_std__limits__MAX_I64 = (litaC_i64)(~(0UL) >> 1);
 
 #define litaC_std__unicode__utf8__MAX_RUNE_BYTES (4)
 
-#line 4 "/Users/tony/projects/ringhttp/src/http_common.lita"
-
-#define litaC_http_common__MAX_URL_LENGTH_DEFAULT (8000)
-
-#line 20 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_i32 litaC_http_connection__READ_BUFFER_SIZE = 16 * (litaC_i32)litaC_std__mem__KiB;
-
-#line 21 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_i32 litaC_http_connection__WRITE_BUFFER_SIZE = 8 * (litaC_i32)litaC_std__mem__KiB;
-
-#line 22 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_i32 litaC_http_connection__COMPRESSION_SIZE = 1 * (litaC_i32)litaC_std__mem__KiB;
-
 
 #line 22 "/Users/tony/projects/litac-lang/stdlib/std/net/net.lita"
 
@@ -179,6 +166,19 @@ litaC_i32 litaC_http_connection__COMPRESSION_SIZE = 1 * (litaC_i32)litaC_std__me
 #line 96 "/Users/tony/projects/litac-lang/stdlib/std/net/posix_socket.lita"
 
 #define litaC_std__net__posix_socket__MSG_FASTOPEN (0)
+
+#line 4 "/Users/tony/projects/ringhttp/src/http_common.lita"
+
+#define litaC_http_common__MAX_URL_LENGTH_DEFAULT (8000)
+
+#line 20 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_i32 litaC_http_connection__READ_BUFFER_SIZE = 16 * (litaC_i32)litaC_std__mem__KiB;
+
+#line 21 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_i32 litaC_http_connection__WRITE_BUFFER_SIZE = 8 * (litaC_i32)litaC_std__mem__KiB;
+
+#line 22 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_i32 litaC_http_connection__COMPRESSION_SIZE = 1 * (litaC_i32)litaC_std__mem__KiB;
 
 #line 156 "/Users/tony/projects/ringhttp/src/http_request.lita"
 
@@ -1901,6 +1901,15 @@ void *utf8rcodepoint(const void *utf8_restrict str,
 #endif
 #define _XPG6
 
+/* On macOS, enable Darwin/BSD extensions so that Apple-specific APIs
+   (e.g. pthread_threadid_np, timegm) are visible regardless of
+   _POSIX_C_SOURCE / _XOPEN_SOURCE restrictions. */
+#if defined(__APPLE__) && defined(__MACH__)
+    #ifndef _DARWIN_C_SOURCE
+        #define _DARWIN_C_SOURCE
+    #endif
+#endif
+
 #include <time.h>
 #include <pthread.h>
 
@@ -2149,7 +2158,6 @@ size_t base64_decode(const BYTE in[], BYTE out[], size_t len)
 #include <stdlib.h>
 
 #include <stdio.h>
-// #include <time.h>
 
 
 typedef enum Lita_OSType {
@@ -2933,16 +2941,196 @@ typedef struct sockaddr_in sockaddr_in;
 typedef struct msghdr msghdr;
 typedef struct iovec iovec;
 
-#include <curl/curl.h>
-
-
-
-
-
-
-typedef struct curl_slist curl_slist;
-
 #include <stdatomic.h>
+
+/*********************************************************************
+* Filename:   sha1.h
+* Author:     Brad Conte (brad AT bradconte.com)
+* Copyright:
+* Disclaimer: This code is presented "as is" without any guarantees.
+* Details:    Defines the API for the corresponding SHA1 implementation.
+*********************************************************************/
+
+#ifndef SHA1_H
+#define SHA1_H
+
+/*************************** HEADER FILES ***************************/
+#include <stddef.h>
+
+/****************************** MACROS ******************************/
+#define SHA1_BLOCK_SIZE 20              // SHA1 outputs a 20 byte digest
+
+/**************************** DATA TYPES ****************************/
+typedef unsigned char BYTE_SHA1;        // 8-bit byte
+typedef unsigned int  WORD_SHA1;        // 32-bit word, change to "long" for 16-bit machines
+
+typedef struct {
+	BYTE_SHA1 data[64];
+	WORD_SHA1 datalen;
+	unsigned long long bitlen;
+	WORD_SHA1 state[5];
+	WORD_SHA1 k[4];
+} SHA1_CTX;
+
+/*********************** FUNCTION DECLARATIONS **********************/
+void sha1_init(SHA1_CTX *ctx);
+void sha1_update(SHA1_CTX *ctx, const BYTE_SHA1 data[], size_t len);
+void sha1_final(SHA1_CTX *ctx, BYTE_SHA1 hash[]);
+
+#endif   // SHA1_H
+#line 0 "/Users/tony/projects/litac-lang/stdlib/std/crypto/sha1/sha1.h"
+
+/*********************************************************************
+* Filename:   sha1.c
+* Author:     Brad Conte (brad AT bradconte.com)
+* Copyright:
+* Disclaimer: This code is presented "as is" without any guarantees.
+* Details:    Implementation of the SHA1 hashing algorithm.
+              Algorithm specification can be found here:
+               * http://csrc.nist.gov/publications/fips/fips180-2/fips180-2withchangenotice.pdf
+              This implementation uses little endian byte order.
+*********************************************************************/
+
+/*************************** HEADER FILES ***************************/
+#include <stdlib.h>
+#include <memory.h>
+//#include "sha1.h"
+
+/****************************** MACROS ******************************/
+#define ROTLEFT(a, b) ((a << b) | (a >> (32 - b)))
+
+/*********************** FUNCTION DEFINITIONS ***********************/
+void sha1_transform(SHA1_CTX *ctx, const BYTE_SHA1 data[])
+{
+	WORD_SHA1 a, b, c, d, e, i, j, t, m[80];
+
+	for (i = 0, j = 0; i < 16; ++i, j += 4)
+		m[i] = (data[j] << 24) + (data[j + 1] << 16) + (data[j + 2] << 8) + (data[j + 3]);
+	for ( ; i < 80; ++i) {
+		m[i] = (m[i - 3] ^ m[i - 8] ^ m[i - 14] ^ m[i - 16]);
+		m[i] = (m[i] << 1) | (m[i] >> 31);
+	}
+
+	a = ctx->state[0];
+	b = ctx->state[1];
+	c = ctx->state[2];
+	d = ctx->state[3];
+	e = ctx->state[4];
+
+	for (i = 0; i < 20; ++i) {
+		t = ROTLEFT(a, 5) + ((b & c) ^ (~b & d)) + e + ctx->k[0] + m[i];
+		e = d;
+		d = c;
+		c = ROTLEFT(b, 30);
+		b = a;
+		a = t;
+	}
+	for ( ; i < 40; ++i) {
+		t = ROTLEFT(a, 5) + (b ^ c ^ d) + e + ctx->k[1] + m[i];
+		e = d;
+		d = c;
+		c = ROTLEFT(b, 30);
+		b = a;
+		a = t;
+	}
+	for ( ; i < 60; ++i) {
+		t = ROTLEFT(a, 5) + ((b & c) ^ (b & d) ^ (c & d))  + e + ctx->k[2] + m[i];
+		e = d;
+		d = c;
+		c = ROTLEFT(b, 30);
+		b = a;
+		a = t;
+	}
+	for ( ; i < 80; ++i) {
+		t = ROTLEFT(a, 5) + (b ^ c ^ d) + e + ctx->k[3] + m[i];
+		e = d;
+		d = c;
+		c = ROTLEFT(b, 30);
+		b = a;
+		a = t;
+	}
+
+	ctx->state[0] += a;
+	ctx->state[1] += b;
+	ctx->state[2] += c;
+	ctx->state[3] += d;
+	ctx->state[4] += e;
+}
+
+void sha1_init(SHA1_CTX *ctx)
+{
+	ctx->datalen = 0;
+	ctx->bitlen = 0;
+	ctx->state[0] = 0x67452301;
+	ctx->state[1] = 0xEFCDAB89;
+	ctx->state[2] = 0x98BADCFE;
+	ctx->state[3] = 0x10325476;
+	ctx->state[4] = 0xc3d2e1f0;
+	ctx->k[0] = 0x5a827999;
+	ctx->k[1] = 0x6ed9eba1;
+	ctx->k[2] = 0x8f1bbcdc;
+	ctx->k[3] = 0xca62c1d6;
+}
+
+void sha1_update(SHA1_CTX *ctx, const BYTE_SHA1 data[], size_t len)
+{
+	size_t i;
+
+	for (i = 0; i < len; ++i) {
+		ctx->data[ctx->datalen] = data[i];
+		ctx->datalen++;
+		if (ctx->datalen == 64) {
+			sha1_transform(ctx, ctx->data);
+			ctx->bitlen += 512;
+			ctx->datalen = 0;
+		}
+	}
+}
+
+void sha1_final(SHA1_CTX *ctx, BYTE_SHA1 hash[])
+{
+	WORD_SHA1 i;
+
+	i = ctx->datalen;
+
+	// Pad whatever data is left in the buffer.
+	if (ctx->datalen < 56) {
+		ctx->data[i++] = 0x80;
+		while (i < 56)
+			ctx->data[i++] = 0x00;
+	}
+	else {
+		ctx->data[i++] = 0x80;
+		while (i < 64)
+			ctx->data[i++] = 0x00;
+		sha1_transform(ctx, ctx->data);
+		memset(ctx->data, 0, 56);
+	}
+
+	// Append to the padding the total message's length in bits and transform.
+	ctx->bitlen += ctx->datalen * 8;
+	ctx->data[63] = ctx->bitlen;
+	ctx->data[62] = ctx->bitlen >> 8;
+	ctx->data[61] = ctx->bitlen >> 16;
+	ctx->data[60] = ctx->bitlen >> 24;
+	ctx->data[59] = ctx->bitlen >> 32;
+	ctx->data[58] = ctx->bitlen >> 40;
+	ctx->data[57] = ctx->bitlen >> 48;
+	ctx->data[56] = ctx->bitlen >> 56;
+	sha1_transform(ctx, ctx->data);
+
+	// Since this implementation uses little endian byte ordering and MD uses big endian,
+	// reverse all the bytes when copying the final state to the output hash.
+	for (i = 0; i < 4; ++i) {
+		hash[i]      = (ctx->state[0] >> (24 - i * 8)) & 0x000000ff;
+		hash[i + 4]  = (ctx->state[1] >> (24 - i * 8)) & 0x000000ff;
+		hash[i + 8]  = (ctx->state[2] >> (24 - i * 8)) & 0x000000ff;
+		hash[i + 12] = (ctx->state[3] >> (24 - i * 8)) & 0x000000ff;
+		hash[i + 16] = (ctx->state[4] >> (24 - i * 8)) & 0x000000ff;
+	}
+}
+#line 0 "/Users/tony/projects/litac-lang/stdlib/std/crypto/sha1/sha1.c"
+
 
 #ifndef MINIZ_EXPORT
 #define MINIZ_EXPORT
@@ -12209,195 +12397,6 @@ mz_bool mz_zip_end(mz_zip_archive *pZip)
 #line 0 "/Users/tony/projects/litac-lang/stdlib/std/zip/miniz/miniz.c"
 
 
-/*********************************************************************
-* Filename:   sha1.h
-* Author:     Brad Conte (brad AT bradconte.com)
-* Copyright:
-* Disclaimer: This code is presented "as is" without any guarantees.
-* Details:    Defines the API for the corresponding SHA1 implementation.
-*********************************************************************/
-
-#ifndef SHA1_H
-#define SHA1_H
-
-/*************************** HEADER FILES ***************************/
-#include <stddef.h>
-
-/****************************** MACROS ******************************/
-#define SHA1_BLOCK_SIZE 20              // SHA1 outputs a 20 byte digest
-
-/**************************** DATA TYPES ****************************/
-typedef unsigned char BYTE;             // 8-bit byte
-typedef unsigned int  WORD;             // 32-bit word, change to "long" for 16-bit machines
-
-typedef struct {
-	BYTE data[64];
-	WORD datalen;
-	unsigned long long bitlen;
-	WORD state[5];
-	WORD k[4];
-} SHA1_CTX;
-
-/*********************** FUNCTION DECLARATIONS **********************/
-void sha1_init(SHA1_CTX *ctx);
-void sha1_update(SHA1_CTX *ctx, const BYTE data[], size_t len);
-void sha1_final(SHA1_CTX *ctx, BYTE hash[]);
-
-#endif   // SHA1_H
-#line 0 "/Users/tony/projects/litac-lang/stdlib/std/crypto/sha1/sha1.h"
-
-/*********************************************************************
-* Filename:   sha1.c
-* Author:     Brad Conte (brad AT bradconte.com)
-* Copyright:
-* Disclaimer: This code is presented "as is" without any guarantees.
-* Details:    Implementation of the SHA1 hashing algorithm.
-              Algorithm specification can be found here:
-               * http://csrc.nist.gov/publications/fips/fips180-2/fips180-2withchangenotice.pdf
-              This implementation uses little endian byte order.
-*********************************************************************/
-
-/*************************** HEADER FILES ***************************/
-#include <stdlib.h>
-#include <memory.h>
-//#include "sha1.h"
-
-/****************************** MACROS ******************************/
-#define ROTLEFT(a, b) ((a << b) | (a >> (32 - b)))
-
-/*********************** FUNCTION DEFINITIONS ***********************/
-void sha1_transform(SHA1_CTX *ctx, const BYTE data[])
-{
-	WORD a, b, c, d, e, i, j, t, m[80];
-
-	for (i = 0, j = 0; i < 16; ++i, j += 4)
-		m[i] = (data[j] << 24) + (data[j + 1] << 16) + (data[j + 2] << 8) + (data[j + 3]);
-	for ( ; i < 80; ++i) {
-		m[i] = (m[i - 3] ^ m[i - 8] ^ m[i - 14] ^ m[i - 16]);
-		m[i] = (m[i] << 1) | (m[i] >> 31);
-	}
-
-	a = ctx->state[0];
-	b = ctx->state[1];
-	c = ctx->state[2];
-	d = ctx->state[3];
-	e = ctx->state[4];
-
-	for (i = 0; i < 20; ++i) {
-		t = ROTLEFT(a, 5) + ((b & c) ^ (~b & d)) + e + ctx->k[0] + m[i];
-		e = d;
-		d = c;
-		c = ROTLEFT(b, 30);
-		b = a;
-		a = t;
-	}
-	for ( ; i < 40; ++i) {
-		t = ROTLEFT(a, 5) + (b ^ c ^ d) + e + ctx->k[1] + m[i];
-		e = d;
-		d = c;
-		c = ROTLEFT(b, 30);
-		b = a;
-		a = t;
-	}
-	for ( ; i < 60; ++i) {
-		t = ROTLEFT(a, 5) + ((b & c) ^ (b & d) ^ (c & d))  + e + ctx->k[2] + m[i];
-		e = d;
-		d = c;
-		c = ROTLEFT(b, 30);
-		b = a;
-		a = t;
-	}
-	for ( ; i < 80; ++i) {
-		t = ROTLEFT(a, 5) + (b ^ c ^ d) + e + ctx->k[3] + m[i];
-		e = d;
-		d = c;
-		c = ROTLEFT(b, 30);
-		b = a;
-		a = t;
-	}
-
-	ctx->state[0] += a;
-	ctx->state[1] += b;
-	ctx->state[2] += c;
-	ctx->state[3] += d;
-	ctx->state[4] += e;
-}
-
-void sha1_init(SHA1_CTX *ctx)
-{
-	ctx->datalen = 0;
-	ctx->bitlen = 0;
-	ctx->state[0] = 0x67452301;
-	ctx->state[1] = 0xEFCDAB89;
-	ctx->state[2] = 0x98BADCFE;
-	ctx->state[3] = 0x10325476;
-	ctx->state[4] = 0xc3d2e1f0;
-	ctx->k[0] = 0x5a827999;
-	ctx->k[1] = 0x6ed9eba1;
-	ctx->k[2] = 0x8f1bbcdc;
-	ctx->k[3] = 0xca62c1d6;
-}
-
-void sha1_update(SHA1_CTX *ctx, const BYTE data[], size_t len)
-{
-	size_t i;
-
-	for (i = 0; i < len; ++i) {
-		ctx->data[ctx->datalen] = data[i];
-		ctx->datalen++;
-		if (ctx->datalen == 64) {
-			sha1_transform(ctx, ctx->data);
-			ctx->bitlen += 512;
-			ctx->datalen = 0;
-		}
-	}
-}
-
-void sha1_final(SHA1_CTX *ctx, BYTE hash[])
-{
-	WORD i;
-
-	i = ctx->datalen;
-
-	// Pad whatever data is left in the buffer.
-	if (ctx->datalen < 56) {
-		ctx->data[i++] = 0x80;
-		while (i < 56)
-			ctx->data[i++] = 0x00;
-	}
-	else {
-		ctx->data[i++] = 0x80;
-		while (i < 64)
-			ctx->data[i++] = 0x00;
-		sha1_transform(ctx, ctx->data);
-		memset(ctx->data, 0, 56);
-	}
-
-	// Append to the padding the total message's length in bits and transform.
-	ctx->bitlen += ctx->datalen * 8;
-	ctx->data[63] = ctx->bitlen;
-	ctx->data[62] = ctx->bitlen >> 8;
-	ctx->data[61] = ctx->bitlen >> 16;
-	ctx->data[60] = ctx->bitlen >> 24;
-	ctx->data[59] = ctx->bitlen >> 32;
-	ctx->data[58] = ctx->bitlen >> 40;
-	ctx->data[57] = ctx->bitlen >> 48;
-	ctx->data[56] = ctx->bitlen >> 56;
-	sha1_transform(ctx, ctx->data);
-
-	// Since this implementation uses little endian byte ordering and MD uses big endian,
-	// reverse all the bytes when copying the final state to the output hash.
-	for (i = 0; i < 4; ++i) {
-		hash[i]      = (ctx->state[0] >> (24 - i * 8)) & 0x000000ff;
-		hash[i + 4]  = (ctx->state[1] >> (24 - i * 8)) & 0x000000ff;
-		hash[i + 8]  = (ctx->state[2] >> (24 - i * 8)) & 0x000000ff;
-		hash[i + 12] = (ctx->state[3] >> (24 - i * 8)) & 0x000000ff;
-		hash[i + 16] = (ctx->state[4] >> (24 - i * 8)) & 0x000000ff;
-	}
-}
-#line 0 "/Users/tony/projects/litac-lang/stdlib/std/crypto/sha1/sha1.c"
-
-
 #include <setjmp.h>
 
 
@@ -13448,27 +13447,6 @@ litaC_std__time__TimeUnit_YEARS} litaC_std__time__TimeUnit;
 typedef enum litaC_std__time__DateTimeStatus {litaC_std__time__DateTimeStatus_OK,
 litaC_std__time__DateTimeStatus_INVALID_INPUT_FORMAT} litaC_std__time__DateTimeStatus;
 
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-typedef enum litaC_std__http__HttpRequestType {litaC_std__http__HttpRequestType_GET,
-litaC_std__http__HttpRequestType_POST,
-litaC_std__http__HttpRequestType_PUT,
-litaC_std__http__HttpRequestType_DELETE,
-litaC_std__http__HttpRequestType_PATCH,
-litaC_std__http__HttpRequestType_HEAD,
-litaC_std__http__HttpRequestType_OPTION,
-litaC_std__http__HttpRequestType_MAX_REQUEST_TYPE} litaC_std__http__HttpRequestType;
-
-#line 43 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-typedef enum litaC_std__http__HttpBodyKind {litaC_std__http__HttpBodyKind_NONE,
-litaC_std__http__HttpBodyKind_BODY,
-litaC_std__http__HttpBodyKind_STREAM} litaC_std__http__HttpBodyKind;
-typedef union litaC_std__http__anon_1 litaC_std__http__anon_1;
-typedef struct litaC_std__http__HttpBody litaC_std__http__HttpBody;
-typedef struct litaC_std__http__HttpRequest litaC_std__http__HttpRequest;
-typedef struct litaC_std__http__HttpResponse litaC_std__http__HttpResponse;
-typedef struct litaC_std__http__HttpOptions litaC_std__http__HttpOptions;
-typedef struct litaC_std__http__Http litaC_std__http__Http;
-
 
 
 #line 11 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread.lita"
@@ -13500,82 +13478,44 @@ litaC_std__thread__MutexType_TIMED =
 litaC_std__thread__MutexType_RECURSIVE = 
 #line 24 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread.lita"
 2} litaC_std__thread__MutexType;
-typedef struct litaC_std__thread__thread_posix__anon_3 litaC_std__thread__thread_posix__anon_3;
-typedef union litaC_std__thread__thread_posix__anon_2 litaC_std__thread__thread_posix__anon_2;
+typedef struct litaC_std__thread__thread_posix__anon_2 litaC_std__thread__thread_posix__anon_2;
+typedef union litaC_std__thread__thread_posix__anon_1 litaC_std__thread__thread_posix__anon_1;
 typedef struct litaC_std__thread__thread_posix__TimeSpec litaC_std__thread__thread_posix__TimeSpec;
 
 
-#line 257 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 266 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 typedef enum litaC_std__thread__thread_posix__ThreadStatus {litaC_std__thread__thread_posix__ThreadStatus_ERROR = 
-#line 258 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 267 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 0,
 litaC_std__thread__thread_posix__ThreadStatus_SUCCESS = 
-#line 259 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 268 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 1,
 litaC_std__thread__thread_posix__ThreadStatus_TIMEDOUT = 
-#line 260 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 269 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 2,
 litaC_std__thread__thread_posix__ThreadStatus_BUSY = 
-#line 261 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 270 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 3,
 litaC_std__thread__thread_posix__ThreadStatus_NOMEM = 
-#line 262 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 271 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 4} litaC_std__thread__thread_posix__ThreadStatus;
 
 
-#line 266 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 275 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 typedef enum litaC_std__thread__thread_posix__MutexType {litaC_std__thread__thread_posix__MutexType_PLAIN = 
-#line 267 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 276 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 0,
 litaC_std__thread__thread_posix__MutexType_TIMED = 
-#line 268 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 277 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 1,
 litaC_std__thread__thread_posix__MutexType_RECURSIVE = 
-#line 269 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 278 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 2} litaC_std__thread__thread_posix__MutexType;
 typedef struct litaC_std__thread__thread_posix__Mutex litaC_std__thread__thread_posix__Mutex;
 typedef struct litaC_std__thread__thread_posix__Cond litaC_std__thread__thread_posix__Cond;
 typedef struct litaC_std__thread__thread_posix__Thread litaC_std__thread__thread_posix__Thread;
 typedef struct litaC_std__thread__thread_posix__ThreadStartInfo litaC_std__thread__thread_posix__ThreadStartInfo;
 typedef struct litaC_std__thread__thread_posix__Arg litaC_std__thread__thread_posix__Arg;
-
-
-#line 7 "/Users/tony/projects/ringhttp/src/http_common.lita"
-typedef enum litaC_http_common__Status {litaC_http_common__Status_OK,
-litaC_http_common__Status_ERROR_OUT_OF_MEMORY,
-litaC_http_common__Status_ERROR_CREATING_THREAD,
-litaC_http_common__Status_ERROR_UNABLE_TO_CREATE_SERVER_SOCKET,
-litaC_http_common__Status_ERROR_CREATING_ADDRESS,
-litaC_http_common__Status_ERROR_SOCKET_BIND,
-litaC_http_common__Status_ERROR_SOCKET_LISTEN,
-litaC_http_common__Status_ERROR_FILE_NOT_FOUND,
-litaC_http_common__Status_ERROR_IO_ERROR,
-litaC_http_common__Status_ERROR_IOURING_ERROR,
-litaC_http_common__Status_ERROR_PIPE_ERROR,
-litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST,
-litaC_http_common__Status_ERROR_UNSUPPORTED_METHOD,
-litaC_http_common__Status_ERROR_REQUEST_PATH_NOT_ALLOWED,
-litaC_http_common__Status_ERROR_UNKNOWN_BODY_LENGTH,
-litaC_http_common__Status_ERROR_INVALID_REQUEST_PATH,
-litaC_http_common__Status_ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT,
-litaC_http_common__Status_ERROR_INVALID_HEADER_EXCEEDED_LIMIT,
-litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT,
-litaC_http_common__Status_ERROR_NO_ROUTE_FOUND,
-litaC_http_common__Status_ERROR_NO_STREAM_HANDLER_FOUND,
-litaC_http_common__Status_ERROR_UNABLE_TO_REGISTER_HANDLER,
-litaC_http_common__Status_ERROR_CONTROLLER_CALLBACK_ERROR,
-litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ,
-litaC_http_common__Status_ERROR_UNSUPPORTED_UPGRADE_PROTOCOL,
-litaC_http_common__Status_ERROR_WEB_SOCKET_SECURITY_KEY,
-litaC_http_common__Status_ERROR_WEB_SOCKET_FRAME,
-litaC_http_common__Status_ERROR_WEB_SOCKET_FRAME_LENGTH,
-litaC_http_common__Status_ERROR_WEB_SOCKET_HANDLE_FRAME_ERROR,
-litaC_http_common__Status_PARTIAL_WEB_SOCKET_DISPATCHING_READ,
-litaC_http_common__Status_WEB_SOCKET_CLOSED,
-litaC_http_common__Status_ERROR_TEMPLATE_NO_END_TAG,
-litaC_http_common__Status_ERROR_TEMPLATE_START_TAG_BEFORE_END_TAG,
-litaC_http_common__Status_ERROR_TEMPLATE_INVALID_COMMAND} litaC_http_common__Status;
-typedef struct litaC_http_connection__HttpConnection litaC_http_connection__HttpConnection;
 
 #line 11 "/Users/tony/projects/litac-lang/stdlib/std/net/net.lita"
 typedef enum litaC_std__net__AddressType {litaC_std__net__AddressType_IPV4,
@@ -13657,6 +13597,44 @@ litaC_std__net__net_posix__SocketFlags_MSG_FASTOPEN =
 litaC_std__net__posix_socket__MSG_FASTOPEN} litaC_std__net__net_posix__SocketFlags;
 typedef struct litaC_std__net__net_posix__SocketAddress litaC_std__net__net_posix__SocketAddress;
 typedef struct litaC_std__net__net_posix__Socket litaC_std__net__net_posix__Socket;
+
+
+#line 7 "/Users/tony/projects/ringhttp/src/http_common.lita"
+typedef enum litaC_http_common__Status {litaC_http_common__Status_OK,
+litaC_http_common__Status_ERROR_OUT_OF_MEMORY,
+litaC_http_common__Status_ERROR_CREATING_THREAD,
+litaC_http_common__Status_ERROR_UNABLE_TO_CREATE_SERVER_SOCKET,
+litaC_http_common__Status_ERROR_CREATING_ADDRESS,
+litaC_http_common__Status_ERROR_SOCKET_BIND,
+litaC_http_common__Status_ERROR_SOCKET_LISTEN,
+litaC_http_common__Status_ERROR_FILE_NOT_FOUND,
+litaC_http_common__Status_ERROR_IO_ERROR,
+litaC_http_common__Status_ERROR_IOURING_ERROR,
+litaC_http_common__Status_ERROR_PIPE_ERROR,
+litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST,
+litaC_http_common__Status_ERROR_UNSUPPORTED_METHOD,
+litaC_http_common__Status_ERROR_REQUEST_PATH_NOT_ALLOWED,
+litaC_http_common__Status_ERROR_UNKNOWN_BODY_LENGTH,
+litaC_http_common__Status_ERROR_INVALID_REQUEST_PATH,
+litaC_http_common__Status_ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT,
+litaC_http_common__Status_ERROR_INVALID_HEADER_EXCEEDED_LIMIT,
+litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT,
+litaC_http_common__Status_ERROR_NO_ROUTE_FOUND,
+litaC_http_common__Status_ERROR_NO_STREAM_HANDLER_FOUND,
+litaC_http_common__Status_ERROR_UNABLE_TO_REGISTER_HANDLER,
+litaC_http_common__Status_ERROR_CONTROLLER_CALLBACK_ERROR,
+litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ,
+litaC_http_common__Status_ERROR_UNSUPPORTED_UPGRADE_PROTOCOL,
+litaC_http_common__Status_ERROR_WEB_SOCKET_SECURITY_KEY,
+litaC_http_common__Status_ERROR_WEB_SOCKET_FRAME,
+litaC_http_common__Status_ERROR_WEB_SOCKET_FRAME_LENGTH,
+litaC_http_common__Status_ERROR_WEB_SOCKET_HANDLE_FRAME_ERROR,
+litaC_http_common__Status_PARTIAL_WEB_SOCKET_DISPATCHING_READ,
+litaC_http_common__Status_WEB_SOCKET_CLOSED,
+litaC_http_common__Status_ERROR_TEMPLATE_NO_END_TAG,
+litaC_http_common__Status_ERROR_TEMPLATE_START_TAG_BEFORE_END_TAG,
+litaC_http_common__Status_ERROR_TEMPLATE_INVALID_COMMAND} litaC_http_common__Status;
+typedef struct litaC_http_connection__HttpConnection litaC_http_connection__HttpConnection;
 
 
 #line 17 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
@@ -13798,7 +13776,7 @@ litaC_http_request__HttpFlags_SSE =
 (1 << 10)} litaC_http_request__HttpFlags;
 typedef struct litaC_http_request__HttpRequest litaC_http_request__HttpRequest;
 typedef struct litaC_http_request__Payload litaC_http_request__Payload;
-typedef union litaC_http_request__anon_4 litaC_http_request__anon_4;
+typedef union litaC_http_request__anon_3 litaC_http_request__anon_3;
 typedef struct litaC_http_request__Body litaC_http_request__Body;
 typedef struct litaC_http_request__MultiPart litaC_http_request__MultiPart;
 typedef struct litaC_http_request__Part litaC_http_request__Part;
@@ -13835,8 +13813,8 @@ litaC_http_response__ResponseType_FILE,
 litaC_http_response__ResponseType_STREAM,
 litaC_http_response__ResponseType_SSE} litaC_http_response__ResponseType;
 typedef struct litaC_http_response__Stream litaC_http_response__Stream;
-typedef struct litaC_http_response__anon_6 litaC_http_response__anon_6;
-typedef union litaC_http_response__anon_5 litaC_http_response__anon_5;
+typedef struct litaC_http_response__anon_5 litaC_http_response__anon_5;
+typedef union litaC_http_response__anon_4 litaC_http_response__anon_4;
 typedef struct litaC_http_response__HttpResponse litaC_http_response__HttpResponse;
 typedef struct litaC_http_server__HttpHandler litaC_http_server__HttpHandler;
 typedef struct litaC_http_server__HttpFilterHandler litaC_http_server__HttpFilterHandler;
@@ -13853,7 +13831,7 @@ typedef struct litaC_http_router__RouteMatch litaC_http_router__RouteMatch;
 #line 33 "/Users/tony/projects/ringhttp/src/http_router.lita"
 typedef enum litaC_http_router__RequestHandlerType {litaC_http_router__RequestHandlerType_HTTP_REQUEST,
 litaC_http_router__RequestHandlerType_WEB_SOCKET} litaC_http_router__RequestHandlerType;
-typedef union litaC_http_router__anon_7 litaC_http_router__anon_7;
+typedef union litaC_http_router__anon_6 litaC_http_router__anon_6;
 typedef struct litaC_http_router__RequestHandler litaC_http_router__RequestHandler;
 typedef struct litaC_http_router__Router litaC_http_router__Router;
 typedef struct litaC_http_router__Route litaC_http_router__Route;
@@ -13893,7 +13871,7 @@ litaC_http_context__RingOpcode_SENDMSG,
 litaC_http_context__RingOpcode_READ,
 litaC_http_context__RingOpcode_CANCEL,
 litaC_http_context__RingOpcode_CLOSE} litaC_http_context__RingOpcode;
-typedef struct litaC_http_context__anon_8 litaC_http_context__anon_8;
+typedef struct litaC_http_context__anon_7 litaC_http_context__anon_7;
 typedef union litaC_http_context__RingOperation litaC_http_context__RingOperation;
 
 
@@ -14012,9 +13990,11 @@ litaC_mime__MimeType_VIDEO_X_MS_WVX,
 litaC_mime__MimeType_MAX_MIME_TYPES} litaC_mime__MimeType;
 typedef struct litaC_mime__FileToMime litaC_mime__FileToMime;
 typedef struct litaC_mime__MimeDB litaC_mime__MimeDB;
+typedef struct litaC_test_webserver__FileStream litaC_test_webserver__FileStream;
+typedef struct litaC_test_webserver__ServerHandler litaC_test_webserver__ServerHandler;
+typedef struct litaC_test_webserver__TestServer litaC_test_webserver__TestServer;
+typedef struct litaC_std__thread__barrier_mac__Barrier litaC_std__thread__barrier_mac__Barrier;
 typedef struct litaC_std__array__std__array__Array_cb__ptr_std__json__JsonNode_ce_ litaC_std__array__std__array__Array_cb__ptr_std__json__JsonNode_ce_;
-typedef struct litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_;
-typedef struct litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_;
 typedef struct litaC_std__array__std__array__Array_cb__ptr_const_char_ce_ litaC_std__array__std__array__Array_cb__ptr_const_char_ce_;
 typedef struct litaC_std__array__std__array__Array_cb_std__test__TestCase_ce_ litaC_std__array__std__array__Array_cb_std__test__TestCase_ce_;
 typedef struct litaC_std__array__std__array__Array_cb_std__test__AssertEntry_ce_ litaC_std__array__std__array__Array_cb_std__test__AssertEntry_ce_;
@@ -14031,16 +14011,59 @@ typedef struct litaC_std__array__std__array__Array_cb_http_context__SessionConte
 typedef struct litaC_std__array__std__array__Array_cb_i32_ce_ litaC_std__array__std__array__Array_cb_i32_ce_;
 typedef struct litaC_std__atomic__std__atomic__Atomic_cb_bool_ce_ litaC_std__atomic__std__atomic__Atomic_cb_bool_ce_;
 typedef struct litaC_std__array__std__array__Array_cb_http_worker_kqueue__WorkerThread_ce_ litaC_std__array__std__array__Array_cb_http_worker_kqueue__WorkerThread_ce_;
+typedef struct litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_;
+typedef struct litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_;
 typedef struct litaC_std__map__std__map__Map_cb_i32_c_i32_ce_ litaC_std__map__std__map__Map_cb_i32_c_i32_ce_;
 typedef struct litaC_std__map__std__map__Entry_cb_i32_c_i32_ce_ litaC_std__map__std__map__Entry_cb_i32_c_i32_ce_;
 typedef struct litaC_std__array__std__array__Array_cb_std__builtins__String_ce_ litaC_std__array__std__array__Array_cb_std__builtins__String_ce_;
 typedef struct litaC_std__map__std__map__Map_cb_i64_c_i32_ce_ litaC_std__map__std__map__Map_cb_i64_c_i32_ce_;
 typedef struct litaC_std__map__std__map__Entry_cb_i64_c_i32_ce_ litaC_std__map__std__map__Entry_cb_i64_c_i32_ce_;
-typedef struct litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_;
-typedef struct litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_;
-typedef struct litaC_main_test__http_response__Stream__VirtualTable litaC_main_test__http_response__Stream__VirtualTable;
-typedef struct litaC_main_test__http_server__HttpHandler__VirtualTable litaC_main_test__http_server__HttpHandler__VirtualTable;
-typedef struct litaC_main_test__http_server__HttpFilterHandler__VirtualTable litaC_main_test__http_server__HttpFilterHandler__VirtualTable;
+typedef struct litaC_http_websocket_test__http_response__Stream__VirtualTable litaC_http_websocket_test__http_response__Stream__VirtualTable;
+typedef struct litaC_http_websocket_test__http_server__HttpHandler__VirtualTable litaC_http_websocket_test__http_server__HttpHandler__VirtualTable;
+typedef struct litaC_http_websocket_test__http_server__HttpFilterHandler__VirtualTable litaC_http_websocket_test__http_server__HttpFilterHandler__VirtualTable;
+
+
+#line 37 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test__init_ws_tests(void);
+
+#line 45 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test__computeAccept(const litaC_char* litaC_key,litaC_i32 litaC_keyLen,litaC_std__string__builder__StringBuilder* litaC_out);
+
+#line 64 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_bool litaC_http_websocket_test__readHttpResponse(litaC_i32 litaC_sock,litaC_std__string__builder__StringBuilder* litaC_out);
+
+#line 82 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_http_websocket_test__buildTextFrame(const litaC_char* litaC_payload,litaC_i32 litaC_payloadLen,litaC_char* litaC_buf,litaC_u8* litaC_mask);
+
+#line 112 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_http_websocket_test__readWebSocketFrame(litaC_i32 litaC_sock,litaC_std__string__builder__StringBuilder* litaC_payloadOut,litaC_i32* litaC_opcodeOut);
+
+
+#line 146 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test__test_websocket_handshake(void);
+
+
+#line 199 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test__test_websocket_echo(void);
+
+
+#line 258 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test__test_websocket_close(void);
+
+#line 311 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_http_websocket_test__connectToWsServer(void);
+
+
+#line 331 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test__test_websocket_wrong_upgrade_protocol(void);
+
+
+#line 356 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test__test_websocket_missing_key(void);
+
+
+#line 383 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test__test_websocket_route_no_upgrade(void);
 
 #line 77 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
 litaC_void litaC_std__test__TestSuite_init(litaC_std__test__TestSuite* litaC_this,const litaC_std__mem__Allocator* litaC_allocator);
@@ -14573,115 +14596,115 @@ litaC_i32 litaC_std__ascii__char_asHex(litaC_char litaC_this);
 #line 50 "/Users/tony/projects/litac-lang/stdlib/std/ascii/ascii.lita"
 litaC_void litaC_std__ascii__testWhitespace(void);
 
-#line 183 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 182 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 const litaC_char* litaC_std__system__ArchAsStr(Lita_ArchType litaC_type);
 
-#line 195 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 194 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 Lita_ArchType litaC_std__system__ArchFromStr(const litaC_char* litaC_str,litaC_usize litaC_len);
 
-#line 260 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 259 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 const litaC_char* litaC_std__system__OSAsStr(Lita_OSType litaC_type);
 
-#line 273 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 272 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 Lita_OSType litaC_std__system__OSFromStr(const litaC_char* litaC_str,litaC_usize litaC_len);
 
 
 
-#line 358 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 357 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__SystemInit(void);
 
-#line 362 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 361 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 Lita_OSType litaC_std__system__GetOS(void);
 
-#line 366 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 365 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 Lita_ArchType litaC_std__system__GetArch(void);
 
-#line 370 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 369 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__GetEnv(const litaC_char* litaC_varName);
 
-#line 374 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 373 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_void litaC_std__system__SetEnv(const litaC_char* litaC_varName,const litaC_char* litaC_value);
 
-#line 380 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 379 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 const litaC_char* litaC_std__system__CurrentWorkingPath(void);
 
-#line 384 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 383 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileTruncate(const litaC_char* litaC_filename,litaC_usize litaC_newLength);
 
-#line 388 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 387 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileTruncateFile(FILE* litaC_file,litaC_usize litaC_newLength);
 
-#line 392 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 391 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileDelete(const litaC_char* litaC_filename);
 
-#line 396 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 395 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileExists(const litaC_char* litaC_filename);
 
-#line 401 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 400 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileMove(const litaC_char* litaC_srcFilename,const litaC_char* litaC_destFilename);
 
-#line 405 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 404 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileIsDir(const litaC_char* litaC_filename);
 
-#line 409 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 408 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__Mkdir(const litaC_char* litaC_dir);
 
-#line 413 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 412 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__Mkdirs(const litaC_char* litaC_dir);
 
-#line 443 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 442 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__FilePath(const litaC_char* litaC_filename,litaC_char* litaC_out);
 
-#line 467 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 466 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__FileParent(const litaC_char* litaC_filename,litaC_char* litaC_out,litaC_i32* litaC_length);
 
-#line 498 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 497 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__PathNormalize(const litaC_char* litaC_filename,litaC_char* litaC_out);
 
-#line 519 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 518 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__PathNative(const litaC_char* litaC_filename,litaC_char* litaC_out);
 
-#line 546 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 545 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_std__system__strcicmp(const litaC_char* litaC_a,const litaC_char* litaC_b,litaC_usize litaC_size);
 
-#line 573 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 572 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__GetAbsolutePath(const litaC_char* litaC_pwd,const litaC_char* litaC_path,litaC_char* litaC_output);
 
-#line 630 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 629 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__PathEquals(const litaC_char* litaC_a,const litaC_char* litaC_b);
 
-#line 658 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 657 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__FilePathToUri(const litaC_char* litaC_path,litaC_char* litaC_output);
 
-#line 681 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 680 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__UriToFilePath(const litaC_char* litaC_uri,litaC_char* litaC_output);
 
 
-#line 803 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 802 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_f64 litaC_std__system__SystemTimeMSec(void);
 
-#line 835 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 834 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__system__Process litaC_std__system__SystemExec(const litaC_char* litaC_command);
 
-#line 847 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 846 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i64 litaC_std__system__Process_readOutput(litaC_std__system__Process* litaC_this,litaC_char* litaC_buffer,litaC_usize litaC_length);
 
-#line 855 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 854 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i64 litaC_std__system__Process_writeInput(litaC_std__system__Process* litaC_this,litaC_char* litaC_buffer,litaC_usize litaC_length);
 
-#line 863 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 862 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_std__system__Process_close(litaC_std__system__Process* litaC_this);
 
 
-#line 875 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 874 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_std__system__LoadEnv(const litaC_char* litaC_envFile,const litaC_std__mem__Allocator* litaC_allocator);
 
 
-#line 911 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 910 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_void litaC_std__system__testAbsolutePath(void);
 
 
-#line 920 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 919 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_void litaC_std__system__testMkdirDelete(void);
 
 
@@ -15264,169 +15287,97 @@ litaC_void litaC_std__json__to_json__StringBuilder_toJson(litaC_std__string__bui
 #line 68 "/Users/tony/projects/litac-lang/stdlib/std/json/to_json.lita"
 litaC_void litaC_std__json__to_json__DateTime_toJson(litaC_std__time__DateTime litaC_this,litaC_std__string__builder__StringBuilder* litaC_sb);
 
-#line 37 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__http__HeadersInit(litaC_i32 litaC_initialSize,const litaC_std__mem__Allocator* litaC_allocator);
-
-#line 82 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_init(litaC_std__http__Http* litaC_this,litaC_std__http__HttpOptions* litaC_options,const litaC_std__mem__Allocator* litaC_allocator);
-
-#line 98 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void litaC_std__http__Http_free(litaC_std__http__Http* litaC_this);
-
-#line 107 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void litaC_std__http__Http_setProxy(litaC_std__http__Http* litaC_this,const litaC_char* litaC_proxy);
-
-#line 114 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_get(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp);
-
-#line 128 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_head(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp);
-
-#line 142 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_delete(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp);
-
-#line 156 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_post(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp,litaC_std__builtins__String litaC_body,litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_headers);
-
-#line 179 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_put(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp,litaC_std__builtins__String litaC_body,litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_headers);
-
-#line 196 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_makeRequest(litaC_std__http__Http* litaC_this,litaC_std__http__HttpRequest* litaC_req,litaC_std__http__HttpResponse* litaC_resp);
-
-#line 303 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_usize litaC_std__http__HttpWriteCallback(litaC_void* litaC_data,litaC_usize litaC_size,litaC_usize litaC_n,litaC_void* litaC_userdata);
-
-#line 328 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_usize litaC_std__http__HttpHeadersCallback(litaC_void* litaC_data,litaC_usize litaC_size,litaC_usize litaC_n,litaC_void* litaC_userdata);
-
-#line 348 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void litaC_std__http__testFileDownload(void);
-
-
-#line 367 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void litaC_std__http__testPost(void);
-
-
-#line 381 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void litaC_std__http__testPostJson(void);
-
-
-#line 403 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void litaC_std__http__testDelete(void);
-
-#line 281 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 290 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_init(litaC_std__thread__thread_posix__Mutex* litaC_this,litaC_i32 litaC_type);
 
-#line 294 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 303 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__Mutex_destroy(litaC_std__thread__thread_posix__Mutex* litaC_this);
 
-#line 298 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 307 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_lock(litaC_std__thread__thread_posix__Mutex* litaC_this);
 
-#line 303 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 312 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_tryLock(litaC_std__thread__thread_posix__Mutex* litaC_this);
 
-#line 308 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 317 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_unlock(litaC_std__thread__thread_posix__Mutex* litaC_this);
 
-#line 313 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 322 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_timedLock(litaC_std__thread__thread_posix__Mutex* litaC_this,litaC_std__thread__thread_posix__TimeSpec* litaC_timeSpec);
 
-#line 377 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 386 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_init(litaC_std__thread__thread_posix__Cond* litaC_this);
 
-#line 382 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 391 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__Cond_destroy(litaC_std__thread__thread_posix__Cond* litaC_this);
 
-#line 387 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 396 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_signal(litaC_std__thread__thread_posix__Cond* litaC_this);
 
-#line 392 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 401 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_broadcast(litaC_std__thread__thread_posix__Cond* litaC_this);
 
-#line 398 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 407 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_wait(litaC_std__thread__thread_posix__Cond* litaC_this,litaC_std__thread__thread_posix__Mutex* litaC_mtx);
 
-#line 403 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 412 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_timedWait(litaC_std__thread__thread_posix__Cond* litaC_this,litaC_std__thread__thread_posix__Mutex* litaC_mtx,const litaC_std__thread__thread_posix__TimeSpec* litaC_ts);
 
-#line 418 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 427 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void* litaC_std__thread__thread_posix___thrd_wrapper_function(litaC_void* litaC_aArg);
 
-#line 451 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 460 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_create(litaC_std__thread__thread_posix__Thread* litaC_this,litaC_i32 (*litaC_fun)(litaC_void*),litaC_void* litaC_arg,const litaC_std__mem__Allocator* litaC_allocator);
 
-#line 485 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 494 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_resume(litaC_std__thread__thread_posix__Thread* litaC_thr);
 
-#line 490 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 499 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_suspend(litaC_std__thread__thread_posix__Thread* litaC_thr);
 
-#line 495 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 504 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_detach(litaC_std__thread__thread_posix__Thread litaC_this);
 
-#line 500 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 509 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_std__thread__thread_posix__Thread_id(litaC_std__thread__thread_posix__Thread litaC_this);
 
-#line 504 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 513 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_bool litaC_std__thread__thread_posix__Thread_equal(litaC_std__thread__thread_posix__Thread litaC_this,litaC_std__thread__thread_posix__Thread litaC_other);
 
-#line 508 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 517 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_join(litaC_std__thread__thread_posix__Thread litaC_this,litaC_i32* litaC_res);
 
-#line 520 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 529 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__Thread_destroy(litaC_std__thread__thread_posix__Thread litaC_this);
 
-#line 524 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 533 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__Thread_yield(litaC_std__thread__thread_posix__Thread litaC_this);
 
-#line 528 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 537 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Thread litaC_std__thread__thread_posix__ThreadCurrent(void);
 TTHREAD_NORETURN 
 
-#line 537 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 546 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__ThreadExit(litaC_i32 litaC_res);
 
-#line 541 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 550 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_std__thread__thread_posix__ThreadSleepMSec(litaC_i64 litaC_msec);
 
-#line 558 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 567 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_std__thread__thread_posix__ThreadSleep(litaC_std__thread__thread_posix__TimeSpec* litaC_duration,litaC_std__thread__thread_posix__TimeSpec* litaC_remaining);
 
-#line 569 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 578 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_u32 litaC_std__thread__thread_posix__GetNumberOfSystemThreads(void);
 
-#line 579 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 588 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__ThreadPrintStackTrace(FILE* litaC_fd);
 
-#line 598 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 607 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_std__thread__thread_posix__threadFunction(litaC_void* litaC_arg);
 
 
-#line 610 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 619 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__testThreads(void);
-
-#line 33 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_init(litaC_http_connection__HttpConnection* litaC_this,const litaC_std__mem__Allocator* litaC_allocator);
-
-#line 41 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_free(litaC_http_connection__HttpConnection* litaC_this);
-
-#line 47 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_reset(litaC_http_connection__HttpConnection* litaC_this);
-
-#line 52 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_close(litaC_http_connection__HttpConnection* litaC_this);
-
-#line 58 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_i32 litaC_http_connection__HttpConnection_handle(litaC_http_connection__HttpConnection* litaC_this);
-
-#line 62 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_bool litaC_http_connection__HttpConnection_isConnected(litaC_http_connection__HttpConnection* litaC_this);
-
-#line 67 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_bufferContents(litaC_http_connection__HttpConnection* litaC_this,litaC_http_request__HttpRequest* litaC_request,litaC_http_response__HttpResponse* litaC_response,litaC_http_server__HttpConfig* litaC_config);
 
 
 #line 30 "/Users/tony/projects/litac-lang/stdlib/std/net/net.lita"
@@ -15546,6 +15497,27 @@ litaC_i32 litaC_std__net__net_posix__Socket_handle(litaC_std__net__net_posix__So
 
 #line 179 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
 litaC_void litaC_std__net__net_posix__Socket_close(litaC_std__net__net_posix__Socket* litaC_this);
+
+#line 33 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_init(litaC_http_connection__HttpConnection* litaC_this,const litaC_std__mem__Allocator* litaC_allocator);
+
+#line 41 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_free(litaC_http_connection__HttpConnection* litaC_this);
+
+#line 47 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_reset(litaC_http_connection__HttpConnection* litaC_this);
+
+#line 52 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_close(litaC_http_connection__HttpConnection* litaC_this);
+
+#line 58 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_i32 litaC_http_connection__HttpConnection_handle(litaC_http_connection__HttpConnection* litaC_this);
+
+#line 62 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_bool litaC_http_connection__HttpConnection_isConnected(litaC_http_connection__HttpConnection* litaC_this);
+
+#line 67 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_bufferContents(litaC_http_connection__HttpConnection* litaC_this,litaC_http_request__HttpRequest* litaC_request,litaC_http_response__HttpResponse* litaC_response,litaC_http_server__HttpConfig* litaC_config);
 
 #line 51 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
 litaC_std__zip__ZipStatus litaC_std__zip__ZipCompress(litaC_std__string__builder__StringBuilder* litaC_buffer,litaC_std__builtins__String litaC_source,litaC_std__zip__ZipCompressionLevel litaC_level);
@@ -15968,79 +15940,79 @@ litaC_void litaC_http_worker_kqueue__WorkerThread_drainPipe(litaC_http_worker_kq
 #line 247 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_handleReadReady(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 325 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 332 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_handleWriteReady(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 385 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 392 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_http_worker_kqueue__WorkerThread_doSend(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 420 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 427 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 432 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 439 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_deregisterWrite(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 444 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 451 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_deregisterAll(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 471 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 478 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_beginWriteHttpResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 487 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 494 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 524 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 531 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushFileResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 563 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 570 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushStreamResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 619 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 626 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushSseResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 673 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 680 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushWebSocketWrite(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 695 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 702 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_onResponseComplete(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 727 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 734 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session);
 
-#line 746 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 753 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handlePartialHttpRequest(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_request,litaC_i32 litaC_bytesRead);
 
-#line 838 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 845 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handleHttpRequest(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_request);
 
-#line 928 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 940 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handleWebSocketUpgrade(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_context,litaC_http_request__HttpRequest* litaC_httpRequest,litaC_http_router__RequestHandlerContext* litaC_requestContext);
 
-#line 981 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 993 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handleFileRequest(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session,litaC_http_request__HttpRequest* litaC_httpRequest);
 
-#line 1015 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1027 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handleWebSocketFrame(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session,litaC_i32 litaC_bytesRead);
 
-#line 1067 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1079 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_sendWebSocketFrame(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session,litaC_http_websocket__Frame* litaC_frame);
 
-#line 1099 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1111 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_sendServerError(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session,litaC_http_common__Status litaC_status);
 
-#line 1115 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1127 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_serverError(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_router__RequestHandlerContext* litaC_requestContext,litaC_http_common__Status litaC_status);
 
-#line 1137 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1149 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_server404(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_router__RequestHandlerContext* litaC_requestContext,litaC_http_common__Status litaC_status);
 
-#line 1159 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1171 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_sendBadRequest(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_context,litaC_http_common__Status litaC_status);
 
-#line 1216 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1235 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_context__SessionContext* litaC_http_worker_kqueue__WorkerThread_handleAccept(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_i32 litaC_clientSocket);
 
-#line 1230 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1249 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_checkTimeouts(litaC_http_worker_kqueue__WorkerThread* litaC_this);
 
 #line 183 "/Users/tony/projects/ringhttp/src/mime.lita"
@@ -16055,6 +16027,69 @@ litaC_std__builtins__String litaC_mime__MimeDB_getMimeType(litaC_mime__MimeDB* l
 
 #line 211 "/Users/tony/projects/ringhttp/src/mime.lita"
 litaC_void litaC_mime__testGetMimeType(void);
+
+#line 24 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__FileStream_read(litaC_test_webserver__FileStream* litaC_this,litaC_char* litaC_buffer,litaC_i32 litaC_size);
+
+#line 37 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__ServerHandler_handle(litaC_test_webserver__ServerHandler* litaC_this,litaC_http_router__RequestHandlerContext* litaC_context,litaC_http_common__Status litaC_status);
+
+#line 78 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__TestWebSocketController(litaC_http_websocket__WebSocketSession* litaC_session,litaC_http_websocket__Frame* litaC_frame);
+
+#line 104 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__EchoRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context);
+
+#line 133 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__DownloadRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context);
+
+#line 151 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__GzipRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context);
+
+#line 169 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__SubmitRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context);
+
+#line 191 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_void litaC_test_webserver__PrintHeaders(litaC_std__array__std__array__Array_cb_http_request__HttpHeader_ce_* litaC_headers,litaC_http_response__HttpResponse* litaC_res,const litaC_std__mem__Allocator* litaC_allocator);
+
+#line 211 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_void litaC_test_webserver__PrintBody(litaC_http_request__Body* litaC_body,litaC_http_response__HttpResponse* litaC_res,const litaC_std__mem__Allocator* litaC_allocator);
+
+#line 273 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__PutRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context);
+
+#line 288 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__PatchRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context);
+
+#line 303 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__DeleteRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context);
+
+#line 313 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__PathRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context);
+
+#line 338 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__WebServerFunction(litaC_void* litaC_arg);
+
+
+#line 344 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__runServer(litaC_test_webserver__TestServer* litaC_testServer);
+
+
+#line 460 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_void litaC_test_webserver__launch(litaC_test_webserver__TestServer* litaC_testServer);
+
+
+#line 482 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_void litaC_test_webserver__testExample(void);
+
+#line 15 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__barrier_mac__Barrier_init(litaC_std__thread__barrier_mac__Barrier* litaC_this,litaC_i32 litaC_threadCount);
+
+#line 33 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__barrier_mac__Barrier_destroy(litaC_std__thread__barrier_mac__Barrier* litaC_this);
+
+#line 39 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__barrier_mac__Barrier_wait(litaC_std__thread__barrier_mac__Barrier* litaC_this);
 
 #line 1 "/Users/tony/projects/ringhttp/src/mime.lita"
 const litaC_char* litaC_mime__MimeTypeAsStr(litaC_mime__MimeType litaC_enumType);
@@ -16294,30 +16329,6 @@ litaC_i32 litaC_std__map__std__map__Map_put_cb_i64_c_i32_ce_(litaC_std__map__std
 #line 84 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
 litaC_void litaC_std__map__std__map__Map_free_cb_i64_c_i32_ce_(litaC_std__map__std__map__Map_cb_i64_c_i32_ce_* litaC_m);
 
-#line 65 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_void litaC_std__map__std__map__Map_init_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_emptyValue,litaC_i32 litaC_initialSize,const litaC_std__mem__Allocator* litaC_allocator,litaC_std__builtins__String litaC_emptyKey);
-
-#line 259 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_bool litaC_std__map__std__map__MapGrow_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_i32 litaC_newlength);
-
-#line 106 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 litaC_std__map__std__map__Map_put_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_key,litaC_std__builtins__String litaC_value);
-
-#line 84 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_void litaC_std__map__std__map__Map_free_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m);
-
-#line 101 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_bool litaC_std__map__std__map__Map_empty_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m);
-
-#line 296 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__Map_iter_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m);
-
-#line 305 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_bool litaC_std__map__std__map__MapIterator_hasNext_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_iter);
-
-#line 309 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__MapIterator_next_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_iter);
-
 #line 15 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
 litaC_std__array__std__array__Array_cb_std__builtins__String_ce_ litaC_std__array__std__array__ArrayInit_cb_std__builtins__String_ce_(litaC_i32 litaC_initialSize,const litaC_std__mem__Allocator* litaC_alloc);
 
@@ -16497,8 +16508,30 @@ litaC_i32 litaC_std__array__std__array__Array_size_cb_http_context__SessionConte
 #line 54 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
 litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__StringMap_cb_std__builtins__String_ce_(litaC_std__builtins__String litaC_emptyValue,litaC_i32 litaC_initialSize,const litaC_std__mem__Allocator* litaC_allocator);
 
+#line 65 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_void litaC_std__map__std__map__Map_init_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_emptyValue,litaC_i32 litaC_initialSize,const litaC_std__mem__Allocator* litaC_allocator,litaC_std__builtins__String litaC_emptyKey);
+
+#line 259 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_bool litaC_std__map__std__map__MapGrow_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_i32 litaC_newlength);
+
+#line 106 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 litaC_std__map__std__map__Map_put_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_key,litaC_std__builtins__String litaC_value);
+
+#line 84 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_void litaC_std__map__std__map__Map_free_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m);
+
 #line 141 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
 litaC_std__builtins__String litaC_std__map__std__map__Map_get_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_key);
+LITAC_INLINE 
+
+#line 272 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 litaC_std__array__std__array__Array_size_cb_http_request__QueryParam_ce_(litaC_std__array__std__array__Array_cb_http_request__QueryParam_ce_* litaC_a);
+
+#line 81 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_http_request__QueryParam* litaC_std__array__std__array__Array_getPtr_cb_http_request__QueryParam_ce_(litaC_std__array__std__array__Array_cb_http_request__QueryParam_ce_* litaC_a,litaC_i32 litaC_index);
+
+#line 36 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
+litaC_test_webserver__FileStream* litaC_std__mem__std__mem__new_cb_test_webserver__FileStream_ce_(const litaC_std__mem__Allocator* litaC_a);
 
 #line 246 "/Users/tony/projects/litac-lang/stdlib/std/json/from_json.lita"
 litaC_void litaC_std__json__from_json__std__json__from_json__Array_fromJson_cb__ptr_const_char_ce_(litaC_std__array__std__array__Array_cb__ptr_const_char_ce_* litaC_this,litaC_std__json__JsonContext* litaC_context,litaC_std__json__JsonNode* litaC_json);
@@ -16513,15 +16546,29 @@ litaC_i32 litaC_std__array__std__array__Array_size_cb__ptr_const_char_ce_(litaC_
 #line 75 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
 const litaC_char* litaC_std__array__std__array__Array_get_cb__ptr_const_char_ce_(litaC_std__array__std__array__Array_cb__ptr_const_char_ce_* litaC_a,litaC_i32 litaC_index);
 
-#line 2 "/Users/tony/projects/ringhttp/test/main_test.lita"
-litaC_i32 litaC_main_test____LitaTestMain(litaC_i32 litaC_len,litaC_char** litaC_args);
+#line 2 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_http_websocket_test____LitaTestMain(litaC_i32 litaC_len,litaC_char** litaC_args);
 
-#line 1 "/Users/tony/projects/ringhttp/test/main_test.lita"
-litaC_void litaC_main_test____litaModuleInit(void);
-litaC_i32 litaC_main_test____litaWrapperMain(litaC_i32 litaC_len,litaC_char** litaC_args);
+#line 1 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test____litaModuleInit(void);
+litaC_i32 litaC_http_websocket_test____litaWrapperMain(litaC_i32 litaC_len,litaC_char** litaC_args);
+
+
+#line 5 "generated"
+litaC_i32 litaC_http_websocket_test____test_webserver__FileStream_read_wrapper(litaC_void* litaC_this,litaC_char* litaC__0,litaC_i32 litaC__1);
+
+
+#line 18 "generated"
+litaC_i32 litaC_http_websocket_test____test_webserver__ServerHandler_handle_wrapper(litaC_void* litaC_this,litaC_http_router__RequestHandlerContext* litaC__0,litaC_http_common__Status litaC__1);
 
 
 // Generated code for interfaces
+// Generated code litaC_http_response__Stream
+litaC_http_response__Stream litaC_test_webserver__FileStream__to__litaC_http_response__Stream(litaC_test_webserver__FileStream* x);
+
+// Generated code litaC_http_server__HttpHandler
+litaC_http_server__HttpHandler litaC_test_webserver__ServerHandler__to__litaC_http_server__HttpHandler(litaC_test_webserver__ServerHandler* x);
+
 
 #endif /* _LITAC_HEADER_H */
 
@@ -16532,10 +16579,207 @@ litaC_i32 litaC_main_test____litaWrapperMain(litaC_i32 litaC_len,litaC_char** li
 
 
 
-#line 85 "/Users/tony/projects/litac-lang/stdlib/std/net/net.lita"
+#line 48 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+struct litaC_std__test__AssertEntry {
+#line 49 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+const litaC_char* filename;
 
-struct litaC_std__net__Socket {int __dummy;};
+#line 50 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+litaC_usize lineNumber;
 
+#line 51 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+const litaC_char* errorMessage;
+};
+
+
+#line 99 "/Users/tony/projects/ringhttp/src/http_response.lita"
+struct litaC_http_response__Stream {litaC_void* __this;
+litaC_http_websocket_test__http_response__Stream__VirtualTable* __vtable;
+};
+
+
+#line 113 "/Users/tony/projects/ringhttp/src/http_response.lita"
+
+
+#line 19 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+struct litaC_std__map__std__map__Map_cb_i64_c_i32_ce_ {
+#line 20 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 length;
+
+#line 21 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 capacity;
+
+#line 22 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+const litaC_std__mem__Allocator* allocator;
+
+#line 24 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__Entry_cb_i64_c_i32_ce_* entries;
+
+#line 26 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 emptyValue;
+
+#line 27 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i64 emptyKey;
+};
+
+
+#line 17 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
+struct litaC_std__builtins__NativeVararg {
+#line 18 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
+litaC_u64* args;
+
+#line 19 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
+litaC_i32 numberOfArgs;
+};
+
+
+#line 21 "/Users/tony/projects/litac-lang/stdlib/std/io/io.lita"
+struct litaC_std__io__File {
+#line 22 "/Users/tony/projects/litac-lang/stdlib/std/io/io.lita"
+FILE* file;
+
+#line 23 "/Users/tony/projects/litac-lang/stdlib/std/io/io.lita"
+litaC_i64 _position;
+};
+
+
+#line 13 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+struct litaC_std__map__std__map__Entry_cb_i32_c_i32_ce_ {
+#line 14 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_u32 hash;
+
+#line 15 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 key;
+
+#line 16 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 value;
+};
+
+
+#line 1 "generated"
+
+struct litaC_http_websocket_test__http_response__Stream__VirtualTable {
+#line 2 "generated"
+litaC_i32 (*read)(litaC_void*,litaC_char*,litaC_i32);
+};
+
+
+
+#line 27 "/Users/tony/projects/ringhttp/src/http_server.lita"
+
+struct litaC_http_server__HttpHandler {litaC_void* __this;
+litaC_http_websocket_test__http_server__HttpHandler__VirtualTable* __vtable;
+};
+
+
+
+#line 33 "/Users/tony/projects/ringhttp/src/http_context.lita"
+
+
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb_i32_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32* elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
+};
+
+
+#line 43 "/Users/tony/projects/ringhttp/src/http_server.lita"
+
+struct litaC_http_server__WebSocketController {
+#line 44 "/Users/tony/projects/ringhttp/src/http_server.lita"
+
+litaC_i32 (*callback)(litaC_http_websocket__WebSocketSession*,litaC_http_websocket__Frame*);
+};
+
+
+
+#line 19 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+struct litaC_std__map__std__map__Map_cb__ptr_const_char_c_i32_ce_ {
+#line 20 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 length;
+
+#line 21 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 capacity;
+
+#line 22 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+const litaC_std__mem__Allocator* allocator;
+
+#line 24 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__Entry_cb__ptr_const_char_c_i32_ce_* entries;
+
+#line 26 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 emptyValue;
+
+#line 27 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+const litaC_char* emptyKey;
+};
+
+
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb_http_server__HttpFilterHandler_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_http_server__HttpFilterHandler* elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
+};
+
+
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb__ptr_const_char_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_char** elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
+};
+
+
+#line 39 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+struct litaC_std__json__JsonContext {
+#line 40 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_std__mem__Allocator* allocator;
+
+#line 41 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_void (*maker)(litaC_u64,litaC_std__json__JsonContext*,litaC_std__json__JsonNode*,litaC_void*);
+
+#line 42 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_void* (*makerPtr)(litaC_u64,litaC_std__json__JsonContext*,litaC_std__json__JsonNode*);
+};
+
+
+#line 14 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+struct litaC_std__time__Time {
+#line 15 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+litaC_u8 sec;
+
+#line 16 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+litaC_u8 min;
+
+#line 17 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+litaC_u8 hour;
+};
 
 
 #line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
@@ -16554,13 +16798,29 @@ const litaC_std__mem__Allocator* alloc;
 };
 
 
-#line 566 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-struct litaC_std__json__JsonIterator {
-#line 567 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_i32 index;
+#line 32 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+struct litaC_std__time__Offset {
+#line 33 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+litaC_u8 min;
 
-#line 568 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__json__JsonNode* json;
+#line 34 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+litaC_u8 hr;
+};
+
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+struct litaC_std__mem__bucket_allocator__Bucket {
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_std__mem__bucket_allocator__Bucket* prev;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_u8* mem;
+
+#line 13 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_usize size;
+
+#line 16 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_void* padding;
 };
 
 
@@ -16580,66 +16840,56 @@ const litaC_std__mem__Allocator* alloc;
 };
 
 
-#line 843 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
-struct litaC_std__system__Process {
-#line 844 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
-FILE* pipe;
-};
+#line 19 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+struct litaC_std__map__std__map__Map_cb_i32_c_i32_ce_ {
+#line 20 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 length;
 
+#line 21 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 capacity;
 
-#line 155 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-
-
-#line 593 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-struct litaC_std__thread__thread_posix__Arg {
-#line 594 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_i32 state;
-
-#line 595 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__Mutex* mtx;
-};
-
-
-#line 37 "/Users/tony/projects/ringhttp/src/http_server.lita"
-
-struct litaC_http_server__HttpController {
-#line 38 "/Users/tony/projects/ringhttp/src/http_server.lita"
-
-litaC_i32 (*callback)(litaC_http_router__RequestHandlerContext*);
-};
-
-
-
-#line 13 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
-struct litaC_std__mem__linear_allocator__ExpandInfo {
-#line 14 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
+#line 22 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
 const litaC_std__mem__Allocator* allocator;
 
-#line 15 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
-litaC_std__mem__linear_allocator__ExpandStrategy strategy;
+#line 24 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__Entry_cb_i32_c_i32_ce_* entries;
+
+#line 26 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 emptyValue;
+
+#line 27 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 emptyKey;
 };
 
 
-#line 15 "/Users/tony/projects/ringhttp/src/http_router.lita"
-struct litaC_http_router__RequestHandlerContext {
-#line 16 "/Users/tony/projects/ringhttp/src/http_router.lita"
+#line 14 "generated"
+
+struct litaC_http_websocket_test__http_server__HttpHandler__VirtualTable {
+#line 15 "generated"
+litaC_i32 (*handle)(litaC_void*,litaC_http_router__RequestHandlerContext*,litaC_http_common__Status);
+};
+
+
+
+#line 851 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+
+
+#line 15 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+
+struct litaC_http_websocket__WebSocketSession {
+#line 16 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+litaC_http_worker_kqueue__WorkerThread* worker;
+
+#line 17 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+litaC_http_context__SessionContext* context;
+
+#line 20 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
 const litaC_std__mem__Allocator* allocator;
 
-#line 17 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_request__HttpRequest* request;
-
-#line 18 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_response__HttpResponse* response;
-
-#line 19 "/Users/tony/projects/ringhttp/src/http_router.lita"
+#line 21 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
 litaC_void* userData;
-
-#line 21 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_router__RouteMatch* match;
-
-#line 24 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_i32 sessionIndex;
 };
+
 
 
 #line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
@@ -16652,6 +16902,148 @@ litaC_i32 capacity;
 
 #line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
 litaC_std__test__AssertEntry* elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
+};
+
+
+#line 7 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
+struct litaC_std__builtins__any {
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
+litaC_void* value;
+
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
+litaC_u64 id;
+};
+
+
+#line 164 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+
+
+#line 602 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+struct litaC_std__thread__thread_posix__Arg {
+#line 603 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_i32 state;
+
+#line 604 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__Mutex* mtx;
+};
+
+
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb_http_request__Part_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_http_request__Part* elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
+};
+
+
+#line 124 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
+struct litaC_std__mem__Allocator {
+#line 125 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
+litaC_void* (*allocFn)(const litaC_std__mem__Allocator*,litaC_usize);
+
+#line 126 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
+litaC_void* (*callocFn)(const litaC_std__mem__Allocator*,litaC_usize,litaC_usize);
+
+#line 127 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
+litaC_void* (*reallocFn)(const litaC_std__mem__Allocator*,litaC_void*,litaC_usize,litaC_usize);
+
+#line 128 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
+litaC_void (*freeFn)(const litaC_std__mem__Allocator*,litaC_void*);
+};
+
+
+#line 109 "/Users/tony/projects/ringhttp/src/mime.lita"
+struct litaC_mime__FileToMime {
+#line 110 "/Users/tony/projects/ringhttp/src/mime.lita"
+litaC_std__builtins__String* fileExtensions;
+
+#line 111 "/Users/tony/projects/ringhttp/src/mime.lita"
+litaC_mime__MimeType mimeType;
+};
+
+
+#line 382 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+struct litaC_std__thread__thread_posix__Cond {
+#line 383 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+pthread_cond_t cond;
+};
+
+
+#line 26 "/Users/tony/projects/litac-lang/stdlib/std/net/net.lita"
+
+struct litaC_std__net__SocketAddress {int __dummy;};
+
+
+
+#line 32 "/Users/tony/projects/ringhttp/src/http_server.lita"
+
+struct litaC_http_server__HttpFilterHandler {litaC_void* __this;
+litaC_http_websocket_test__http_server__HttpFilterHandler__VirtualTable* __vtable;
+};
+
+
+
+#line 566 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+struct litaC_std__json__JsonIterator {
+#line 567 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_i32 index;
+
+#line 568 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__json__JsonNode* json;
+};
+
+
+#line 842 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+struct litaC_std__system__Process {
+#line 843 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+FILE* pipe;
+};
+
+
+#line 34 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+struct litaC_test_webserver__ServerHandler {int __dummy;};
+
+
+#line 27 "generated"
+
+struct litaC_http_websocket_test__http_server__HttpFilterHandler__VirtualTable {
+#line 28 "generated"
+litaC_i32 (*handleFilter)(litaC_void*,litaC_http_router__RequestHandlerContext*,litaC_http_server__HttpFilterHandler*);
+};
+
+
+
+#line 445 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+struct litaC_std__thread__thread_posix__Thread {
+#line 446 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+pthread_t thrd;
+
+#line 447 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_i32 threadId;
+};
+
+
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb_http_context__SessionContext_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_http_context__SessionContext* elements;
 
 #line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
 const litaC_std__mem__Allocator* alloc;
@@ -16684,18 +17076,8 @@ litaC_u8 day;
 };
 
 
-#line 373 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-struct litaC_std__thread__thread_posix__Cond {
-#line 374 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-pthread_cond_t cond;
-};
-
-
-#line 75 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-
-
 #line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_http_request__Part_ce_ {
+struct litaC_std__array__std__array__Array_cb__ptr_std__json__JsonNode_ce_ {
 #line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
 litaC_i32 length;
 
@@ -16703,24 +17085,69 @@ litaC_i32 length;
 litaC_i32 capacity;
 
 #line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_http_request__Part* elements;
+litaC_std__json__JsonNode** elements;
 
 #line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
 const litaC_std__mem__Allocator* alloc;
 };
 
 
-#line 13 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-struct litaC_std__map__std__map__Entry_cb_i32_c_i32_ce_ {
-#line 14 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_u32 hash;
+#line 75 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
 
-#line 15 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 key;
 
-#line 16 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 value;
+#line 19 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+struct litaC_std__mem__bucket_allocator__BucketAllocator {
+#line 20 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_std__mem__Allocator allocator;
+
+#line 21 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+const litaC_std__mem__Allocator* decorated;
+
+#line 23 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_std__mem__bucket_allocator__Bucket* buckets;
+
+#line 24 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_std__mem__bucket_allocator__Bucket* head;
+
+#line 26 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_usize bucketSize;
+
+#line 27 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_usize currentOffset;
+
+#line 28 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_u32 totalAllocations;
+
+#line 29 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_usize totalBytesAllocated;
+
+#line 30 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_usize totalGrossBytesAllocated;
+
+#line 31 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
+litaC_u32 totalBuckets;
 };
+
+
+#line 40 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+
+struct litaC_std__test__TestInfoMessage {
+#line 41 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+const litaC_char* type;
+
+#line 42 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+const litaC_char* name;
+
+#line 43 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+litaC_std__test__TestStatus status;
+
+#line 44 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+litaC_std__array__std__array__Array_cb__ptr_const_char_ce_ errors;
+
+#line 45 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+litaC_f64 durationMSec;
+};
+
 
 
 #line 87 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
@@ -16755,13 +17182,20 @@ litaC_i32 line;
 };
 
 
-#line 7 "generated"
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb_std__builtins__String_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
 
-struct litaC_main_test__http_server__HttpFilterHandler__VirtualTable {
-#line 8 "generated"
-litaC_i32 (*handleFilter)(litaC_void*,litaC_http_router__RequestHandlerContext*,litaC_http_server__HttpFilterHandler*);
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_std__builtins__String* elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
 };
-
 
 
 #line 64 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
@@ -16792,13 +17226,21 @@ litaC_void (*cleanupFn)(litaC_std__test__TestCase*,litaC_void*);
 };
 
 
-#line 436 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-struct litaC_std__thread__thread_posix__Thread {
-#line 437 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-pthread_t thrd;
+#line 40 "/Users/tony/projects/ringhttp/src/http_parser.lita"
+struct litaC_http_parser__HttpParser {
+#line 41 "/Users/tony/projects/ringhttp/src/http_parser.lita"
+const litaC_std__mem__Allocator* allocator;
+};
 
-#line 438 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_i32 threadId;
+
+#line 111 "/Users/tony/projects/ringhttp/src/http_response.lita"
+
+
+#line 25 "/Users/tony/projects/litac-lang/stdlib/std/atomic.lita"
+struct litaC_std__atomic__std__atomic__Atomic_cb_bool_ce_ {
+#line 26 "/Users/tony/projects/litac-lang/stdlib/std/atomic.lita"
+_Atomic 
+litaC_bool value;
 };
 
 
@@ -16812,17 +17254,33 @@ litaC_i32 length;
 };
 
 
-#line 99 "/Users/tony/projects/ringhttp/src/http_response.lita"
-struct litaC_http_response__Stream {litaC_void* __this;
-litaC_main_test__http_response__Stream__VirtualTable* __vtable;
+#line 55 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+struct litaC_http_websocket__Frame {
+#line 56 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+litaC_i64 payloadLength;
+
+#line 57 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+litaC_i8 maskKey[4];
+
+#line 58 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+litaC_http_websocket__Opcode opcode;
+
+#line 59 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+litaC_bool isFinal;
+
+#line 60 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+litaC_bool masked;
+
+#line 62 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+litaC_i32 offset;
+
+#line 63 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+litaC_char* payload;
 };
 
 
-#line 113 "/Users/tony/projects/ringhttp/src/http_response.lita"
-
-
 #line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_http_context__SessionContext_ce_ {
+struct litaC_std__array__std__array__Array_cb_std__json__JsonEntry_ce_ {
 #line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
 litaC_i32 length;
 
@@ -16830,24 +17288,79 @@ litaC_i32 length;
 litaC_i32 capacity;
 
 #line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_http_context__SessionContext* elements;
+litaC_std__json__JsonEntry* elements;
 
 #line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
 const litaC_std__mem__Allocator* alloc;
 };
 
 
-#line 13 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-struct litaC_std__map__std__map__Entry_cb_i64_c_i32_ce_ {
-#line 14 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_u32 hash;
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb_http_router__Route_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
 
-#line 15 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i64 key;
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
 
-#line 16 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 value;
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_http_router__Route* elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
 };
+
+
+#line 32 "/Users/tony/projects/ringhttp/src/http_context.lita"
+union litaC_http_context__RingOperation {
+#line 33 "/Users/tony/projects/ringhttp/src/http_context.lita"
+struct  {
+#line 34 "/Users/tony/projects/ringhttp/src/http_context.lita"
+litaC_i32 opcode;
+
+#line 35 "/Users/tony/projects/ringhttp/src/http_context.lita"
+litaC_i32 contextIndex;
+};
+
+#line 37 "/Users/tony/projects/ringhttp/src/http_context.lita"
+litaC_u64 data;
+};
+
+
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb_std__test__TestCase_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_std__test__TestCase* elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
+};
+
+
+#line 98 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__MultiPart {
+#line 99 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String boundary;
+
+#line 100 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__array__std__array__Array_cb_http_request__Part_ce_ parts;
+};
+
+
+#line 37 "/Users/tony/projects/ringhttp/src/http_server.lita"
+
+struct litaC_http_server__HttpController {
+#line 38 "/Users/tony/projects/ringhttp/src/http_server.lita"
+
+litaC_i32 (*callback)(litaC_http_router__RequestHandlerContext*);
+};
+
 
 
 #line 19 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
@@ -16872,15 +17385,322 @@ litaC_std__builtins__String emptyKey;
 };
 
 
-#line 27 "/Users/tony/projects/ringhttp/src/http_server.lita"
+#line 13 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+struct litaC_std__map__std__map__Entry_cb_i64_c_i32_ce_ {
+#line 14 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_u32 hash;
 
-struct litaC_http_server__HttpHandler {litaC_void* __this;
-litaC_main_test__http_server__HttpHandler__VirtualTable* __vtable;
+#line 15 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i64 key;
+
+#line 16 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 value;
 };
 
 
+#line 13 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
+struct litaC_std__mem__linear_allocator__ExpandInfo {
+#line 14 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
+const litaC_std__mem__Allocator* allocator;
 
-#line 33 "/Users/tony/projects/ringhttp/src/http_context.lita"
+#line 15 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
+litaC_std__mem__linear_allocator__ExpandStrategy strategy;
+};
+
+
+#line 112 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__FormData {
+#line 113 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String name;
+
+#line 114 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String filename;
+
+#line 115 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String value;
+};
+
+
+#line 15 "/Users/tony/projects/ringhttp/src/http_router.lita"
+struct litaC_http_router__RequestHandlerContext {
+#line 16 "/Users/tony/projects/ringhttp/src/http_router.lita"
+const litaC_std__mem__Allocator* allocator;
+
+#line 17 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_request__HttpRequest* request;
+
+#line 18 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_response__HttpResponse* response;
+
+#line 19 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_void* userData;
+
+#line 21 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_router__RouteMatch* match;
+
+#line 24 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_i32 sessionIndex;
+};
+
+
+#line 20 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+struct litaC_test_webserver__FileStream {
+#line 21 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__io__File file;
+};
+
+
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb_http_request__FormParam_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_http_request__FormParam* elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
+};
+
+
+#line 85 "/Users/tony/projects/litac-lang/stdlib/std/net/net.lita"
+
+struct litaC_std__net__Socket {int __dummy;};
+
+
+
+#line 452 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+struct litaC_std__thread__thread_posix__ThreadStartInfo {
+#line 453 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_i32 (*mFunction)(litaC_void*);
+
+#line 454 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_void* mArg;
+
+#line 455 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+const litaC_std__mem__Allocator* allocator;
+
+#line 456 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__Thread* thread;
+};
+
+
+#line 146 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__HttpPathValues {
+#line 147 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String entries[32];
+
+#line 148 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_i32 numberOfEntries;
+};
+
+
+#line 50 "/Users/tony/projects/ringhttp/src/http_router.lita"
+struct litaC_http_router__Router {
+#line 51 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_std__array__std__array__Array_cb_http_router__Route_ce_ methods[10];
+};
+
+
+#line 27 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+struct litaC_std__time__DateTime {
+#line 28 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+litaC_std__time__Date date;
+
+#line 29 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+litaC_std__time__Time time;
+};
+
+
+#line 13 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+struct litaC_std__map__std__map__Entry_cb__ptr_const_char_c_i32_ce_ {
+#line 14 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_u32 hash;
+
+#line 15 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+const litaC_char* key;
+
+#line 16 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 value;
+};
+
+
+#line 77 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+struct litaC_std__json__JsonEntry {
+#line 78 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_char* key;
+
+#line 79 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__json__JsonNode* value;
+};
+
+
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+struct litaC_std__array__std__array__Array_cb_http_request__QueryParam_ce_ {
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 length;
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_i32 capacity;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_http_request__QueryParam* elements;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+const litaC_std__mem__Allocator* alloc;
+};
+
+
+#line 97 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+struct litaC_std__json__JsonNode {
+#line 98 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_std__mem__Allocator* alloc;
+
+#line 99 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__json__JsonType type;
+
+#line 100 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__json__JsonValue value;
+};
+
+
+#line 845 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+struct litaC_std__json__Token {
+#line 846 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__json__TokenKind kind;
+
+#line 847 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__json__SrcPos pos;
+
+#line 848 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_char* start;
+
+#line 849 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_char* end;
+
+#line 851 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+union  {
+#line 852 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_i64 intNumValue;
+
+#line 853 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_f64 realNumValue;
+
+#line 854 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_char* strValue;
+
+#line 855 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_char* name;
+};
+};
+
+
+#line 162 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+
+
+#line 286 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+struct litaC_std__thread__thread_posix__Mutex {
+#line 287 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+pthread_mutex_t mtx;
+};
+
+
+#line 7 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+struct litaC_std__thread__barrier_mac__Barrier {
+#line 8 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__Mutex mtx;
+
+#line 9 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__Cond cond;
+
+#line 10 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_i32 count;
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_i32 waiting;
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_i32 phase;
+};
+
+
+#line 11 "/Users/tony/projects/litac-lang/stdlib/std/string/builder.lita"
+struct litaC_std__string__builder__StringBuilder {
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/string/builder.lita"
+litaC_std__string__buffer__StringBuffer asBuffer;
+
+#line 13 "/Users/tony/projects/litac-lang/stdlib/std/string/builder.lita"
+const litaC_std__mem__Allocator* alloc;
+};
+
+
+#line 89 "/Users/tony/projects/ringhttp/src/http_request.lita"
+
+
+#line 85 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__Body {
+#line 86 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String body;
+
+#line 88 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_http_request__BodyType bodyType;
+
+#line 89 "/Users/tony/projects/ringhttp/src/http_request.lita"
+union  {
+#line 90 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__array__std__array__Array_cb_http_request__FormParam_ce_ formParams;
+
+#line 91 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__json__JsonNode* json;
+
+#line 92 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_http_request__MultiPart multipart;
+
+#line 93 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_http_request__FormData formData;
+
+#line 94 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__string__builder__StringBuilder chunkData;
+};
+};
+
+
+#line 80 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__Payload {
+#line 81 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__array__std__array__Array_cb_http_request__HttpHeader_ce_ headers;
+
+#line 82 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_http_request__Body body;
+};
+
+
+#line 59 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__HttpRequest {
+#line 60 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_http_request__HttpMethod method;
+
+#line 61 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String path;
+
+#line 62 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String query;
+
+#line 63 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String version;
+
+#line 65 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_i32 flags;
+
+#line 66 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_i32 bodyLength;
+
+#line 68 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_http_request__Payload payload;
+};
 
 
 #line 179 "/Users/tony/projects/ringhttp/src/mime.lita"
@@ -16890,46 +17710,42 @@ litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_c
 };
 
 
-#line 19 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-struct litaC_std__map__std__map__Map_cb_i32_c_i32_ce_ {
-#line 20 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 length;
+#line 122 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
+struct litaC_std__zip__ZipFile {
+#line 123 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
+mz_zip_archive archive;
 
-#line 21 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 capacity;
+#line 124 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
+litaC_std__zip__ZipOpen type;
 
-#line 22 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+#line 125 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
 const litaC_std__mem__Allocator* allocator;
-
-#line 24 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Entry_cb_i32_c_i32_ce_* entries;
-
-#line 26 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 emptyValue;
-
-#line 27 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 emptyKey;
 };
 
 
-#line 1 "generated"
-
-struct litaC_main_test__http_response__Stream__VirtualTable {
-#line 2 "generated"
-litaC_i32 (*read)(litaC_void*,litaC_char*,litaC_i32);
+#line 103 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__Part {
+#line 104 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_http_request__Payload payload;
 };
 
 
+#line 31 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
 
-#line 36 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
+struct litaC_std__net__net_posix__SocketAddress {
+#line 32 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
+litaC_std__net__AddressType type;
 
+#line 33 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
+litaC_char _address[
+#line 33 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
+INET_ADDRSTRLEN];
 
-#line 43 "/Users/tony/projects/ringhttp/src/http_server.lita"
+#line 34 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
+litaC_u16 _port;
 
-struct litaC_http_server__WebSocketController {
-#line 44 "/Users/tony/projects/ringhttp/src/http_server.lita"
-
-litaC_i32 (*callback)(litaC_http_websocket__WebSocketSession*,litaC_http_websocket__Frame*);
+#line 37 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
+sockaddr_in addr;
 };
 
 
@@ -16950,343 +17766,38 @@ litaC_std__builtins__String secVersion;
 };
 
 
-#line 25 "/Users/tony/projects/litac-lang/stdlib/std/atomic.lita"
-struct litaC_std__atomic__std__atomic__Atomic_cb_bool_ce_ {
-#line 26 "/Users/tony/projects/litac-lang/stdlib/std/atomic.lita"
-_Atomic 
-litaC_bool value;
-};
-
-
-#line 137 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__QueryParam {
-#line 138 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String name;
-
-#line 139 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String value;
-};
-
-
 #line 42 "/Users/tony/projects/ringhttp/src/http_router.lita"
 
 
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_std__json__JsonEntry_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
+#line 38 "/Users/tony/projects/ringhttp/src/http_router.lita"
+struct litaC_http_router__RequestHandler {
+#line 39 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_router__RequestHandlerType type;
 
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_std__json__JsonEntry* elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 77 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-struct litaC_std__json__JsonEntry {
-#line 78 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_char* key;
-
-#line 79 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__json__JsonNode* value;
-};
-
-
-#line 151 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__HttpPathEntry {
-#line 152 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String name;
-
-#line 153 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_i32 index;
-};
-
-
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_http_router__Route_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
-
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_http_router__Route* elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 48 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-struct litaC_std__test__AssertEntry {
-#line 49 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-const litaC_char* filename;
-
-#line 50 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-litaC_usize lineNumber;
-
-#line 51 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-const litaC_char* errorMessage;
-};
-
-
-#line 97 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-struct litaC_std__json__JsonNode {
-#line 98 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_std__mem__Allocator* alloc;
-
-#line 99 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__json__JsonType type;
-
-#line 100 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__json__JsonValue value;
-};
-
-
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-struct litaC_std__mem__bucket_allocator__Bucket {
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_std__mem__bucket_allocator__Bucket* prev;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_u8* mem;
-
-#line 13 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_usize size;
-
-#line 16 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_void* padding;
-};
-
-
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_std__test__TestCase_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
-
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_std__test__TestCase* elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 19 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-struct litaC_std__map__std__map__Map_cb_i64_c_i32_ce_ {
-#line 20 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 length;
-
-#line 21 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 capacity;
-
-#line 22 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-const litaC_std__mem__Allocator* allocator;
-
-#line 24 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Entry_cb_i64_c_i32_ce_* entries;
-
-#line 26 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 emptyValue;
-
-#line 27 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i64 emptyKey;
-};
-
-
-#line 443 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-struct litaC_std__thread__thread_posix__ThreadStartInfo {
-#line 444 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_i32 (*mFunction)(litaC_void*);
-
-#line 445 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_void* mArg;
-
-#line 446 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-const litaC_std__mem__Allocator* allocator;
-
-#line 447 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__Thread* thread;
-};
-
-
-#line 30 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-struct litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_ {
-#line 31 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* m;
-
-#line 32 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 it;
-
-#line 33 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 prevIt;
-
-#line 34 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 count;
-};
-
-
-#line 17 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
-struct litaC_std__builtins__NativeVararg {
-#line 18 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
-litaC_u64* args;
-
-#line 19 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
-litaC_i32 numberOfArgs;
-};
-
-
-#line 26 "/Users/tony/projects/litac-lang/stdlib/std/net/net.lita"
-
-struct litaC_std__net__SocketAddress {int __dummy;};
-
-
-
-#line 15 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-
-struct litaC_http_websocket__WebSocketSession {
-#line 16 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-litaC_http_worker_kqueue__WorkerThread* worker;
-
-#line 17 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-litaC_http_context__SessionContext* context;
-
-#line 20 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-const litaC_std__mem__Allocator* allocator;
-
-#line 21 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
+#line 40 "/Users/tony/projects/ringhttp/src/http_router.lita"
 litaC_void* userData;
+
+#line 42 "/Users/tony/projects/ringhttp/src/http_router.lita"
+union  {
+#line 43 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_server__HttpController controller;
+
+#line 44 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_server__WebSocketController webSocket;
+};
 };
 
 
+#line 27 "/Users/tony/projects/ringhttp/src/http_router.lita"
+struct litaC_http_router__RouteMatch {
+#line 28 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_request__HttpPathTemplate* template;
 
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_http_request__FormParam_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
+#line 29 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_request__HttpPathValues values;
 
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_http_request__FormParam* elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 37 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-struct litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_ {
-#line 38 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__builtins__String key;
-
-#line 39 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__builtins__String value;
-
-#line 40 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__builtins__String* valuePtr;
-};
-
-
-#line 21 "/Users/tony/projects/litac-lang/stdlib/std/io/io.lita"
-struct litaC_std__io__File {
-#line 22 "/Users/tony/projects/litac-lang/stdlib/std/io/io.lita"
-FILE* file;
-
-#line 23 "/Users/tony/projects/litac-lang/stdlib/std/io/io.lita"
-litaC_i64 _position;
-};
-
-
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb__ptr_std__json__JsonNode_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
-
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_std__json__JsonNode** elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 109 "/Users/tony/projects/ringhttp/src/mime.lita"
-struct litaC_mime__FileToMime {
-#line 110 "/Users/tony/projects/ringhttp/src/mime.lita"
-litaC_std__builtins__String* fileExtensions;
-
-#line 111 "/Users/tony/projects/ringhttp/src/mime.lita"
-litaC_mime__MimeType mimeType;
-};
-
-
-#line 13 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-struct litaC_std__map__std__map__Entry_cb__ptr_const_char_c_i32_ce_ {
-#line 14 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_u32 hash;
-
-#line 15 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-const litaC_char* key;
-
-#line 16 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 value;
-};
-
-
-#line 153 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-
-
-#line 32 "/Users/tony/projects/ringhttp/src/http_server.lita"
-
-struct litaC_http_server__HttpFilterHandler {litaC_void* __this;
-litaC_main_test__http_server__HttpFilterHandler__VirtualTable* __vtable;
-};
-
-
-
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_http_request__QueryParam_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
-
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_http_request__QueryParam* elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_std__builtins__String_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
-
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_std__builtins__String* elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
+#line 30 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_router__RequestHandler handler;
 };
 
 
@@ -17303,6 +17814,298 @@ litaC_i32 lastIndex;
 
 #line 259 "/Users/tony/projects/litac-lang/stdlib/std/string/string.lita"
 litaC_i32 currentIndex;
+};
+
+
+#line 137 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__QueryParam {
+#line 138 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String name;
+
+#line 139 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String value;
+};
+
+
+#line 94 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
+
+struct litaC_std__net__net_posix__Socket {
+#line 95 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
+litaC_i32 socket;
+
+#line 96 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
+litaC_std__net__net_posix__SocketAddress address;
+};
+
+
+
+#line 151 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__HttpPathEntry {
+#line 152 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String name;
+
+#line 153 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_i32 index;
+};
+
+
+#line 158 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__HttpPathTemplate {
+#line 159 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String template;
+
+#line 160 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_http_request__HttpPathEntry entries[32];
+
+#line 161 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_i32 numberOfEntries;
+};
+
+
+#line 54 "/Users/tony/projects/ringhttp/src/http_router.lita"
+struct litaC_http_router__Route {
+#line 55 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_request__HttpPathTemplate template;
+
+#line 56 "/Users/tony/projects/ringhttp/src/http_router.lita"
+litaC_http_router__RequestHandler handler;
+};
+
+
+#line 82 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+struct litaC_std__json__JsonObject {
+#line 83 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__map__std__map__Map_cb__ptr_const_char_c_i32_ce_ indexes;
+
+#line 84 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__array__std__array__Array_cb_std__json__JsonEntry_ce_ values;
+};
+
+
+#line 54 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+struct litaC_std__test__TestSuite {
+#line 55 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+const litaC_std__mem__Allocator* allocator;
+
+#line 56 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+litaC_std__array__std__array__Array_cb_std__test__TestCase_ce_ testCases;
+
+#line 57 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+litaC_std__test__TestCase* currentCase;
+
+#line 58 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+jmp_buf env;
+
+#line 60 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+litaC_std__array__std__array__Array_cb_std__test__TestCase_ce_ dynamicTestCases;
+
+#line 61 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
+litaC_i32 index;
+};
+
+
+#line 24 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+struct litaC_http_connection__HttpConnection {
+#line 25 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_u32 id;
+
+#line 26 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__net__net_posix__Socket socket;
+
+#line 27 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder writeBuffer;
+
+#line 28 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder readBuffer;
+
+#line 30 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_bool disableKeepAlive;
+};
+
+
+#line 67 "/Users/tony/projects/litac-lang/stdlib/std/fs/fs.lita"
+struct litaC_std__fs__FileHandle {
+#line 68 "/Users/tony/projects/litac-lang/stdlib/std/fs/fs.lita"
+tinydir_dir dir;
+
+#line 69 "/Users/tony/projects/litac-lang/stdlib/std/fs/fs.lita"
+tinydir_file file;
+};
+
+
+#line 125 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__HttpHeader {
+#line 126 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String name;
+
+#line 127 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__builtins__String values;
+};
+
+
+#line 103 "/Users/tony/projects/ringhttp/src/http_response.lita"
+struct litaC_http_response__HttpResponse {
+#line 104 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_i32 status;
+
+#line 105 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_http_request__HttpHeader headers[64];
+
+#line 106 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_u32 numberOfHeaders;
+
+#line 108 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_http_response__ResponseType type;
+
+#line 109 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_std__string__builder__StringBuilder body;
+
+#line 111 "/Users/tony/projects/ringhttp/src/http_response.lita"
+union  {
+#line 113 "/Users/tony/projects/ringhttp/src/http_response.lita"
+struct  {
+#line 114 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_i32 fileHandle;
+
+#line 115 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_usize fileSize;
+
+#line 116 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_i64 fileBytesSent;
+};
+
+#line 120 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_http_response__Stream stream;
+};
+};
+
+
+#line 12 "/Users/tony/projects/litac-lang/stdlib/std/mem/thread_safe_allocator.lita"
+struct litaC_std__mem__thread_safe_allocator__ThreadSafeAllocator {
+#line 13 "/Users/tony/projects/litac-lang/stdlib/std/mem/thread_safe_allocator.lita"
+litaC_std__mem__Allocator allocator;
+
+#line 14 "/Users/tony/projects/litac-lang/stdlib/std/mem/thread_safe_allocator.lita"
+const litaC_std__mem__Allocator* decorated;
+
+#line 16 "/Users/tony/projects/litac-lang/stdlib/std/mem/thread_safe_allocator.lita"
+litaC_std__thread__thread_posix__Mutex mtx;
+};
+
+
+#line 111 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
+struct litaC_kqueue_posix__Barrier {
+#line 112 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
+pthread_mutex_t mutex;
+
+#line 113 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
+pthread_cond_t cond;
+
+#line 114 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
+litaC_i32 count;
+
+#line 115 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
+litaC_i32 waiting;
+};
+
+
+#line 52 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+struct litaC_http_engine_kqueue__HttpRingEngine {
+#line 53 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+litaC_http_server__HttpConfig* config;
+
+#line 54 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+litaC_std__mem__thread_safe_allocator__ThreadSafeAllocator safeAllocator;
+
+#line 55 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+litaC_std__net__net_posix__Socket serverSocket;
+
+#line 57 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+litaC_i32 kq;
+
+#line 59 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+litaC_std__atomic__std__atomic__Atomic_cb_bool_ce_ isRunning;
+
+#line 61 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+litaC_u64 distribution;
+
+#line 62 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+litaC_std__array__std__array__Array_cb_http_worker_kqueue__WorkerThread_ce_ workers;
+
+#line 63 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+litaC_kqueue_posix__Barrier barrier;
+
+#line 65 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+sockaddr_in clientAddr;
+
+#line 66 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+socklen_t clientAddrLen;
+
+#line 68 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
+litaC_http_server__HttpServer* server;
+};
+
+
+#line 867 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+struct litaC_std__json__JsonParser {
+#line 868 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_std__mem__Allocator* alloc;
+
+#line 869 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__json__JsonParserStatus status;
+
+#line 870 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_char errorMsg[256];
+
+#line 872 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__json__Token token;
+
+#line 873 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+litaC_std__string__builder__StringBuilder buffer;
+
+#line 874 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_char* stream;
+
+#line 875 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
+const litaC_char* lineStart;
+};
+
+
+#line 201 "/Users/tony/projects/ringhttp/src/http_context.lita"
+struct litaC_http_context__ContextPool {
+#line 202 "/Users/tony/projects/ringhttp/src/http_context.lita"
+litaC_std__array__std__array__Array_cb_http_context__SessionContext_ce_ pool;
+
+#line 203 "/Users/tony/projects/ringhttp/src/http_context.lita"
+litaC_std__array__std__array__Array_cb_i32_ce_ freeList;
+};
+
+
+#line 38 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+struct litaC_http_worker_kqueue__WorkerThread {
+#line 39 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_i32 kq;
+
+#line 40 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_i32 pipefd[2];
+
+#line 42 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__thread__thread_posix__Thread thread;
+
+#line 43 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_i32 index;
+
+#line 45 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_server__HttpServer* server;
+
+#line 46 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_server__HttpConfig* config;
+
+#line 47 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_context__ContextPool sessions;
+
+#line 49 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__builtins__String rootPath;
 };
 
 
@@ -17380,437 +18183,6 @@ litaC_bool disableSignal;
 };
 
 
-#line 39 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-struct litaC_std__json__JsonContext {
-#line 40 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_std__mem__Allocator* allocator;
-
-#line 41 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_void (*maker)(litaC_u64,litaC_std__json__JsonContext*,litaC_std__json__JsonNode*,litaC_void*);
-
-#line 42 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_void* (*makerPtr)(litaC_u64,litaC_std__json__JsonContext*,litaC_std__json__JsonNode*);
-};
-
-
-#line 14 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-struct litaC_std__time__Time {
-#line 15 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-litaC_u8 sec;
-
-#line 16 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-litaC_u8 min;
-
-#line 17 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-litaC_u8 hour;
-};
-
-
-#line 50 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-
-#line 125 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__HttpHeader {
-#line 126 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String name;
-
-#line 127 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String values;
-};
-
-
-#line 4 "generated"
-
-struct litaC_main_test__http_server__HttpHandler__VirtualTable {
-#line 5 "generated"
-litaC_i32 (*handle)(litaC_void*,litaC_http_router__RequestHandlerContext*,litaC_http_common__Status);
-};
-
-
-
-#line 32 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-struct litaC_std__time__Offset {
-#line 33 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-litaC_u8 min;
-
-#line 34 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-litaC_u8 hr;
-};
-
-
-#line 73 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-struct litaC_std__http__HttpOptions {
-#line 74 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-const litaC_char* proxy;
-};
-
-
-#line 142 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__HttpQuery {
-#line 143 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__array__std__array__Array_cb_http_request__QueryParam_ce_ params;
-};
-
-
-#line 54 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-struct litaC_std__test__TestSuite {
-#line 55 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-const litaC_std__mem__Allocator* allocator;
-
-#line 56 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-litaC_std__array__std__array__Array_cb_std__test__TestCase_ce_ testCases;
-
-#line 57 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-litaC_std__test__TestCase* currentCase;
-
-#line 58 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-jmp_buf env;
-
-#line 60 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-litaC_std__array__std__array__Array_cb_std__test__TestCase_ce_ dynamicTestCases;
-
-#line 61 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-litaC_i32 index;
-};
-
-
-#line 851 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-
-
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_i32_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
-
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32* elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 7 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
-struct litaC_std__builtins__any {
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
-litaC_void* value;
-
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/builtins.lita"
-litaC_u64 id;
-};
-
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/string/builder.lita"
-struct litaC_std__string__builder__StringBuilder {
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/string/builder.lita"
-litaC_std__string__buffer__StringBuffer asBuffer;
-
-#line 13 "/Users/tony/projects/litac-lang/stdlib/std/string/builder.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 19 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-struct litaC_std__map__std__map__Map_cb__ptr_const_char_c_i32_ce_ {
-#line 20 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 length;
-
-#line 21 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 capacity;
-
-#line 22 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-const litaC_std__mem__Allocator* allocator;
-
-#line 24 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Entry_cb__ptr_const_char_c_i32_ce_* entries;
-
-#line 26 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 emptyValue;
-
-#line 27 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-const litaC_char* emptyKey;
-};
-
-
-#line 40 "/Users/tony/projects/ringhttp/src/http_parser.lita"
-struct litaC_http_parser__HttpParser {
-#line 41 "/Users/tony/projects/ringhttp/src/http_parser.lita"
-const litaC_std__mem__Allocator* allocator;
-};
-
-
-#line 111 "/Users/tony/projects/ringhttp/src/http_response.lita"
-
-
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb_http_server__HttpFilterHandler_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
-
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_http_server__HttpFilterHandler* elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 124 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
-struct litaC_std__mem__Allocator {
-#line 125 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
-litaC_void* (*allocFn)(const litaC_std__mem__Allocator*,litaC_usize);
-
-#line 126 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
-litaC_void* (*callocFn)(const litaC_std__mem__Allocator*,litaC_usize,litaC_usize);
-
-#line 127 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
-litaC_void* (*reallocFn)(const litaC_std__mem__Allocator*,litaC_void*,litaC_usize,litaC_usize);
-
-#line 128 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
-litaC_void (*freeFn)(const litaC_std__mem__Allocator*,litaC_void*);
-};
-
-
-#line 55 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-struct litaC_http_websocket__Frame {
-#line 56 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-litaC_i64 payloadLength;
-
-#line 57 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-litaC_i8 maskKey[4];
-
-#line 58 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-litaC_http_websocket__Opcode opcode;
-
-#line 59 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-litaC_bool isFinal;
-
-#line 60 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-litaC_bool masked;
-
-#line 62 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-litaC_i32 offset;
-
-#line 63 "/Users/tony/projects/ringhttp/src/http_websocket.lita"
-litaC_char* payload;
-};
-
-
-#line 8 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-struct litaC_std__array__std__array__Array_cb__ptr_const_char_ce_ {
-#line 9 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 length;
-
-#line 10 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-litaC_i32 capacity;
-
-#line 11 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_char** elements;
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
-const litaC_std__mem__Allocator* alloc;
-};
-
-
-#line 98 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__MultiPart {
-#line 99 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String boundary;
-
-#line 100 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__array__std__array__Array_cb_http_request__Part_ce_ parts;
-};
-
-
-#line 112 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__FormData {
-#line 113 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String name;
-
-#line 114 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String filename;
-
-#line 115 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String value;
-};
-
-
-#line 89 "/Users/tony/projects/ringhttp/src/http_request.lita"
-
-
-#line 85 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__Body {
-#line 86 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String body;
-
-#line 88 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_http_request__BodyType bodyType;
-
-#line 89 "/Users/tony/projects/ringhttp/src/http_request.lita"
-union  {
-#line 90 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__array__std__array__Array_cb_http_request__FormParam_ce_ formParams;
-
-#line 91 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__json__JsonNode* json;
-
-#line 92 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_http_request__MultiPart multipart;
-
-#line 93 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_http_request__FormData formData;
-
-#line 94 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__string__builder__StringBuilder chunkData;
-};
-};
-
-
-#line 80 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__Payload {
-#line 81 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__array__std__array__Array_cb_http_request__HttpHeader_ce_ headers;
-
-#line 82 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_http_request__Body body;
-};
-
-
-#line 32 "/Users/tony/projects/ringhttp/src/http_context.lita"
-union litaC_http_context__RingOperation {
-#line 33 "/Users/tony/projects/ringhttp/src/http_context.lita"
-struct  {
-#line 34 "/Users/tony/projects/ringhttp/src/http_context.lita"
-litaC_i32 opcode;
-
-#line 35 "/Users/tony/projects/ringhttp/src/http_context.lita"
-litaC_i32 contextIndex;
-};
-
-#line 37 "/Users/tony/projects/ringhttp/src/http_context.lita"
-litaC_u64 data;
-};
-
-
-#line 31 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
-
-struct litaC_std__net__net_posix__SocketAddress {
-#line 32 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
-litaC_std__net__AddressType type;
-
-#line 33 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
-litaC_char _address[
-#line 33 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
-INET_ADDRSTRLEN];
-
-#line 34 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
-litaC_u16 _port;
-
-#line 37 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
-sockaddr_in addr;
-};
-
-
-
-#line 94 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
-
-struct litaC_std__net__net_posix__Socket {
-#line 95 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
-litaC_i32 socket;
-
-#line 96 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
-litaC_std__net__net_posix__SocketAddress address;
-};
-
-
-
-#line 24 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-struct litaC_http_connection__HttpConnection {
-#line 25 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_u32 id;
-
-#line 26 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__net__net_posix__Socket socket;
-
-#line 27 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder writeBuffer;
-
-#line 28 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder readBuffer;
-
-#line 30 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_bool disableKeepAlive;
-};
-
-
-#line 59 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__HttpRequest {
-#line 60 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_http_request__HttpMethod method;
-
-#line 61 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String path;
-
-#line 62 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String query;
-
-#line 63 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String version;
-
-#line 65 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_i32 flags;
-
-#line 66 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_i32 bodyLength;
-
-#line 68 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_http_request__Payload payload;
-};
-
-
-#line 103 "/Users/tony/projects/ringhttp/src/http_response.lita"
-struct litaC_http_response__HttpResponse {
-#line 104 "/Users/tony/projects/ringhttp/src/http_response.lita"
-litaC_i32 status;
-
-#line 105 "/Users/tony/projects/ringhttp/src/http_response.lita"
-litaC_http_request__HttpHeader headers[64];
-
-#line 106 "/Users/tony/projects/ringhttp/src/http_response.lita"
-litaC_u32 numberOfHeaders;
-
-#line 108 "/Users/tony/projects/ringhttp/src/http_response.lita"
-litaC_http_response__ResponseType type;
-
-#line 109 "/Users/tony/projects/ringhttp/src/http_response.lita"
-litaC_std__string__builder__StringBuilder body;
-
-#line 111 "/Users/tony/projects/ringhttp/src/http_response.lita"
-union  {
-#line 113 "/Users/tony/projects/ringhttp/src/http_response.lita"
-struct  {
-#line 114 "/Users/tony/projects/ringhttp/src/http_response.lita"
-litaC_i32 fileHandle;
-
-#line 115 "/Users/tony/projects/ringhttp/src/http_response.lita"
-litaC_usize fileSize;
-
-#line 116 "/Users/tony/projects/ringhttp/src/http_response.lita"
-litaC_i64 fileBytesSent;
-};
-
-#line 120 "/Users/tony/projects/ringhttp/src/http_response.lita"
-litaC_http_response__Stream stream;
-};
-};
-
-
 #line 28 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
 struct litaC_std__mem__linear_allocator__LinearAllocator {
 #line 29 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
@@ -17836,6 +18208,65 @@ litaC_usize totalBytesAllocated;
 
 #line 40 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
 litaC_std__mem__linear_allocator__ExpandInfo expandInfo;
+};
+
+
+#line 142 "/Users/tony/projects/ringhttp/src/http_request.lita"
+struct litaC_http_request__HttpQuery {
+#line 143 "/Users/tony/projects/ringhttp/src/http_request.lita"
+litaC_std__array__std__array__Array_cb_http_request__QueryParam_ce_ params;
+};
+
+
+#line 13 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+struct litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_ {
+#line 14 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_u32 hash;
+
+#line 15 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__builtins__String key;
+
+#line 16 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__builtins__String value;
+};
+
+
+#line 38 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+struct litaC_std__time__OffsetDateTime {
+#line 39 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+litaC_std__time__DateTime dateTime;
+
+#line 40 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
+litaC_std__time__Offset offset;
+};
+
+
+#line 442 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+struct litaC_test_webserver__TestServer {
+#line 443 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpConfig* config;
+
+#line 444 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__thread__barrier_mac__Barrier barrier;
+};
+
+
+#line 161 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+struct litaC_std__thread__thread_posix__TimeSpec {
+#line 162 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+union  {
+#line 163 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+timespec ts;
+
+#line 164 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+struct  {
+#line 165 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_i64 sec;
+
+#line 166 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_i64 nsec;
+};
+};
 };
 
 
@@ -17909,86 +18340,6 @@ litaC_f64 lastRequestTime;
 };
 
 
-#line 277 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-struct litaC_std__thread__thread_posix__Mutex {
-#line 278 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-pthread_mutex_t mtx;
-};
-
-
-#line 12 "/Users/tony/projects/litac-lang/stdlib/std/mem/thread_safe_allocator.lita"
-struct litaC_std__mem__thread_safe_allocator__ThreadSafeAllocator {
-#line 13 "/Users/tony/projects/litac-lang/stdlib/std/mem/thread_safe_allocator.lita"
-litaC_std__mem__Allocator allocator;
-
-#line 14 "/Users/tony/projects/litac-lang/stdlib/std/mem/thread_safe_allocator.lita"
-const litaC_std__mem__Allocator* decorated;
-
-#line 16 "/Users/tony/projects/litac-lang/stdlib/std/mem/thread_safe_allocator.lita"
-litaC_std__thread__thread_posix__Mutex mtx;
-};
-
-
-#line 111 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
-struct litaC_kqueue_posix__Barrier {
-#line 112 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
-pthread_mutex_t mutex;
-
-#line 113 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
-pthread_cond_t cond;
-
-#line 114 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
-litaC_i32 count;
-
-#line 115 "/Users/tony/projects/ringhttp/src/kqueue_posix.lita"
-litaC_i32 waiting;
-};
-
-
-#line 52 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-struct litaC_http_engine_kqueue__HttpRingEngine {
-#line 53 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-litaC_http_server__HttpConfig* config;
-
-#line 54 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-litaC_std__mem__thread_safe_allocator__ThreadSafeAllocator safeAllocator;
-
-#line 55 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-litaC_std__net__net_posix__Socket serverSocket;
-
-#line 57 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-litaC_i32 kq;
-
-#line 59 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-litaC_std__atomic__std__atomic__Atomic_cb_bool_ce_ isRunning;
-
-#line 61 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-litaC_u64 distribution;
-
-#line 62 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-litaC_std__array__std__array__Array_cb_http_worker_kqueue__WorkerThread_ce_ workers;
-
-#line 63 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-litaC_kqueue_posix__Barrier barrier;
-
-#line 65 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-sockaddr_in clientAddr;
-
-#line 66 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-socklen_t clientAddrLen;
-
-#line 68 "/Users/tony/projects/ringhttp/src/http_engine_kqueue.lita"
-litaC_http_server__HttpServer* server;
-};
-
-
-#line 50 "/Users/tony/projects/ringhttp/src/http_router.lita"
-struct litaC_http_router__Router {
-#line 51 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_std__array__std__array__Array_cb_http_router__Route_ce_ methods[10];
-};
-
-
 #line 94 "/Users/tony/projects/ringhttp/src/http_server.lita"
 struct litaC_http_server__HttpServer {
 #line 95 "/Users/tony/projects/ringhttp/src/http_server.lita"
@@ -18014,372 +18365,92 @@ litaC_std__array__std__array__Array_cb_http_server__HttpFilterHandler_ce_ filter
 };
 
 
-#line 48 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-struct litaC_std__http__HttpBody {
-#line 49 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpBodyKind kind;
-
-#line 50 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-union  {
-#line 51 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__builtins__String data;
-
-#line 52 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_usize (*stream)(litaC_void*,litaC_usize,litaC_usize,litaC_void*);
-};
-};
-
-
-#line 56 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-struct litaC_std__http__HttpRequest {
-#line 57 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-const litaC_char* url;
-
-#line 58 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ headers;
-
-#line 59 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpRequestType type;
-
-#line 60 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpBody body;
-};
-
-
-#line 38 "/Users/tony/projects/ringhttp/src/http_router.lita"
-struct litaC_http_router__RequestHandler {
-#line 39 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_router__RequestHandlerType type;
-
-#line 40 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_void* userData;
-
-#line 42 "/Users/tony/projects/ringhttp/src/http_router.lita"
-union  {
-#line 43 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_server__HttpController controller;
-
-#line 44 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_server__WebSocketController webSocket;
-};
-};
-
-
-#line 13 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-struct litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_ {
-#line 14 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_u32 hash;
-
-#line 15 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__builtins__String key;
-
-#line 16 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__builtins__String value;
-};
-
-
-#line 27 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-struct litaC_std__time__DateTime {
-#line 28 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-litaC_std__time__Date date;
-
-#line 29 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-litaC_std__time__Time time;
-};
-
-
-#line 38 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-struct litaC_std__time__OffsetDateTime {
-#line 39 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-litaC_std__time__DateTime dateTime;
-
-#line 40 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
-litaC_std__time__Offset offset;
-};
-
-
-#line 77 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-struct litaC_std__http__Http {
-#line 78 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpOptions options;
-
-#line 79 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-const litaC_std__mem__Allocator* allocator;
-};
-
-
-#line 146 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__HttpPathValues {
-#line 147 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String entries[32];
-
-#line 148 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_i32 numberOfEntries;
-};
-
-
-#line 40 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-
-struct litaC_std__test__TestInfoMessage {
-#line 41 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-const litaC_char* type;
-
-#line 42 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-const litaC_char* name;
-
-#line 43 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-litaC_std__test__TestStatus status;
-
-#line 44 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-litaC_std__array__std__array__Array_cb__ptr_const_char_ce_ errors;
-
-#line 45 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
-litaC_f64 durationMSec;
-};
-
-
-
-#line 158 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__HttpPathTemplate {
-#line 159 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_std__builtins__String template;
-
-#line 160 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_http_request__HttpPathEntry entries[32];
-
-#line 161 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_i32 numberOfEntries;
-};
-
-
-#line 152 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-struct litaC_std__thread__thread_posix__TimeSpec {
-#line 153 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-union  {
-#line 154 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-timespec ts;
-
-#line 155 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-struct  {
-#line 156 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_i64 sec;
-
-#line 157 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_i64 nsec;
-};
-};
-};
-
-
-#line 122 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
-struct litaC_std__zip__ZipFile {
-#line 123 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
-mz_zip_archive archive;
-
-#line 124 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
-litaC_std__zip__ZipOpen type;
-
-#line 125 "/Users/tony/projects/litac-lang/stdlib/std/zip/zip.lita"
-const litaC_std__mem__Allocator* allocator;
-};
-
-
-#line 103 "/Users/tony/projects/ringhttp/src/http_request.lita"
-struct litaC_http_request__Part {
-#line 104 "/Users/tony/projects/ringhttp/src/http_request.lita"
-litaC_http_request__Payload payload;
-};
-
-
-#line 27 "/Users/tony/projects/ringhttp/src/http_router.lita"
-struct litaC_http_router__RouteMatch {
-#line 28 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_request__HttpPathTemplate* template;
-
-#line 29 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_request__HttpPathValues values;
-
-#line 30 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_router__RequestHandler handler;
-};
-
-
-#line 63 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-struct litaC_std__http__HttpResponse {
-#line 64 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_i32 statusCode;
-
-#line 65 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ headers;
-
-#line 67 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__string__builder__StringBuilder body;
-
-#line 69 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void* userdata;
-
-#line 70 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_usize (*bodyFn)(litaC_void*,litaC_usize,litaC_usize,litaC_void*);
-};
-
-
-#line 54 "/Users/tony/projects/ringhttp/src/http_router.lita"
-struct litaC_http_router__Route {
-#line 55 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_request__HttpPathTemplate template;
-
-#line 56 "/Users/tony/projects/ringhttp/src/http_router.lita"
-litaC_http_router__RequestHandler handler;
-};
-
-
-#line 845 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-struct litaC_std__json__Token {
-#line 846 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__json__TokenKind kind;
-
-#line 847 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__json__SrcPos pos;
-
-#line 848 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_char* start;
-
-#line 849 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_char* end;
-
-#line 851 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-union  {
-#line 852 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_i64 intNumValue;
-
-#line 853 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_f64 realNumValue;
-
-#line 854 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_char* strValue;
-
-#line 855 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_char* name;
-};
-};
-
-
-#line 67 "/Users/tony/projects/litac-lang/stdlib/std/fs/fs.lita"
-struct litaC_std__fs__FileHandle {
-#line 68 "/Users/tony/projects/litac-lang/stdlib/std/fs/fs.lita"
-tinydir_dir dir;
-
-#line 69 "/Users/tony/projects/litac-lang/stdlib/std/fs/fs.lita"
-tinydir_file file;
-};
-
-
-#line 201 "/Users/tony/projects/ringhttp/src/http_context.lita"
-struct litaC_http_context__ContextPool {
-#line 202 "/Users/tony/projects/ringhttp/src/http_context.lita"
-litaC_std__array__std__array__Array_cb_http_context__SessionContext_ce_ pool;
-
-#line 203 "/Users/tony/projects/ringhttp/src/http_context.lita"
-litaC_std__array__std__array__Array_cb_i32_ce_ freeList;
-};
-
-
-#line 38 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-struct litaC_http_worker_kqueue__WorkerThread {
-#line 39 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_i32 kq;
-
-#line 40 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_i32 pipefd[2];
-
-#line 42 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__thread__thread_posix__Thread thread;
-
-#line 43 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_i32 index;
-
-#line 45 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_server__HttpServer* server;
-
-#line 46 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_server__HttpConfig* config;
-
-#line 47 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_context__ContextPool sessions;
-
-#line 49 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__builtins__String rootPath;
-};
-
-
-#line 82 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-struct litaC_std__json__JsonObject {
-#line 83 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__map__std__map__Map_cb__ptr_const_char_c_i32_ce_ indexes;
-
-#line 84 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__array__std__array__Array_cb_std__json__JsonEntry_ce_ values;
-};
-
-
-#line 19 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-struct litaC_std__mem__bucket_allocator__BucketAllocator {
-#line 20 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_std__mem__Allocator allocator;
-
-#line 21 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-const litaC_std__mem__Allocator* decorated;
-
-#line 23 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_std__mem__bucket_allocator__Bucket* buckets;
-
-#line 24 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_std__mem__bucket_allocator__Bucket* head;
-
-#line 26 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_usize bucketSize;
-
-#line 27 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_usize currentOffset;
-
-#line 28 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_u32 totalAllocations;
-
-#line 29 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_usize totalBytesAllocated;
-
-#line 30 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_usize totalGrossBytesAllocated;
-
-#line 31 "/Users/tony/projects/litac-lang/stdlib/std/mem/bucket_allocator.lita"
-litaC_u32 totalBuckets;
-};
-
-
-#line 867 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-struct litaC_std__json__JsonParser {
-#line 868 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_std__mem__Allocator* alloc;
-
-#line 869 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__json__JsonParserStatus status;
-
-#line 870 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_char errorMsg[256];
-
-#line 872 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__json__Token token;
-
-#line 873 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-litaC_std__string__builder__StringBuilder buffer;
-
-#line 874 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_char* stream;
-
-#line 875 "/Users/tony/projects/litac-lang/stdlib/std/json/json.lita"
-const litaC_char* lineStart;
-};
-
+#line 23 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_test_webserver__TestServer litaC_http_websocket_test__wsTestServer =  {0};
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_server__HttpConfig litaC_http_websocket_test__wsConfig =  {
+#line 25 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.allocator = NULL,
+
+#line 26 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.port = 8082U,
+
+#line 27 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.numThreads = 4,
+
+#line 28 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.ioQueueDepth = 16,
+
+#line 29 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.maxPoolSize = 32,
+
+#line 30 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.keepAliveTimeoutInSec = 5,
+
+#line 31 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.isLogEnabled = litaC_false,
+
+#line 32 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.logFilePath = NULL,
+
+#line 33 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.fileServerPath = (litaC_std__builtins__String) { .buffer = "./static", .length = 8 },
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.maxHttpRequestLineSizeInBytes = 
+#line 56 "/Users/tony/projects/ringhttp/src/http_server.lita"
+8 * litaC_std__mem__KiB,
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.maxHttpHeaderSizeInBytes = 
+#line 57 "/Users/tony/projects/ringhttp/src/http_server.lita"
+8 * litaC_std__mem__KiB,
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.maxHttpBodySizeInBytes = 
+#line 58 "/Users/tony/projects/ringhttp/src/http_server.lita"
+2 * litaC_std__mem__MiB,
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.maxRequestSizeInBytes = 
+#line 61 "/Users/tony/projects/ringhttp/src/http_server.lita"
+8 * litaC_std__mem__MiB,
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.requestBucketSizeInBytes = 
+#line 64 "/Users/tony/projects/ringhttp/src/http_server.lita"
+2 * litaC_std__mem__MiB,
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.fileSpliceSizeInBytes = 
+#line 66 "/Users/tony/projects/ringhttp/src/http_server.lita"
+16 * litaC_std__mem__KiB,
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.compressionLevel = 
+#line 69 "/Users/tony/projects/ringhttp/src/http_server.lita"
+6,
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.compressionEnabledOnBodySizeInBytes = 
+#line 71 "/Users/tony/projects/ringhttp/src/http_server.lita"
+1 * litaC_std__mem__KiB,
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.publicServerPath = 
+#line 75 "/Users/tony/projects/ringhttp/src/http_server.lita"
+(litaC_std__builtins__String) { .buffer = "/static/", .length = 8 },
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.timeoutCheckMSec = 
+#line 80 "/Users/tony/projects/ringhttp/src/http_server.lita"
+5000L,
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+.disableSignal = 
+#line 90 "/Users/tony/projects/ringhttp/src/http_server.lita"
+litaC_false};
 
 #line 26 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
 litaC_std__test__TestSuite litaC_std__test__testSuite =  {0};
@@ -18471,71 +18542,71 @@ litaC_i32 litaC_std__ascii__HEX[256] =  {
 ['e'] = 14,
 ['f'] = 15};
 
-#line 337 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 336 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
 #define litaC_std__system__OPEN_MODE ("r")
 
-#line 349 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 348 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
 #define litaC_std__system__PATH_SEPARATOR ("/")
 
-#line 635 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 634 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 const litaC_char* litaC_std__system__uriEscapeChars[256] =  {
-#line 636 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 635 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 [' '] = "%20",
 
-#line 637 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 636 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['!'] = "%21",
 
-#line 638 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 637 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['#'] = "%23",
 
-#line 639 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 638 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['$'] = "%24",
 
-#line 640 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 639 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['%'] = "%25",
 
-#line 641 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 640 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['&'] = "%26",
 
-#line 642 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 641 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['\''] = "%27",
 
-#line 643 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 642 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['('] = "%28",
 
-#line 644 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 643 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 [')'] = "%29",
 
-#line 645 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 644 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['*'] = "%2A",
 
-#line 646 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 645 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['+'] = "%2B",
 
-#line 647 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 646 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 [','] = "%2C",
 
-#line 649 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 648 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 [':'] = "%3A",
 
-#line 650 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 649 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 [';'] = "%3B",
 
-#line 651 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 650 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['='] = "%3D",
 
-#line 652 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 651 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['?'] = "%3F",
 
-#line 653 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 652 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['@'] = "%40",
 
-#line 654 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 653 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 ['['] = "%5B",
 
-#line 655 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 654 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 [']'] = "%5D"};
 
 #line 55 "/Users/tony/projects/litac-lang/stdlib/std/system/system_posix.lita"
@@ -18760,31 +18831,6 @@ litaC_char litaC_std__json__escapeToChar[256] =  {
 #line 5 "/Users/tony/projects/litac-lang/stdlib/std/time/time.lita"
 
 #define litaC_std__time__ISO_8601_DATE_FORMAT ("%Y-%m-%dT%H:%M:%S")
-
-#line 23 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-const litaC_char* litaC_std__http__requestTypeLookup[
-#line 23 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpRequestType_MAX_REQUEST_TYPE] =  {
-#line 24 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-[litaC_std__http__HttpRequestType_GET] = "GET",
-
-#line 25 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-[litaC_std__http__HttpRequestType_POST] = "POST",
-
-#line 26 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-[litaC_std__http__HttpRequestType_PUT] = "PUT",
-
-#line 27 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-[litaC_std__http__HttpRequestType_DELETE] = "DELETE",
-
-#line 28 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-[litaC_std__http__HttpRequestType_PATCH] = "PATCH",
-
-#line 29 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-[litaC_std__http__HttpRequestType_HEAD] = "HEAD",
-
-#line 30 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-[litaC_std__http__HttpRequestType_OPTION] = "OPTION"};
 
 #line 18 "/Users/tony/projects/litac-lang/stdlib/std/mem/linear_allocator.lita"
 litaC_std__mem__linear_allocator__ExpandInfo litaC_std__mem__linear_allocator__DEFAULT_EXPAND_INFO =  {
@@ -19277,6 +19323,964 @@ litaC_mime__FileToMime* litaC_mime__mimeFileTypes[56] =  {
 
 #line 176 "/Users/tony/projects/ringhttp/src/mime.lita"
 NULL};
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpConfig litaC_test_webserver__defaultConfig =  {
+#line 448 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.allocator = NULL,
+
+#line 449 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.port = 8080U,
+
+#line 450 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.numThreads = 4,
+
+#line 451 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.ioQueueDepth = 16,
+
+#line 452 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxPoolSize = 32,
+
+#line 453 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.keepAliveTimeoutInSec = 5,
+
+#line 454 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.isLogEnabled = litaC_true,
+
+#line 455 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.logFilePath = NULL,
+
+#line 456 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.fileServerPath = (litaC_std__builtins__String) { .buffer = "static", .length = 6 },
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxHttpRequestLineSizeInBytes = 
+#line 56 "/Users/tony/projects/ringhttp/src/http_server.lita"
+8 * litaC_std__mem__KiB,
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxHttpHeaderSizeInBytes = 
+#line 57 "/Users/tony/projects/ringhttp/src/http_server.lita"
+8 * litaC_std__mem__KiB,
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxHttpBodySizeInBytes = 
+#line 58 "/Users/tony/projects/ringhttp/src/http_server.lita"
+2 * litaC_std__mem__MiB,
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxRequestSizeInBytes = 
+#line 61 "/Users/tony/projects/ringhttp/src/http_server.lita"
+8 * litaC_std__mem__MiB,
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.requestBucketSizeInBytes = 
+#line 64 "/Users/tony/projects/ringhttp/src/http_server.lita"
+2 * litaC_std__mem__MiB,
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.fileSpliceSizeInBytes = 
+#line 66 "/Users/tony/projects/ringhttp/src/http_server.lita"
+16 * litaC_std__mem__KiB,
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.compressionLevel = 
+#line 69 "/Users/tony/projects/ringhttp/src/http_server.lita"
+6,
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.compressionEnabledOnBodySizeInBytes = 
+#line 71 "/Users/tony/projects/ringhttp/src/http_server.lita"
+1 * litaC_std__mem__KiB,
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.publicServerPath = 
+#line 75 "/Users/tony/projects/ringhttp/src/http_server.lita"
+(litaC_std__builtins__String) { .buffer = "/static/", .length = 8 },
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.timeoutCheckMSec = 
+#line 80 "/Users/tony/projects/ringhttp/src/http_server.lita"
+5000L,
+
+#line 447 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.disableSignal = 
+#line 90 "/Users/tony/projects/ringhttp/src/http_server.lita"
+litaC_false};
+
+#line 9 "generated"
+
+litaC_http_websocket_test__http_response__Stream__VirtualTable* litaC_http_websocket_test__http_response__Stream__vtables[1] =  {
+#line 10 "generated"
+[0] = &((litaC_http_websocket_test__http_response__Stream__VirtualTable) {
+#line 11 "generated"
+.read = litaC_http_websocket_test____test_webserver__FileStream_read_wrapper})};
+
+#line 22 "generated"
+
+litaC_http_websocket_test__http_server__HttpHandler__VirtualTable* litaC_http_websocket_test__http_server__HttpHandler__vtables[1] =  {
+#line 23 "generated"
+[0] = &((litaC_http_websocket_test__http_server__HttpHandler__VirtualTable) {
+#line 24 "generated"
+.handle = litaC_http_websocket_test____test_webserver__ServerHandler_handle_wrapper})};
+
+#line 37 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+litaC_void litaC_http_websocket_test__init_ws_tests(void) {
+#line 38 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__wsTestServer.config = &(litaC_http_websocket_test__wsConfig);
+
+#line 39 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_test_webserver__launch(&(litaC_http_websocket_test__wsTestServer));
+
+#line 40 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__thread__thread_posix__ThreadSleepMSec(250);
+}
+
+
+#line 45 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test__computeAccept(const litaC_char* litaC_key,litaC_i32 litaC_keyLen,litaC_std__string__builder__StringBuilder* litaC_out) {
+#line 46 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_input = litaC_std__string__builder__StringBuilderInit(litaC_keyLen + 40, NULL);
+
+#line 47 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 49 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_appendStrn(&((litaC_input)), litaC_key, litaC_keyLen);
+
+#line 50 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_input)), litaC_http_websocket__WEB_SOCKET_MAGIC);
+
+#line 52 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_u8 litaC_hash[20] = {0};
+
+#line 53 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+SHA1_CTX litaC_ctx = {0};
+
+#line 54 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+sha1_init(&(litaC_ctx));
+
+#line 55 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+sha1_update(&(litaC_ctx), (litaC_u8*)litaC_std__string__builder__StringBuilder_cStr(&((litaC_input))), litaC_input.asBuffer.length);
+
+#line 56 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+sha1_final(&(litaC_ctx), litaC_hash);
+
+#line 58 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_u8 litaC_encoded[32] = {0};
+
+#line 59 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_usize litaC_encodedLen = base64_encode(litaC_hash, litaC_encoded, SHA1_BLOCK_SIZE, 0);
+
+#line 60 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_appendStrn(litaC_out, (const litaC_char*)litaC_encoded, (litaC_i32)litaC_encodedLen);
+
+#line 47 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_input)));
+}
+
+
+#line 64 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_bool litaC_http_websocket_test__readHttpResponse(litaC_i32 litaC_sock,litaC_std__string__builder__StringBuilder* litaC_out) {
+#line 65 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_char litaC_buf[4096] = {0};
+
+#line 66 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+while(litaC_true) {{
+#line 67 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i64 litaC_n = recv(litaC_sock, litaC_buf, 4096, 0);
+
+#line 68 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(litaC_n <= 0) {{
+#line 69 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return litaC_false;
+
+
+}
+} 
+
+
+#line 71 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_appendStrn(litaC_out, litaC_buf, (litaC_i32)litaC_n);
+
+#line 73 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(litaC_std__string__builder__StringBuilder_contains(litaC_out, (litaC_std__builtins__String) { .buffer = "\r\n\r\n", .length = 4 })) {{
+#line 74 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return litaC_true;
+
+
+}
+} 
+
+
+}}
+
+#line 77 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return litaC_false;
+
+}
+
+
+#line 82 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_http_websocket_test__buildTextFrame(const litaC_char* litaC_payload,litaC_i32 litaC_payloadLen,litaC_char* litaC_buf,litaC_u8* litaC_mask) {
+#line 83 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_offset = 0;
+
+#line 86 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_buf[litaC_offset] = (litaC_char)0x81;
+
+#line 87 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_offset += 1;
+
+#line 90 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_buf[litaC_offset] = (litaC_char)(0x80 | litaC_payloadLen);
+
+#line 91 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_offset += 1;
+
+#line 94 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_buf[litaC_offset] = (litaC_char)litaC_mask[0];
+
+#line 95 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_buf[litaC_offset + 1] = (litaC_char)litaC_mask[1];
+
+#line 96 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_buf[litaC_offset + 2] = (litaC_char)litaC_mask[2];
+
+#line 97 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_buf[litaC_offset + 3] = (litaC_char)litaC_mask[3];
+
+#line 98 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_offset += 4;
+
+#line 101 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+for(litaC_i32 litaC_i = 0;litaC_i < litaC_payloadLen;litaC_i += 1) {{
+#line 102 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_buf[litaC_offset] = (litaC_char)(litaC_payload[litaC_i] ^ ((litaC_char)litaC_mask[litaC_i % 4]));
+
+#line 103 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_offset += 1;
+
+}}
+
+#line 106 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return litaC_offset;
+
+}
+
+
+#line 112 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_http_websocket_test__readWebSocketFrame(litaC_i32 litaC_sock,litaC_std__string__builder__StringBuilder* litaC_payloadOut,litaC_i32* litaC_opcodeOut) {
+#line 113 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_char litaC_header[2] = {0};
+
+#line 114 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i64 litaC_n = recv(litaC_sock, litaC_header, 2, 0);
+
+#line 115 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(litaC_n < 2) {{
+#line 116 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return -(1);
+
+
+}
+} 
+
+
+#line 119 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+*(litaC_opcodeOut) = litaC_header[0] & 0xF;
+
+#line 121 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_payloadLen = litaC_header[1] & 0x7F;
+
+#line 122 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(litaC_payloadLen > 125) {{
+#line 124 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return -(1);
+
+
+}
+} 
+
+
+#line 127 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(litaC_payloadLen == 0) {{
+#line 128 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return 0;
+
+
+}
+} 
+
+
+#line 131 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_char litaC_payload[256] = {0};
+
+#line 132 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_received = 0;
+
+#line 133 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+while(litaC_received < litaC_payloadLen) {{
+#line 134 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i64 litaC_r = recv(litaC_sock, &(litaC_payload[litaC_received]), litaC_payloadLen - litaC_received, 0);
+
+#line 135 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(litaC_r <= 0) {{
+#line 136 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return -(1);
+
+
+}
+} 
+
+
+#line 138 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_received += (litaC_i32)litaC_r;
+
+}}
+
+#line 141 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_appendStrn(litaC_payloadOut, litaC_payload, litaC_payloadLen);
+
+#line 142 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return litaC_payloadLen;
+
+}
+
+
+#line 146 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+litaC_void litaC_http_websocket_test__test_websocket_handshake(void) {
+#line 148 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_testKey ("dGhlIHNhbXBsZSBub25jZQ==")
+
+#line 149 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_testKeyLen (24)
+
+#line 152 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_expectedAccept = litaC_std__string__builder__StringBuilderInit(64, NULL);
+
+#line 153 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 154 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__computeAccept(litaC_testKey, litaC_testKeyLen, &(litaC_expectedAccept));
+
+#line 157 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_sock = socket(AF_INET, SOCK_STREAM, 0);
+
+#line 158 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_sock >= 0, __FILE__, __LINE__);
+
+#line 159 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 161 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+sockaddr_in litaC_addr = {0};
+
+#line 162 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+memset(&(litaC_addr), 0, sizeof(litaC_addr));
+
+#line 163 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_addr.sin_family = AF_INET;
+
+#line 164 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_addr.sin_port = htons(8082U);
+
+#line 165 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+inet_pton(AF_INET, "127.0.0.1", (litaC_void*)(&(litaC_addr.sin_addr)));
+
+#line 167 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_ret = connect(litaC_sock, (sockaddr*)(&(litaC_addr)), (socklen_t)sizeof(litaC_addr));
+
+#line 168 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_ret == 0, __FILE__, __LINE__);
+
+#line 171 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_reqBuilder = litaC_std__string__builder__StringBuilderInit(512, NULL);
+
+#line 172 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 173 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "GET /websocket HTTP/1.1\r\n");
+
+#line 174 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Host: localhost:8082\r\n");
+
+#line 175 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Upgrade: websocket\r\n");
+
+#line 176 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Connection: Upgrade\r\n");
+
+#line 177 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Sec-WebSocket-Key: %s\r\n", litaC_testKey);
+
+#line 178 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Sec-WebSocket-Version: 13\r\n");
+
+#line 179 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "\r\n");
+
+#line 181 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i64 litaC_sent = send(litaC_sock, litaC_reqBuilder.asBuffer.buffer, litaC_reqBuilder.asBuffer.length, 0);
+
+#line 182 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_sent > 0, __FILE__, __LINE__);
+
+#line 185 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_responseBuilder = litaC_std__string__builder__StringBuilderInit(1024, NULL);
+
+#line 186 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 187 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_http_websocket_test__readHttpResponse(litaC_sock, &(litaC_responseBuilder)), __FILE__, __LINE__);
+
+#line 190 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_std__string__builder__StringBuilder_contains(&((litaC_responseBuilder)), (litaC_std__builtins__String) { .buffer = "101", .length = 3 }), __FILE__, __LINE__);
+
+#line 191 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_std__string__builder__StringBuilder_contains(&((litaC_responseBuilder)), (litaC_std__builtins__String) { .buffer = "Upgrade", .length = 7 }), __FILE__, __LINE__);
+
+#line 192 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_std__string__builder__StringBuilder_contains(&((litaC_responseBuilder)), (litaC_std__builtins__String) { .buffer = "websocket", .length = 9 }), __FILE__, __LINE__);
+
+#line 195 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_std__string__builder__StringBuilder_contains(&((litaC_responseBuilder)), litaC_std__string__buffer__StringBuffer_toString(litaC_expectedAccept.asBuffer)), __FILE__, __LINE__);
+
+#line 186 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_responseBuilder)));
+
+#line 172 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_reqBuilder)));
+
+#line 159 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+close(litaC_sock);
+
+#line 153 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_expectedAccept)));
+#undef litaC_testKey
+#undef litaC_testKeyLen
+}
+
+
+#line 199 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+litaC_void litaC_http_websocket_test__test_websocket_echo(void) {
+#line 200 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_testKey ("dGhlIHNhbXBsZSBub25jZQ==")
+
+#line 201 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_testKeyLen (24)
+
+#line 203 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_sock = socket(AF_INET, SOCK_STREAM, 0);
+
+#line 204 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_sock >= 0, __FILE__, __LINE__);
+
+#line 205 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 207 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+sockaddr_in litaC_addr = {0};
+
+#line 208 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+memset(&(litaC_addr), 0, sizeof(litaC_addr));
+
+#line 209 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_addr.sin_family = AF_INET;
+
+#line 210 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_addr.sin_port = htons(8082U);
+
+#line 211 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+inet_pton(AF_INET, "127.0.0.1", (litaC_void*)(&(litaC_addr.sin_addr)));
+
+#line 213 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_ret = connect(litaC_sock, (sockaddr*)(&(litaC_addr)), (socklen_t)sizeof(litaC_addr));
+
+#line 214 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_ret == 0, __FILE__, __LINE__);
+
+#line 217 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_reqBuilder = litaC_std__string__builder__StringBuilderInit(512, NULL);
+
+#line 218 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 219 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "GET /websocket HTTP/1.1\r\n");
+
+#line 220 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Host: localhost:8082\r\n");
+
+#line 221 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Upgrade: websocket\r\n");
+
+#line 222 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Connection: Upgrade\r\n");
+
+#line 223 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Sec-WebSocket-Key: %s\r\n", litaC_testKey);
+
+#line 224 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Sec-WebSocket-Version: 13\r\n");
+
+#line 225 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "\r\n");
+
+#line 226 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+send(litaC_sock, litaC_reqBuilder.asBuffer.buffer, litaC_reqBuilder.asBuffer.length, 0);
+
+#line 229 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_upgradeResp = litaC_std__string__builder__StringBuilderInit(1024, NULL);
+
+#line 230 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 231 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__readHttpResponse(litaC_sock, &(litaC_upgradeResp));
+
+#line 234 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_payload ("hello")
+
+#line 235 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_payloadLen (5)
+
+#line 236 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_u8 litaC_mask[4] =  {0x37,
+0xfa,
+0x21,
+0x3d};
+
+#line 237 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_char litaC_frameBuf[32] = {0};
+
+#line 238 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_frameLen = litaC_http_websocket_test__buildTextFrame(litaC_payload, litaC_payloadLen, litaC_frameBuf, litaC_mask);
+
+#line 239 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_frameLen > 0, __FILE__, __LINE__);
+
+#line 241 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i64 litaC_sentBytes = send(litaC_sock, litaC_frameBuf, litaC_frameLen, 0);
+
+#line 242 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_sentBytes == litaC_frameLen, __FILE__, __LINE__);
+
+#line 245 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_echoPayload = litaC_std__string__builder__StringBuilderInit(64, NULL);
+
+#line 246 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 247 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_opcode = 0;
+
+#line 248 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_echoLen = litaC_http_websocket_test__readWebSocketFrame(litaC_sock, &(litaC_echoPayload), &(litaC_opcode));
+
+#line 250 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_echoLen > 0, __FILE__, __LINE__);
+
+#line 251 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_opcode == 0x1, __FILE__, __LINE__);
+
+#line 254 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_std__string__builder__StringBuilder_contains(&((litaC_echoPayload)), (litaC_std__builtins__String) { .buffer = "hello", .length = 5 }), __FILE__, __LINE__);
+
+#line 246 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_echoPayload)));
+
+#line 230 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_upgradeResp)));
+
+#line 218 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_reqBuilder)));
+
+#line 205 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+close(litaC_sock);
+#undef litaC_testKey
+#undef litaC_testKeyLen
+#undef litaC_payload
+#undef litaC_payloadLen
+}
+
+
+#line 258 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+litaC_void litaC_http_websocket_test__test_websocket_close(void) {
+#line 259 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_testKey ("dGhlIHNhbXBsZSBub25jZQ==")
+
+#line 260 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_testKeyLen (24)
+
+#line 262 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_sock = socket(AF_INET, SOCK_STREAM, 0);
+
+#line 263 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_sock >= 0, __FILE__, __LINE__);
+
+#line 264 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 266 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+sockaddr_in litaC_addr = {0};
+
+#line 267 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+memset(&(litaC_addr), 0, sizeof(litaC_addr));
+
+#line 268 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_addr.sin_family = AF_INET;
+
+#line 269 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_addr.sin_port = htons(8082U);
+
+#line 270 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+inet_pton(AF_INET, "127.0.0.1", (litaC_void*)(&(litaC_addr.sin_addr)));
+
+#line 272 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_ret = connect(litaC_sock, (sockaddr*)(&(litaC_addr)), (socklen_t)sizeof(litaC_addr));
+
+#line 273 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_ret == 0, __FILE__, __LINE__);
+
+#line 276 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_reqBuilder = litaC_std__string__builder__StringBuilderInit(512, NULL);
+
+#line 277 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 278 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "GET /websocket HTTP/1.1\r\n");
+
+#line 279 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Host: localhost:8082\r\n");
+
+#line 280 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Upgrade: websocket\r\n");
+
+#line 281 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Connection: Upgrade\r\n");
+
+#line 282 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Sec-WebSocket-Key: %s\r\n", litaC_testKey);
+
+#line 283 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "Sec-WebSocket-Version: 13\r\n");
+
+#line 284 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_reqBuilder)), "\r\n");
+
+#line 285 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+send(litaC_sock, litaC_reqBuilder.asBuffer.buffer, litaC_reqBuilder.asBuffer.length, 0);
+
+#line 288 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_upgradeResp = litaC_std__string__builder__StringBuilderInit(1024, NULL);
+
+#line 289 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 290 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__readHttpResponse(litaC_sock, &(litaC_upgradeResp));
+
+#line 294 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_exitPayload ("exit")
+
+#line 295 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+#define litaC_exitLen (4)
+
+#line 296 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_u8 litaC_mask[4] =  {0x11,
+0x22,
+0x33,
+0x44};
+
+#line 297 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_char litaC_frameBuf[32] = {0};
+
+#line 298 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_frameLen = litaC_http_websocket_test__buildTextFrame(litaC_exitPayload, litaC_exitLen, litaC_frameBuf, litaC_mask);
+
+#line 299 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+send(litaC_sock, litaC_frameBuf, litaC_frameLen, 0);
+
+#line 302 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_closePayload = litaC_std__string__builder__StringBuilderInit(64, NULL);
+
+#line 303 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 304 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_opcode = 0;
+
+#line 305 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__readWebSocketFrame(litaC_sock, &(litaC_closePayload), &(litaC_opcode));
+
+#line 307 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_opcode == 0x8, __FILE__, __LINE__);
+
+#line 303 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_closePayload)));
+
+#line 289 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_upgradeResp)));
+
+#line 277 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_reqBuilder)));
+
+#line 264 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+close(litaC_sock);
+#undef litaC_testKey
+#undef litaC_testKeyLen
+#undef litaC_exitPayload
+#undef litaC_exitLen
+}
+
+
+#line 311 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_http_websocket_test__connectToWsServer(void) {
+#line 312 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_sock = socket(AF_INET, SOCK_STREAM, 0);
+
+#line 313 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(litaC_sock < 0) {{
+#line 314 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return -(1);
+
+
+}
+} 
+
+
+#line 317 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+sockaddr_in litaC_addr = {0};
+
+#line 318 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+memset(&(litaC_addr), 0, sizeof(litaC_addr));
+
+#line 319 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_addr.sin_family = AF_INET;
+
+#line 320 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_addr.sin_port = htons(8082U);
+
+#line 321 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+inet_pton(AF_INET, "127.0.0.1", (litaC_void*)(&(litaC_addr.sin_addr)));
+
+#line 323 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(connect(litaC_sock, (sockaddr*)(&(litaC_addr)), (socklen_t)sizeof(litaC_addr)) != 0) {{
+#line 324 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+close(litaC_sock);
+
+#line 325 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return -(1);
+
+
+}
+} 
+
+
+#line 327 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return litaC_sock;
+
+}
+
+
+#line 331 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+litaC_void litaC_http_websocket_test__test_websocket_wrong_upgrade_protocol(void) {
+#line 332 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_sock = litaC_http_websocket_test__connectToWsServer();
+
+#line 333 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_sock >= 0, __FILE__, __LINE__);
+
+#line 334 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 339 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_req = litaC_std__string__builder__StringBuilderInit(256, NULL);
+
+#line 340 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 341 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "GET /websocket HTTP/1.1\r\n");
+
+#line 342 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "Host: localhost:8082\r\n");
+
+#line 343 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "Connection: Upgrade\r\n");
+
+#line 344 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "Upgrade: ftp\r\n");
+
+#line 345 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "\r\n");
+
+#line 346 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+send(litaC_sock, litaC_req.asBuffer.buffer, litaC_req.asBuffer.length, 0);
+
+#line 348 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_resp = litaC_std__string__builder__StringBuilderInit(1024, NULL);
+
+#line 349 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 350 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__readHttpResponse(litaC_sock, &(litaC_resp));
+
+#line 352 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_std__string__builder__StringBuilder_contains(&((litaC_resp)), (litaC_std__builtins__String) { .buffer = "426", .length = 3 }), __FILE__, __LINE__);
+
+#line 349 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_resp)));
+
+#line 340 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_req)));
+
+#line 334 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+close(litaC_sock);
+}
+
+
+#line 356 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+litaC_void litaC_http_websocket_test__test_websocket_missing_key(void) {
+#line 357 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_sock = litaC_http_websocket_test__connectToWsServer();
+
+#line 358 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_sock >= 0, __FILE__, __LINE__);
+
+#line 359 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 364 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_req = litaC_std__string__builder__StringBuilderInit(256, NULL);
+
+#line 365 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 366 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "GET /websocket HTTP/1.1\r\n");
+
+#line 367 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "Host: localhost:8082\r\n");
+
+#line 368 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "Connection: Upgrade\r\n");
+
+#line 369 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "Upgrade: websocket\r\n");
+
+#line 370 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "Sec-WebSocket-Version: 13\r\n");
+
+#line 371 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "\r\n");
+
+#line 372 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+send(litaC_sock, litaC_req.asBuffer.buffer, litaC_req.asBuffer.length, 0);
+
+#line 374 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_resp = litaC_std__string__builder__StringBuilderInit(1024, NULL);
+
+#line 375 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 376 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__readHttpResponse(litaC_sock, &(litaC_resp));
+
+#line 378 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_std__string__builder__StringBuilder_contains(&((litaC_resp)), (litaC_std__builtins__String) { .buffer = "400", .length = 3 }), __FILE__, __LINE__);
+
+#line 379 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_std__string__builder__StringBuilder_contains(&((litaC_resp)), (litaC_std__builtins__String) { .buffer = "Sec-WebSocket-Key", .length = 17 }), __FILE__, __LINE__);
+
+#line 375 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_resp)));
+
+#line 365 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_req)));
+
+#line 359 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+close(litaC_sock);
+}
+
+
+#line 383 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+litaC_void litaC_http_websocket_test__test_websocket_route_no_upgrade(void) {
+#line 384 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_sock = litaC_http_websocket_test__connectToWsServer();
+
+#line 385 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_sock >= 0, __FILE__, __LINE__);
+
+#line 386 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 390 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_req = litaC_std__string__builder__StringBuilderInit(256, NULL);
+
+#line 391 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 392 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "GET /websocket HTTP/1.1\r\n");
+
+#line 393 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "Host: localhost:8082\r\n");
+
+#line 394 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "Connection: keep-alive\r\n");
+
+#line 395 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_req)), "\r\n");
+
+#line 396 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+send(litaC_sock, litaC_req.asBuffer.buffer, litaC_req.asBuffer.length, 0);
+
+#line 398 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder litaC_resp = litaC_std__string__builder__StringBuilderInit(1024, NULL);
+
+#line 399 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+
+
+#line 400 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__readHttpResponse(litaC_sock, &(litaC_resp));
+
+#line 402 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__assert__assert(litaC_std__string__builder__StringBuilder_contains(&((litaC_resp)), (litaC_std__builtins__String) { .buffer = "400", .length = 3 }), __FILE__, __LINE__);
+
+#line 399 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_resp)));
+
+#line 391 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_req)));
+
+#line 386 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+close(litaC_sock);
+}
+
 
 #line 77 "/Users/tony/projects/litac-lang/stdlib/std/test/test.lita"
 litaC_void litaC_std__test__TestSuite_init(litaC_std__test__TestSuite* litaC_this,const litaC_std__mem__Allocator* litaC_allocator) {
@@ -24070,47 +25074,47 @@ litaC_std__assert__assert(litaC_std__ascii__char_isWhitespace(' ') == litaC_true
 }
 
 
-#line 183 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 182 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 const litaC_char* litaC_std__system__ArchAsStr(Lita_ArchType litaC_type) {
-#line 184 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 183 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 switch(litaC_type) {
-#line 185 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 184 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_ArchType_UNKNOWN: {return "UNKNOWN";
 
 
 }
 
-#line 186 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 185 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_ArchType_ARM32: {return "ARM32";
 
 
 }
 
-#line 187 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 186 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_ArchType_ARM64: {return "ARM64";
 
 
 }
 
-#line 188 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 187 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_ArchType_X86: {return "X86";
 
 
 }
 
-#line 189 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 188 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_ArchType_X86_64: {return "X86_64";
 
 
 }
 
-#line 190 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 189 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_ArchType_SPARC: {return "SPARC";
 
 
 }
 default: 
-#line 191 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 190 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {return NULL;
 
 
@@ -24118,11 +25122,11 @@ default:
 }
 
 
-#line 195 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 194 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 Lita_ArchType litaC_std__system__ArchFromStr(const litaC_char* litaC_str,litaC_usize litaC_len) {
-#line 196 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 195 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_str)) {{
-#line 197 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 196 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_ArchType_UNKNOWN;
 
 
@@ -24130,9 +25134,9 @@ return Lita_ArchType_UNKNOWN;
 } 
 
 
-#line 200 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 199 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "ARM32", litaC_len) == 0) {{
-#line 201 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 200 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_ArchType_ARM32;
 
 
@@ -24140,9 +25144,9 @@ return Lita_ArchType_ARM32;
 } 
 
 
-#line 204 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 203 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "ARM64", litaC_len) == 0) {{
-#line 205 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 204 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_ArchType_ARM64;
 
 
@@ -24150,9 +25154,9 @@ return Lita_ArchType_ARM64;
 } 
 
 
-#line 208 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 207 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "X86", litaC_len) == 0) {{
-#line 209 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 208 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_ArchType_X86;
 
 
@@ -24160,9 +25164,9 @@ return Lita_ArchType_X86;
 } 
 
 
-#line 212 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 211 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "X86_64", litaC_len) == 0) {{
-#line 213 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 212 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_ArchType_X86_64;
 
 
@@ -24170,9 +25174,9 @@ return Lita_ArchType_X86_64;
 } 
 
 
-#line 216 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 215 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "SPARC", litaC_len) == 0) {{
-#line 217 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 216 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_ArchType_SPARC;
 
 
@@ -24180,59 +25184,59 @@ return Lita_ArchType_SPARC;
 } 
 
 
-#line 220 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 219 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_ArchType_UNKNOWN;
 
 }
 
 
-#line 260 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 259 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 const litaC_char* litaC_std__system__OSAsStr(Lita_OSType litaC_type) {
-#line 261 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 260 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 switch(litaC_type) {
-#line 262 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 261 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_OSType_WINDOWS: {return "WINDOWS";
 
 
 }
 
-#line 263 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 262 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_OSType_ANDROID: {return "ANDROID";
 
 
 }
 
-#line 264 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 263 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_OSType_LINUX: {return "LINUX";
 
 
 }
 
-#line 265 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 264 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_OSType_BSD: {return "BSD";
 
 
 }
 
-#line 266 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 265 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_OSType_IOS: {return "IOS";
 
 
 }
 
-#line 267 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 266 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_OSType_MAC: {return "MAC";
 
 
 }
 
-#line 268 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 267 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 case Lita_OSType_OTHER: {return "OTHER";
 
 
 }
 default: 
-#line 269 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 268 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {return NULL;
 
 
@@ -24240,11 +25244,11 @@ default:
 }
 
 
-#line 273 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 272 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 Lita_OSType litaC_std__system__OSFromStr(const litaC_char* litaC_str,litaC_usize litaC_len) {
-#line 274 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 273 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_str)) {{
-#line 275 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 274 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_OSType_OTHER;
 
 
@@ -24252,9 +25256,9 @@ return Lita_OSType_OTHER;
 } 
 
 
-#line 278 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 277 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "WINDOWS", litaC_len) == 0) {{
-#line 279 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 278 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_OSType_WINDOWS;
 
 
@@ -24262,9 +25266,9 @@ return Lita_OSType_WINDOWS;
 } 
 
 
-#line 282 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 281 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "ANDROID", litaC_len) == 0) {{
-#line 283 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 282 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_OSType_ANDROID;
 
 
@@ -24272,9 +25276,9 @@ return Lita_OSType_ANDROID;
 } 
 
 
-#line 286 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 285 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "LINUX", litaC_len) == 0) {{
-#line 287 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 286 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_OSType_LINUX;
 
 
@@ -24282,9 +25286,9 @@ return Lita_OSType_LINUX;
 } 
 
 
-#line 290 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 289 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "BSD", litaC_len) == 0) {{
-#line 291 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 290 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_OSType_BSD;
 
 
@@ -24292,9 +25296,9 @@ return Lita_OSType_BSD;
 } 
 
 
-#line 294 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 293 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "IOS", litaC_len) == 0) {{
-#line 295 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 294 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_OSType_IOS;
 
 
@@ -24302,9 +25306,9 @@ return Lita_OSType_IOS;
 } 
 
 
-#line 298 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 297 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "MAC", litaC_len) == 0) {{
-#line 299 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 298 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_OSType_MAC;
 
 
@@ -24312,9 +25316,9 @@ return Lita_OSType_MAC;
 } 
 
 
-#line 302 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 301 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__system__strcicmp(litaC_str, "MACOS", litaC_len) == 0) {{
-#line 303 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 302 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_OSType_MAC;
 
 
@@ -24322,146 +25326,146 @@ return Lita_OSType_MAC;
 } 
 
 
-#line 306 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 305 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return Lita_OSType_OTHER;
 
 }
 
 
-#line 358 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 357 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
 
 litaC_bool litaC_std__system__SystemInit(void) {
-#line 359 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 358 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__system_posix___SystemInit();
 
 }
 
 
-#line 362 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 361 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 Lita_OSType litaC_std__system__GetOS(void) {
-#line 363 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 362 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaOS;
 
 }
 
 
-#line 366 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 365 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 Lita_ArchType litaC_std__system__GetArch(void) {
-#line 367 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 366 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaArch;
 
 }
 
 
-#line 370 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 369 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__GetEnv(const litaC_char* litaC_varName) {
-#line 371 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 370 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return getenv(litaC_varName);
 
 }
 
 
-#line 374 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 373 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_void litaC_std__system__SetEnv(const litaC_char* litaC_varName,const litaC_char* litaC_value) {
-#line 375 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 374 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__system__system_posix___SetEnv(litaC_varName, litaC_value);
 }
 
 
-#line 380 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 379 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 const litaC_char* litaC_std__system__CurrentWorkingPath(void) {
-#line 381 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 380 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__system_posix___CurrentWorkingPath();
 
 }
 
 
-#line 384 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 383 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileTruncate(const litaC_char* litaC_filename,litaC_usize litaC_newLength) {
-#line 385 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 384 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__system_posix___FileTruncate(litaC_filename, litaC_newLength);
 
 }
 
 
-#line 388 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 387 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileTruncateFile(FILE* litaC_file,litaC_usize litaC_newLength) {
-#line 389 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 388 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__system_posix___FileTruncateFile(litaC_file, litaC_newLength);
 
 }
 
 
-#line 392 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 391 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileDelete(const litaC_char* litaC_filename) {
-#line 393 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 392 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__system_posix___FileDelete(litaC_filename);
 
 }
 
 
-#line 396 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 395 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileExists(const litaC_char* litaC_filename) {
-#line 397 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 396 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 FileStat litaC_s = {0};
 
-#line 398 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 397 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return stat(litaC_filename, &(litaC_s)) == 0;
 
 }
 
 
-#line 401 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 400 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileMove(const litaC_char* litaC_srcFilename,const litaC_char* litaC_destFilename) {
-#line 402 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 401 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return rename(litaC_srcFilename, litaC_destFilename) == 0;
 
 }
 
 
-#line 405 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 404 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__FileIsDir(const litaC_char* litaC_filename) {
-#line 406 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 405 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__system_posix___FileIsDir(litaC_filename);
 
 }
 
 
-#line 409 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 408 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__Mkdir(const litaC_char* litaC_dir) {
-#line 410 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 409 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__system_posix___Mkdir(litaC_dir);
 
 }
 
 
-#line 413 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 412 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__Mkdirs(const litaC_char* litaC_dir) {
-#line 414 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 413 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char litaC_temp[
-#line 414 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 413 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 PATH_MAX] = {0};
 
-#line 415 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 414 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer litaC_path = litaC_std__string__buffer__StringBufferInit(litaC_temp, PATH_MAX, 0);
 
-#line 417 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 416 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__builtins__String litaC_workingPath = litaC_std__string__StringInit(litaC_dir, -(
 #line 12 "/Users/tony/projects/litac-lang/stdlib/std/string/string.lita"
 1));
 
-#line 418 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 417 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_index = 0;
 
-#line 421 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 420 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_workingPath.length > 2) {{
-#line 422 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 421 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_workingPath.buffer[2] == ':') {{
-#line 423 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 422 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_append(&((litaC_path)), "%.*s", 2, litaC_workingPath.buffer);
 
-#line 424 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 423 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_index = 3;
 
 }
@@ -24472,27 +25476,27 @@ litaC_index = 3;
 } 
 
 
-#line 428 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 427 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 while(litaC_index >= 0) {{
-#line 429 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 428 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_index = litaC_std__string__String_indexOfAt(litaC_workingPath, (litaC_std__builtins__String) { .buffer = "/", .length = 1 }, litaC_index);
 
-#line 430 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 429 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_index > -(1)) {{
-#line 431 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 430 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_format(&((litaC_path)), "%.*s", litaC_index, litaC_workingPath.buffer);
 
-#line 432 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 431 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__system__system_posix___Mkdir(litaC_std__string__buffer__StringBuffer_cStr(litaC_path));
 
-#line 433 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 432 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_index += 1;
 
 }
 } else {
-#line 435 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 434 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 436 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 435 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 break;
 
 }} 
@@ -24500,20 +25504,20 @@ break;
 
 }}
 
-#line 440 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 439 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__system_posix___Mkdir(litaC_dir);
 
 }
 
 
-#line 443 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 442 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__FilePath(const litaC_char* litaC_filename,litaC_char* litaC_out) {
-#line 444 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 443 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_index = 0;
 
-#line 446 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 445 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_filename)) {{
-#line 447 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 446 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 goto end;
 
 
@@ -24521,23 +25525,23 @@ goto end;
 } 
 
 
-#line 450 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 449 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_len = litaC_std__string__char_length(litaC_filename);
 
-#line 451 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 450 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_len > 0) {{
-#line 452 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 451 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 for(litaC_index = litaC_len - 1;
 litaC_index >= 0;litaC_index -= 1) {{
-#line 453 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 452 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char litaC_c = litaC_filename[litaC_index];
 
-#line 454 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 453 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_c == '/' || litaC_c == '\\') {{
-#line 455 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 454 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 memcpy(litaC_out, litaC_filename, litaC_index);
 
-#line 456 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 455 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 goto end;
 
 
@@ -24547,34 +25551,34 @@ goto end;
 
 }}
 
-#line 459 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 458 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_index = 0;
 
 }
 } 
 
 
-#line 462 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 461 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 end:;
 
 
-#line 463 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 462 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_out[litaC_index] = '\0';
 
-#line 464 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 463 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_out;
 
 }
 
 
-#line 467 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 466 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__FileParent(const litaC_char* litaC_filename,litaC_char* litaC_out,litaC_i32* litaC_length) {
-#line 468 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 467 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_index = 0;
 
-#line 470 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 469 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_filename)) {{
-#line 471 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 470 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 goto end;
 
 
@@ -24582,34 +25586,34 @@ goto end;
 } 
 
 
-#line 474 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 473 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_len = litaC_std__string__char_length(litaC_filename);
 
-#line 475 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 474 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_len > 0) {{
-#line 476 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 475 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_index = litaC_len - 1;
 
-#line 477 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 476 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_filename[litaC_len - 1] == '/') {{
-#line 478 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 477 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_index -= 1;
 
 }
 } 
 
 
-#line 480 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 479 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 for(;litaC_index >= 0;litaC_index -= 1) {{
-#line 481 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 480 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char litaC_c = litaC_filename[litaC_index];
 
-#line 482 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 481 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_c == '/' || litaC_c == '\\') {{
-#line 483 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 482 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 memcpy(litaC_out, litaC_filename, litaC_index);
 
-#line 484 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 483 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 goto end;
 
 
@@ -24619,43 +25623,43 @@ goto end;
 
 }}
 
-#line 487 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 486 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_index = 0;
 
 }
 } 
 
 
-#line 490 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 489 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 end:;
 
 
-#line 491 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 490 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_length) {{
-#line 492 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 491 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 (*(litaC_length)) = litaC_index;
 
 }
 } 
 
 
-#line 494 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 493 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_out[litaC_index] = '\0';
 
-#line 495 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 494 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_out;
 
 }
 
 
-#line 498 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 497 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__PathNormalize(const litaC_char* litaC_filename,litaC_char* litaC_out) {
-#line 499 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 498 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_i = 0;
 
-#line 501 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 500 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_filename)) {{
-#line 502 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 501 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 goto end;
 
 
@@ -24663,46 +25667,46 @@ goto end;
 } 
 
 
-#line 505 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 504 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 for(;litaC_filename[litaC_i];litaC_i += 1) {{
-#line 506 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 505 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char litaC_c = litaC_filename[litaC_i];
 
-#line 507 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 506 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_c == '\\') {{
-#line 508 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 507 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_c = '/';
 
 }
 } 
 
 
-#line 510 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 509 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_out[litaC_i] = litaC_c;
 
 }}
 
-#line 514 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 513 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 end:;
 
 
-#line 515 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 514 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_out[litaC_i] = '\0';
 
-#line 516 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 515 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_out;
 
 }
 
 
-#line 519 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 518 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__PathNative(const litaC_char* litaC_filename,litaC_char* litaC_out) {
-#line 520 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 519 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_i = 0;
 
-#line 522 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 521 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_filename)) {{
-#line 523 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 522 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 goto end;
 
 
@@ -24710,18 +25714,18 @@ goto end;
 } 
 
 
-#line 526 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 525 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 for(;litaC_filename[litaC_i];litaC_i += 1) {{
-#line 527 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 526 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char litaC_c = litaC_filename[litaC_i];
 
-#line 528 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 527 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
 #if defined(_WIN32) || defined(_WIN64)
 
-#line 529 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 528 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_c == '/') {{
-#line 530 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 529 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_c = '\\';
 
 }
@@ -24730,9 +25734,9 @@ litaC_c = '\\';
 
 #else
 
-#line 533 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 532 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_c == '\\') {{
-#line 534 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 533 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_c = '/';
 
 }
@@ -24742,76 +25746,76 @@ litaC_c = '/';
 #endif
 
 
-#line 537 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 536 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_out[litaC_i] = litaC_c;
 
 }}
 
-#line 541 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 540 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 end:;
 
 
-#line 542 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 541 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_out[litaC_i] = '\0';
 
-#line 543 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 542 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_out;
 
 }
 
 
-#line 546 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 545 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_std__system__strcicmp(const litaC_char* litaC_a,const litaC_char* litaC_b,litaC_usize litaC_size) {
-#line 547 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 546 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_a == litaC_b) {return 0;
 
 } 
 
 
-#line 548 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 547 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_a) && litaC_b) {return -(1);
 
 } 
 
 
-#line 549 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 548 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_a && !(litaC_b)) {return 1;
 
 } 
 
 
-#line 551 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 550 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 for(litaC_usize litaC_i = 0;litaC_i < litaC_size;litaC_i += 1) {{
-#line 552 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 551 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char litaC_ac = *(litaC_a);
 
-#line 553 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 552 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char litaC_bc = *(litaC_b);
 
-#line 555 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 554 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_ac) && litaC_bc) {return -(1);
 
 } 
 
 
-#line 556 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 555 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_ac && !(litaC_bc)) {return 1;
 
 } 
 
 
-#line 557 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 556 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_ac) && !(litaC_bc)) {return 0;
 
 } 
 
 
-#line 559 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 558 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_d = tolower(litaC_ac) - tolower(litaC_bc);
 
-#line 560 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 559 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_d != 0) {{
-#line 561 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 560 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_d;
 
 
@@ -24819,82 +25823,82 @@ return litaC_d;
 } 
 
 
-#line 563 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 562 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_a += 1;
 
-#line 564 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 563 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_b += 1;
 
 }}
 
-#line 566 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 565 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return 0;
 
 }
 
 
-#line 573 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 572 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__GetAbsolutePath(const litaC_char* litaC_pwd,const litaC_char* litaC_path,litaC_char* litaC_output) {
-#line 574 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 573 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer litaC_absStr = litaC_std__string__buffer__StringBufferInit(litaC_output, PATH_MAX, 0);
 
-#line 575 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 574 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__builtins__String litaC_pathStr = litaC_std__string__StringInit(litaC_path, -(
 #line 12 "/Users/tony/projects/litac-lang/stdlib/std/string/string.lita"
 1));
 
-#line 577 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 576 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__string__String_startsWith(litaC_pathStr, (litaC_std__builtins__String) { .buffer = ".", .length = 1 }, 0)) {{
-#line 578 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 577 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_append(&((litaC_absStr)), "%s/", litaC_pwd);
 
 }
 } 
 
 
-#line 581 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 580 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 while(*(litaC_path)) {{
-#line 582 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 581 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_path[0] == '\\') {{
-#line 583 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 582 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_path[1] == '\\') {{
-#line 584 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 583 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_path += 1;
 
 }
 } 
 
 
-#line 586 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 585 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_absStr)), '/');
 
 }
 } else {
-#line 588 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 587 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_path[0] == '.') {{
-#line 590 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 589 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_path[1] == '.') {{
-#line 591 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 590 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_len = litaC_absStr.length;
 
-#line 592 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 591 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_index = litaC_len - 1;
 
-#line 593 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 592 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_upCount = 0;
 
-#line 594 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 593 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 for(;litaC_index >= 0;litaC_index -= 1) {{
-#line 595 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 594 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_absStr.buffer[litaC_index] == '/' || 
-#line 596 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 595 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_absStr.buffer[litaC_index] == '\\') {{
-#line 597 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 596 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_upCount += 1;
 
-#line 598 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 597 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_upCount > 1) {{
-#line 599 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 598 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 break;
 
 }
@@ -24907,23 +25911,23 @@ break;
 
 }}
 
-#line 603 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 602 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_index < 0) {{
-#line 604 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 603 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_index = 0;
 
 }
 } 
 
 
-#line 607 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 606 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_absStr.length = litaC_index;
 
-#line 608 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 607 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_absStr.buffer[litaC_index] == '/' || 
-#line 609 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 608 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_absStr.buffer[litaC_index] == '\\') {{
-#line 610 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 609 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_absStr.length = litaC_index + 1;
 
 }
@@ -24932,16 +25936,16 @@ litaC_absStr.length = litaC_index + 1;
 
 }
 } else {
-#line 613 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 612 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_path[1] == '/' || litaC_path[1] == '\\') {{
-#line 615 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 614 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_path += 1;
 
 }
 } else {
-#line 617 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 616 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 618 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 617 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_absStr)), '.');
 
 }} 
@@ -24950,88 +25954,88 @@ litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_absStr)), '.');
 
 }
 } else {
-#line 621 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 620 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 622 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 621 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_absStr)), *(litaC_path));
 
 }} 
 } 
 
 
-#line 624 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 623 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_path += 1;
 
 }}
 
-#line 627 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 626 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__string__buffer__StringBuffer_cStr(litaC_absStr);
 
 }
 
 
-#line 630 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 629 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_bool litaC_std__system__PathEquals(const litaC_char* litaC_a,const litaC_char* litaC_b) {
-#line 632 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 631 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__strcicmp(litaC_a, litaC_b, PATH_MAX) == 0;
 
 }
 
 
-#line 658 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 657 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__FilePathToUri(const litaC_char* litaC_path,litaC_char* litaC_output) {
-#line 659 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 658 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer litaC_outputStr = litaC_std__string__buffer__StringBufferInit(litaC_output, PATH_MAX, 0);
 
-#line 660 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 659 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
-#line 662 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 661 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 663 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 662 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_append(&((litaC_outputStr)), "%s", "file://");
 
 }
 
-#line 666 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 665 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 while(*(litaC_path)) {{
-#line 667 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 666 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 const litaC_char* litaC_escaped = litaC_std__system__uriEscapeChars[(litaC_i32)(*(litaC_path))];
 
-#line 668 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 667 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_escaped) {{
-#line 669 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 668 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_append(&((litaC_outputStr)), "%s", litaC_escaped);
 
 }
 } else {
-#line 671 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 670 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 672 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 671 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), *(litaC_path));
 
 }} 
 
 
-#line 675 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 674 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_path += 1;
 
 }}
 
-#line 678 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 677 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__string__buffer__StringBuffer_cStr(litaC_outputStr);
 
 }
 
 
-#line 681 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 680 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char* litaC_std__system__UriToFilePath(const litaC_char* litaC_uri,litaC_char* litaC_output) {
-#line 682 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 681 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__string__StringEqualLen(litaC_uri, "file:///", 8)) {{
-#line 683 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 682 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
-#line 685 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 684 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 686 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 685 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_uri = &(litaC_uri[7]);
 
 }
@@ -25040,115 +26044,115 @@ litaC_uri = &(litaC_uri[7]);
 } 
 
 
-#line 690 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 689 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer litaC_outputStr = litaC_std__string__buffer__StringBufferInit(litaC_output, PATH_MAX, 0);
 
-#line 691 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 690 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 while(*(litaC_uri)) {{
-#line 692 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 691 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(*(litaC_uri) == '%') {{
-#line 693 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 692 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[1] == '2') {{
-#line 694 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 693 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '0') {{
-#line 695 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 694 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), ' ');
 
 }
 } else {
-#line 697 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 696 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '1') {{
-#line 698 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 697 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '!');
 
 }
 } else {
-#line 700 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 699 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '3') {{
-#line 701 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 700 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '#');
 
 }
 } else {
-#line 703 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 702 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '4') {{
-#line 704 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 703 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '$');
 
 }
 } else {
-#line 706 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 705 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '5') {{
-#line 707 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 706 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '%');
 
 }
 } else {
-#line 709 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 708 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '6') {{
-#line 710 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 709 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '&');
 
 }
 } else {
-#line 712 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 711 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '7') {{
-#line 713 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 712 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '\'');
 
 }
 } else {
-#line 715 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 714 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '8') {{
-#line 716 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 715 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '(');
 
 }
 } else {
-#line 718 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 717 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '9') {{
-#line 719 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 718 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), ')');
 
 }
 } else {
-#line 721 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 720 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'A') {{
-#line 722 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 721 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '*');
 
 }
 } else {
-#line 724 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 723 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'B') {{
-#line 725 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 724 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '+');
 
 }
 } else {
-#line 727 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 726 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'C') {{
-#line 728 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 727 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), ',');
 
 }
 } else {
-#line 730 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 729 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'F') {{
-#line 731 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 730 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '/');
 
 }
 } else {
-#line 733 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 732 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 735 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 734 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_append(&((litaC_outputStr)), "%s", "%2");
 
-#line 736 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 735 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_uri += 2;
 
-#line 737 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 736 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 continue;
 
 }} 
@@ -25168,45 +26172,45 @@ continue;
 
 }
 } else {
-#line 740 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 739 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[1] == '3') {{
-#line 741 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 740 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'A') {{
-#line 742 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 741 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), ':');
 
 }
 } else {
-#line 744 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 743 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'B') {{
-#line 745 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 744 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), ';');
 
 }
 } else {
-#line 747 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 746 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'D') {{
-#line 748 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 747 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '=');
 
 }
 } else {
-#line 750 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 749 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'F') {{
-#line 751 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 750 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '?');
 
 }
 } else {
-#line 753 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 752 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 755 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 754 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_append(&((litaC_outputStr)), "%s", "%3");
 
-#line 756 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 755 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_uri += 2;
 
-#line 757 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 756 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 continue;
 
 }} 
@@ -25217,24 +26221,24 @@ continue;
 
 }
 } else {
-#line 760 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 759 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[1] == '4') {{
-#line 761 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 760 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == '0') {{
-#line 762 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 761 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '@');
 
 }
 } else {
-#line 764 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 763 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 766 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 765 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_append(&((litaC_outputStr)), "%s", "%4");
 
-#line 767 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 766 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_uri += 2;
 
-#line 768 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 767 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 continue;
 
 }} 
@@ -25242,31 +26246,31 @@ continue;
 
 }
 } else {
-#line 771 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 770 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[1] == '5') {{
-#line 772 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 771 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'B') {{
-#line 773 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 772 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), '[');
 
 }
 } else {
-#line 775 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 774 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_uri[2] == 'D') {{
-#line 776 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 775 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), ']');
 
 }
 } else {
-#line 778 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 777 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 780 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 779 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_append(&((litaC_outputStr)), "%s", "%5");
 
-#line 781 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 780 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_uri += 2;
 
-#line 782 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 781 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 continue;
 
 }} 
@@ -25275,15 +26279,15 @@ continue;
 
 }
 } else {
-#line 785 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 784 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {
-#line 786 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 785 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), *(litaC_uri));
 
-#line 787 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 786 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_uri += 1;
 
-#line 788 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 787 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 continue;
 
 }} 
@@ -25292,57 +26296,57 @@ continue;
 } 
 
 
-#line 791 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 790 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_uri += 3;
 
-#line 792 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 791 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 continue;
 
 }
 } 
 
 
-#line 795 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 794 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__buffer__StringBuffer_appendChar(&((litaC_outputStr)), *(litaC_uri));
 
-#line 796 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 795 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_uri += 1;
 
 }}
 
-#line 799 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 798 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__string__buffer__StringBuffer_cStr(litaC_outputStr);
 
 }
 
 
-#line 803 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 802 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
 litaC_f64 litaC_std__system__SystemTimeMSec(void) {
-#line 804 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 803 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return litaC_std__system__system_posix___SystemTimeMSec();
 
 }
 
 
-#line 835 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 834 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__system__Process litaC_std__system__SystemExec(const litaC_char* litaC_command) {
-#line 836 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 835 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 FILE* litaC_pipe = popen(litaC_command, litaC_std__system__OPEN_MODE);
 
-#line 837 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 836 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return (litaC_std__system__Process) {
-#line 838 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 837 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 .pipe = litaC_pipe};
 
 }
 
 
-#line 847 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 846 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i64 litaC_std__system__Process_readOutput(litaC_std__system__Process* litaC_this,litaC_char* litaC_buffer,litaC_usize litaC_length) {
-#line 848 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 847 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_this->pipe)) {{
-#line 849 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 848 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return -(1);
 
 
@@ -25350,17 +26354,17 @@ return -(1);
 } 
 
 
-#line 852 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 851 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return (litaC_i64)fread(litaC_buffer, sizeof(litaC_char), litaC_length, litaC_this->pipe);
 
 }
 
 
-#line 855 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 854 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i64 litaC_std__system__Process_writeInput(litaC_std__system__Process* litaC_this,litaC_char* litaC_buffer,litaC_usize litaC_length) {
-#line 856 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 855 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(!(litaC_this->pipe)) {{
-#line 857 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 856 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return -(1);
 
 
@@ -25368,17 +26372,17 @@ return -(1);
 } 
 
 
-#line 860 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 859 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return (litaC_i64)fwrite(litaC_buffer, sizeof(litaC_char), litaC_length, litaC_this->pipe);
 
 }
 
 
-#line 863 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 862 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_std__system__Process_close(litaC_std__system__Process* litaC_this) {
-#line 864 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 863 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_this->pipe) {{
-#line 865 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 864 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return pclose(litaC_this->pipe);
 
 
@@ -25386,36 +26390,36 @@ return pclose(litaC_this->pipe);
 } 
 
 
-#line 867 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 866 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 return 0;
 
 }
 
 
-#line 875 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 874 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
 litaC_i32 litaC_std__system__LoadEnv(const litaC_char* litaC_envFile,const litaC_std__mem__Allocator* litaC_allocator) {
-#line 878 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 877 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
-#line 879 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 878 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__builder__StringBuilder litaC_sb = litaC_std__string__builder__StringBuilderInit(1024, litaC_allocator);
 
-#line 880 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 879 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
 
-#line 882 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 881 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__io__FileStatus litaC_status = litaC_std__io__ReadFileFully(
-#line 883 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 882 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_envFile, 
-#line 884 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 883 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 &(litaC_sb));
 
-#line 886 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 885 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_status != litaC_std__io__FileStatus_Ok) {{
-#line 887 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 886 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {litaC_i32 ___result = -(1);
 
-#line 880 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 879 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__builder__StringBuilder_free(&((litaC_sb)));
 return ___result;
 }
@@ -25425,44 +26429,44 @@ return ___result;
 } 
 
 
-#line 890 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 889 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_i32 litaC_result = 0;
 
-#line 891 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 890 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__SplitIter litaC_lines = litaC_std__string__String_split(litaC_std__string__buffer__StringBuffer_toString(litaC_sb.asBuffer), (litaC_std__builtins__String) { .buffer = "\n", .length = 1 });
 
-#line 892 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 891 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 while(litaC_std__string__SplitIter_hasNext(&((litaC_lines)))) {{
-#line 893 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 892 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__builtins__String litaC_line = litaC_std__string__SplitIter_next(&((litaC_lines)));
 
-#line 894 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 893 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 if(litaC_std__string__String_startsWith(litaC_line, (litaC_std__builtins__String) { .buffer = "#", .length = 1 }, 0)) {{
-#line 895 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 894 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 continue;
 
 }
 } 
 
 
-#line 897 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 896 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__builtins__String litaC_name = litaC_std__string__String_trim(litaC_std__string__String_substringOf(litaC_line, (litaC_std__builtins__String) { .buffer = "=", .length = 1 }));
 
-#line 898 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 897 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__builtins__String litaC_value = litaC_std__string__String_trim(litaC_std__string__String_substringOfAfter(litaC_line, (litaC_std__builtins__String) { .buffer = "=", .length = 1 }));
 
-#line 899 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 898 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__system__SetEnv(litaC_std__string__String_toCStr(litaC_name, litaC_allocator), litaC_std__string__String_toCStr(litaC_value, litaC_allocator));
 
-#line 900 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 899 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_result += 1;
 
 }}
 
-#line 903 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 902 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 {litaC_i32 ___result = litaC_result;
 
-#line 880 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 879 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__string__builder__StringBuilder_free(&((litaC_sb)));
 return ___result;
 }
@@ -25471,41 +26475,41 @@ litaC_std__string__builder__StringBuilder_free(&((litaC_sb)));
 }
 
 
-#line 911 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 910 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
 litaC_void litaC_std__system__testAbsolutePath(void) {
-#line 912 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 911 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_char litaC_path[
-#line 912 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 911 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 PATH_MAX] =  {0};
 
-#line 913 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 912 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__assert__assert(litaC_std__string__char_equals(litaC_std__system__GetAbsolutePath("C:/litac", "../src/main.lita", litaC_path), "C:/src/main.lita"), __FILE__, __LINE__);
 
-#line 914 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 913 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__assert__assert(litaC_std__string__char_equals(litaC_std__system__GetAbsolutePath("C:/litac", "./../src/main.lita", litaC_path), "C:/src/main.lita"), __FILE__, __LINE__);
 
-#line 915 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 914 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__assert__assert(litaC_std__string__char_equals(litaC_std__system__GetAbsolutePath("C:/litac", "./..\\src/main.lita", litaC_path), "C:/src/main.lita"), __FILE__, __LINE__);
 
-#line 916 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 915 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__assert__assert(litaC_std__string__char_equals(litaC_std__system__GetAbsolutePath("C:/litac", "../../src/main.lita", litaC_path), "src/main.lita"), __FILE__, __LINE__);
 }
 
 
-#line 920 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 919 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 
 litaC_void litaC_std__system__testMkdirDelete(void) {
-#line 921 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 920 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__system__Mkdir("rodgers");
 
-#line 922 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 921 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__assert__assert(litaC_std__system__FileExists("rodgers"), __FILE__, __LINE__);
 
-#line 923 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 922 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__system__FileDelete("rodgers");
 
-#line 924 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
+#line 923 "/Users/tony/projects/litac-lang/stdlib/std/system/system.lita"
 litaC_std__assert__assert(!(litaC_std__system__FileExists("rodgers")), __FILE__, __LINE__);
 }
 
@@ -30516,756 +31520,114 @@ litaC_std__time__DateTime_isoFormat(&((litaC_this)), &(litaC_sb->asBuffer));
 }
 
 
-#line 37 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__http__HeadersInit(litaC_i32 litaC_initialSize,const litaC_std__mem__Allocator* litaC_allocator) {
-#line 38 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_headers =  {0};
-
-#line 39 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__Map_init_cb_std__builtins__String_c_std__builtins__String_ce_(&((litaC_headers)), (litaC_std__builtins__String) {0}, litaC_initialSize, litaC_allocator, (litaC_std__builtins__String) {0});
-
-#line 40 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_headers;
-
-}
-
-
-#line 82 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_init(litaC_std__http__Http* litaC_this,litaC_std__http__HttpOptions* litaC_options,const litaC_std__mem__Allocator* litaC_allocator) {
-#line 85 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-#line 87 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_this->options = *(litaC_options);
-
-#line 88 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_this->allocator = litaC_allocator;
-
-#line 90 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(curl_global_init(CURL_GLOBAL_ALL) != CURLE_OK) {{
-#line 92 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_false;
-
-
-}
-} 
-
-
-#line 95 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_true;
-
-}
-
-
-#line 98 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void litaC_std__http__Http_free(litaC_std__http__Http* litaC_this) {
-#line 99 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_global_cleanup();
-}
-
-
-#line 107 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void litaC_std__http__Http_setProxy(litaC_std__http__Http* litaC_this,const litaC_char* litaC_proxy) {
-#line 108 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_this->options.proxy = litaC_proxy;
-}
-
-
-#line 114 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_get(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp) {
-#line 115 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpRequest litaC_req =  {
-#line 116 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.url = litaC_url,
-
-#line 117 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.type = litaC_std__http__HttpRequestType_GET,
-
-#line 118 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.body =  {
-#line 119 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.kind = litaC_std__http__HttpBodyKind_NONE}};
-
-#line 122 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_std__http__Http_makeRequest(litaC_this, &(litaC_req), litaC_resp);
-
-}
-
-
-#line 128 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_head(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp) {
-#line 129 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpRequest litaC_req =  {
-#line 130 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.url = litaC_url,
-
-#line 131 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.type = litaC_std__http__HttpRequestType_HEAD,
-
-#line 132 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.body =  {
-#line 133 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.kind = litaC_std__http__HttpBodyKind_NONE}};
-
-#line 136 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_std__http__Http_makeRequest(litaC_this, &(litaC_req), litaC_resp);
-
-}
-
-
-#line 142 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_delete(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp) {
-#line 143 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpRequest litaC_req =  {
-#line 144 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.url = litaC_url,
-
-#line 145 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.type = litaC_std__http__HttpRequestType_DELETE,
-
-#line 146 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.body =  {
-#line 147 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.kind = litaC_std__http__HttpBodyKind_NONE}};
-
-#line 150 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_std__http__Http_makeRequest(litaC_this, &(litaC_req), litaC_resp);
-
-}
-
-
-#line 156 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_post(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp,litaC_std__builtins__String litaC_body,litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_headers) {
-#line 161 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-#line 162 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpRequest litaC_req =  {
-#line 163 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.url = litaC_url,
-
-#line 164 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.type = litaC_std__http__HttpRequestType_POST,
-
-#line 165 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.body =  {
-#line 166 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.kind = litaC_std__http__HttpBodyKind_BODY,
-
-#line 167 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.data = litaC_body}};
-
-#line 170 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(litaC_headers) {{
-#line 171 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_req.headers = *(litaC_headers);
-
-}
-} 
-
-
-#line 173 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_std__http__Http_makeRequest(litaC_this, &(litaC_req), litaC_resp);
-
-}
-
-
-#line 179 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_put(litaC_std__http__Http* litaC_this,const litaC_char* litaC_url,litaC_std__http__HttpResponse* litaC_resp,litaC_std__builtins__String litaC_body,litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_headers) {
-#line 184 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-#line 185 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpRequest litaC_req =  {
-#line 186 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.url = litaC_url,
-
-#line 187 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.type = litaC_std__http__HttpRequestType_PUT,
-
-#line 188 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.body =  {
-#line 189 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.kind = litaC_std__http__HttpBodyKind_BODY,
-
-#line 190 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.data = litaC_body}};
-
-#line 193 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_std__http__Http_makeRequest(litaC_this, &(litaC_req), litaC_resp);
-
-}
-
-
-#line 196 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_bool litaC_std__http__Http_makeRequest(litaC_std__http__Http* litaC_this,litaC_std__http__HttpRequest* litaC_req,litaC_std__http__HttpResponse* litaC_resp) {
-#line 197 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-CURL* litaC_curl = curl_easy_init();
-
-#line 198 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(!(litaC_curl)) {{
-#line 199 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_resp->statusCode = -(1);
-
-#line 200 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_false;
-
-
-}
-} 
-
-
-#line 203 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-
-#line 205 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_URL, litaC_req->url);
-
-#line 206 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_ACCEPT_ENCODING, "");
-
-#line 207 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_NOPROGRESS, 1L);
-
-#line 208 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_FOLLOWLOCATION, 1L);
-
-#line 209 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_MAXREDIRS, 8L);
-
-#line 212 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_SSL_VERIFYPEER, litaC_false);
-
-#line 215 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(litaC_this->options.proxy) {{
-#line 216 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_PROXY, litaC_this->options.proxy);
-
-}
-} 
-
-
-#line 219 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_WRITEFUNCTION, (litaC_void*)(&(litaC_std__http__HttpWriteCallback)));
-
-#line 220 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_WRITEDATA, litaC_resp);
-
-#line 222 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_HEADERFUNCTION, (litaC_void*)(&(litaC_std__http__HttpHeadersCallback)));
-
-#line 223 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_HEADERDATA, litaC_resp);
-
-#line 225 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-switch(litaC_req->type) {
-#line 226 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-case litaC_std__http__HttpRequestType_GET: {{
-#line 227 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_HTTPGET, 1L);
-
-#line 228 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-break;
-
-}
-
-}
-
-#line 230 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-case litaC_std__http__HttpRequestType_POST: {{
-#line 231 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_POST, 1L);
-
-#line 232 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-break;
-
-}
-
-}
-
-#line 234 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-case litaC_std__http__HttpRequestType_HEAD: {{
-#line 235 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_NOBODY, 1L);
-
-#line 236 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-break;
-
-}
-
-}
-default: 
-#line 238 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-{{
-#line 239 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(litaC_req->type >= litaC_std__http__HttpRequestType_MAX_REQUEST_TYPE) {{
-#line 240 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-break;
-
-}
-} 
-
-
-#line 243 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(
-#line 244 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_curl, 
-#line 245 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-CURLOPT_CUSTOMREQUEST, 
-#line 246 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__requestTypeLookup[litaC_req->type]);
-
-#line 248 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-break;
-
-}
-
-}}
-
-#line 253 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(litaC_req->body.kind == litaC_std__http__HttpBodyKind_BODY) {{
-#line 254 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_POSTFIELDS, litaC_req->body.data.buffer);
-
-#line 255 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_POSTFIELDSIZE, litaC_req->body.data.length);
-
-}
-} else {
-#line 256 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(litaC_req->body.kind == litaC_std__http__HttpBodyKind_STREAM) {{
-#line 258 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_UPLOAD, 1L);
-
-#line 259 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_READFUNCTION, litaC_req->body.data.buffer);
-
-#line 260 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_READDATA, litaC_req->body.data.length);
-
-#line 261 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_INFILESIZE_LARGE, litaC_req->body.data.buffer);
-
-}
-} 
-} 
-
-
-#line 264 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(!(litaC_std__map__std__map__Map_empty_cb_std__builtins__String_c_std__builtins__String_ce_(&((litaC_req->headers))))) {{
-#line 267 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__string__builder__StringBuilder litaC_sb = litaC_std__string__builder__StringBuilderInit(1024, litaC_this->allocator);
-
-#line 268 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-
-#line 270 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_slist* litaC_headers = NULL;
-
-#line 272 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_iter = litaC_std__map__std__map__Map_iter_cb_std__builtins__String_c_std__builtins__String_ce_(&((litaC_req->headers)));
-
-#line 273 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-while(litaC_std__map__std__map__MapIterator_hasNext_cb_std__builtins__String_c_std__builtins__String_ce_(&((litaC_iter)))) {{
-#line 274 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_header = litaC_std__map__std__map__MapIterator_next_cb_std__builtins__String_c_std__builtins__String_ce_(&((litaC_iter)));
-
-#line 276 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_sb)), "%.*s: %.*s", 
-#line 277 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_header.key.length, litaC_header.key.buffer, 
-#line 278 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_header.value.length, litaC_header.value.buffer);
-
-#line 280 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_headers = curl_slist_append(litaC_headers, litaC_std__string__builder__StringBuilder_cStr(&((litaC_sb))));
-
-#line 281 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__string__builder__StringBuilder_clear(&((litaC_sb)));
-
-}}
-
-#line 284 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_setopt(litaC_curl, CURLOPT_HTTPHEADER, litaC_headers);
-
-#line 268 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__string__builder__StringBuilder_free(&((litaC_sb)));
-
-}
-} 
-
-
-#line 287 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-CURLcode litaC_curlRes = curl_easy_perform(litaC_curl);
-
-#line 288 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(litaC_curlRes) {{
-#line 289 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-const litaC_char* litaC_body = curl_easy_strerror(litaC_curlRes);
-
-#line 290 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpWriteCallback((litaC_void*)litaC_body, litaC_std__string__char_length(litaC_body), 1, litaC_resp);
-
-#line 292 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_resp->statusCode = -(1);
-
-#line 293 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-{litaC_bool ___result = litaC_false;
-
-#line 203 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_cleanup(litaC_curl);
-return ___result;
-}
-
-
-}
-} 
-
-
-#line 296 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_i64 litaC_code = 0L;
-
-#line 297 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_getinfo(litaC_curl, CURLINFO_RESPONSE_CODE, &(litaC_code));
-
-#line 298 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_resp->statusCode = (litaC_i32)litaC_code;
-
-#line 300 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-{litaC_bool ___result = litaC_true;
-
-#line 203 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-curl_easy_cleanup(litaC_curl);
-return ___result;
-}
-
-curl_easy_cleanup(litaC_curl);
-}
-
-
-#line 303 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_usize litaC_std__http__HttpWriteCallback(litaC_void* litaC_data,litaC_usize litaC_size,litaC_usize litaC_n,litaC_void* litaC_userdata) {
-#line 304 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_usize litaC_totalSize = litaC_size * litaC_n;
-
-#line 305 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__assert__assert(litaC_totalSize < litaC_std__limits__MAX_I32, __FILE__, __LINE__);
-
-#line 307 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpResponse* litaC_resp = (litaC_std__http__HttpResponse*)litaC_userdata;
-
-#line 308 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(litaC_resp->bodyFn) {{
-#line 309 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_resp->bodyFn(litaC_data, litaC_size, litaC_n, litaC_resp->userdata);
-
-
-}
-} 
-
-
-#line 312 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(!(litaC_std__string__builder__StringBuilder_reserve(&((litaC_resp->body)), (litaC_i32)litaC_totalSize))) {{
-#line 313 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return 0;
-
-
-}
-} 
-
-
-#line 317 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-memcpy(
-#line 318 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-&(litaC_resp->body.asBuffer.buffer[litaC_resp->body.asBuffer.length]), 
-#line 319 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_data, 
-#line 320 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_totalSize);
-
-#line 323 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_resp->body.asBuffer.length += (litaC_i32)litaC_totalSize;
-
-#line 325 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_totalSize;
-
-}
-
-
-#line 328 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_usize litaC_std__http__HttpHeadersCallback(litaC_void* litaC_data,litaC_usize litaC_size,litaC_usize litaC_n,litaC_void* litaC_userdata) {
-#line 329 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_usize litaC_totalSize = litaC_size * litaC_n;
-
-#line 330 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpResponse* litaC_resp = (litaC_std__http__HttpResponse*)litaC_userdata;
-
-#line 334 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__string__builder__StringBuilder litaC_builder = litaC_std__string__builder__StringBuilderInit((litaC_i32)litaC_totalSize, litaC_resp->headers.allocator);
-
-#line 335 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__string__builder__StringBuilder_appendStrn(&((litaC_builder)), (const litaC_char*)litaC_data, (litaC_i32)litaC_totalSize);
-
-#line 337 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__builtins__String litaC_buffer = litaC_std__string__buffer__StringBuffer_toString(litaC_builder.asBuffer);
-
-#line 338 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-if(litaC_resp->headers.capacity > 0) {{
-#line 339 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_i32 litaC_index = litaC_std__string__String_indexOf(litaC_buffer, (litaC_std__builtins__String) { .buffer = ":", .length = 1 });
-
-#line 340 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__builtins__String litaC_key = litaC_std__string__String_trim(litaC_std__string__String_substring(litaC_buffer, 0, litaC_index));
-
-#line 341 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__builtins__String litaC_value = litaC_std__string__String_trim(litaC_std__string__String_substring(litaC_buffer, litaC_index + 1, -(
-#line 34 "/Users/tony/projects/litac-lang/stdlib/std/string/string.lita"
-1)));
-
-#line 342 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__Map_put_cb_std__builtins__String_c_std__builtins__String_ce_(&((litaC_resp->headers)), litaC_key, litaC_value);
-
-}
-} 
-
-
-#line 344 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-return litaC_totalSize;
-
-}
-
-
-#line 348 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_void litaC_std__http__testFileDownload(void) {
-#line 349 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http litaC_http =  {0};
-
-#line 350 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_init(&((litaC_http)), &(((litaC_std__http__HttpOptions) {0})), litaC_std__mem__defaultAllocator);
-
-#line 351 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-
-#line 353 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__string__builder__StringBuilder litaC_body =  {0};
-
-#line 354 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__string__builder__StringBuilder_init(&((litaC_body)), 256, NULL);
-
-#line 357 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpResponse litaC_resp =  {
-#line 358 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.body = litaC_body};
-
-#line 360 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_get(&((litaC_http)), "https://curl.se/libcurl/c/CURLOPT_POST.html", &(litaC_resp));
-
-#line 362 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-printf("Status: %d\n%s\n", litaC_resp.statusCode, litaC_std__string__builder__StringBuilder_cStr(&((litaC_resp.body))));
-
-#line 351 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_free(&((litaC_http)));
-}
-
-
-#line 367 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-litaC_void litaC_std__http__testPost(void) {
-#line 368 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http litaC_http =  {0};
-
-#line 369 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_init(&((litaC_http)), &(((litaC_std__http__HttpOptions) {0})), litaC_std__mem__defaultAllocator);
-
-#line 370 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-
-#line 372 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpResponse litaC_resp =  {
-#line 373 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.body = litaC_std__string__builder__StringBuilderInit(1024, NULL)};
-
-#line 375 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_post(&((litaC_http)), "https://httpbin.org/post", &(litaC_resp), (litaC_std__builtins__String) { .buffer = "name=tony", .length = 9 }, NULL);
-
-#line 376 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-printf("Status: %d\n%s\n", litaC_resp.statusCode, litaC_std__string__builder__StringBuilder_cStr(&((litaC_resp.body))));
-
-#line 370 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_free(&((litaC_http)));
-}
-
-
-#line 381 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-litaC_void litaC_std__http__testPostJson(void) {
-#line 382 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http litaC_http =  {0};
-
-#line 383 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_init(&((litaC_http)), &(((litaC_std__http__HttpOptions) {0})), litaC_std__mem__defaultAllocator);
-
-#line 384 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-
-#line 386 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpResponse litaC_resp =  {
-#line 387 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.body = litaC_std__string__builder__StringBuilderInit(1024, NULL)};
-
-#line 389 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__builtins__String litaC_json = litaC_std__string__char_toString("\n        {\n            \"name\" : \"sparks\"\n        }\n    ");
-
-#line 395 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_headers = litaC_std__http__HeadersInit(16, litaC_std__mem__defaultAllocator);
-
-#line 396 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__map__std__map__Map_put_cb_std__builtins__String_c_std__builtins__String_ce_(&((litaC_headers)), (litaC_std__builtins__String) { .buffer = "Content-Type", .length = 12 }, (litaC_std__builtins__String) { .buffer = "application/json", .length = 16 });
-
-#line 398 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_post(&((litaC_http)), "https://httpbin.org/post", &(litaC_resp), litaC_json, &(litaC_headers));
-
-#line 399 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-printf("Status: %d\n%s\n", litaC_resp.statusCode, litaC_std__string__builder__StringBuilder_cStr(&((litaC_resp.body))));
-
-#line 384 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_free(&((litaC_http)));
-}
-
-
-#line 403 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-litaC_void litaC_std__http__testDelete(void) {
-#line 404 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http litaC_http =  {0};
-
-#line 405 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_init(&((litaC_http)), &(((litaC_std__http__HttpOptions) {0})), litaC_std__mem__defaultAllocator);
-
-#line 406 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-
-
-#line 408 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__HttpResponse litaC_resp =  {
-#line 409 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-.body = litaC_std__string__builder__StringBuilderInit(1024, NULL)};
-
-#line 412 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_delete(&((litaC_http)), "https://httpbin.org/delete", &(litaC_resp));
-
-#line 413 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-printf("Status: %d\n%s\n", litaC_resp.statusCode, litaC_std__string__builder__StringBuilder_cStr(&((litaC_resp.body))));
-
-#line 406 "/Users/tony/projects/litac-lang/stdlib/std/http/http.lita"
-litaC_std__http__Http_free(&((litaC_http)));
-}
-
-
-#line 281 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 290 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_init(litaC_std__thread__thread_posix__Mutex* litaC_this,litaC_i32 litaC_type) {
-#line 282 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 291 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_mutexattr_t litaC_attr = {0};
 
-#line 283 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 292 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_mutexattr_init(&(litaC_attr));
 
-#line 285 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 294 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(litaC_type & litaC_std__thread__thread_posix__MutexType_RECURSIVE) {{
-#line 286 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 295 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_mutexattr_settype(&(litaC_attr), PTHREAD_MUTEX_RECURSIVE);
 
 }
 } 
 
 
-#line 289 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 298 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_ret = pthread_mutex_init(&((litaC_this->mtx)), &(litaC_attr));
 
-#line 290 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 299 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_mutexattr_destroy(&(litaC_attr));
 
-#line 291 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 300 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return (litaC_ret == 0) ? litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 }
 
 
-#line 294 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 303 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__Mutex_destroy(litaC_std__thread__thread_posix__Mutex* litaC_this) {
-#line 295 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 304 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_mutex_destroy(&((litaC_this->mtx)));
 }
 
 
-#line 298 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 307 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_lock(litaC_std__thread__thread_posix__Mutex* litaC_this) {
-#line 299 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-return 
-#line 300 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-(
-#line 299 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-pthread_mutex_lock(&((litaC_this->mtx))) == 0) ? 
-#line 300 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
-
-}
-
-
-#line 303 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_tryLock(litaC_std__thread__thread_posix__Mutex* litaC_this) {
-#line 304 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-return 
-#line 305 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-(
-#line 304 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-(pthread_mutex_trylock(&((litaC_this->mtx))) == 0)) ? 
-#line 305 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
-
-}
-
-
 #line 308 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_unlock(litaC_std__thread__thread_posix__Mutex* litaC_this) {
-#line 309 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return 
-#line 310 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-(
 #line 309 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-pthread_mutex_unlock(&((litaC_this->mtx))) == 0) ? 
-#line 310 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+(
+#line 308 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+pthread_mutex_lock(&((litaC_this->mtx))) == 0) ? 
+#line 309 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 }
 
 
+#line 312 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_tryLock(litaC_std__thread__thread_posix__Mutex* litaC_this) {
 #line 313 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_timedLock(litaC_std__thread__thread_posix__Mutex* litaC_this,litaC_std__thread__thread_posix__TimeSpec* litaC_timeSpec) {
+return 
 #line 314 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+(
+#line 313 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+(pthread_mutex_trylock(&((litaC_this->mtx))) == 0)) ? 
+#line 314 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
+
+}
+
+
+#line 317 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_unlock(litaC_std__thread__thread_posix__Mutex* litaC_this) {
+#line 318 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+return 
+#line 319 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+(
+#line 318 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+pthread_mutex_unlock(&((litaC_this->mtx))) == 0) ? 
+#line 319 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
+
+}
+
+
+#line 322 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Mutex_timedLock(litaC_std__thread__thread_posix__Mutex* litaC_this,litaC_std__thread__thread_posix__TimeSpec* litaC_timeSpec) {
+#line 323 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 timespec litaC_ts = litaC_timeSpec->ts;
 
-#line 316 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 325 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 
 #if defined(_POSIX_TIMEOUTS) && (_POSIX_TIMEOUTS >= 200112L) && defined(_POSIX_THREADS) && (_POSIX_THREADS >= 200112L)
 
-#line 317 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 326 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 switch(pthread_mutex_timedlock(&((litaC_this->mtx)), &((litaC_ts)))) {
-#line 318 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 327 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 case 0: 
-#line 319 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 328 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 {return litaC_std__thread__thread_posix__ThreadStatus_SUCCESS;
 
 
 }
 
-#line 320 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 329 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 case ETIMEDOUT: 
-#line 321 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 330 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 {return litaC_std__thread__thread_posix__ThreadStatus_TIMEDOUT;
 
 
 }
 default: 
-#line 322 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 331 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 {
-#line 323 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 332 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 
@@ -31273,88 +31635,88 @@ return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 #else
 
-#line 326 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 335 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_rc = 0;
 
-#line 327 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 336 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 timespec litaC_cur = {0};
 
-#line 328 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 337 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 timespec litaC_dur = {0};
 
-#line 331 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 340 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 while((litaC_rc = pthread_mutex_trylock(&((litaC_this->mtx)))) == EBUSY) {{
-#line 332 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 341 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 timespec_get(&(litaC_cur), TIME_UTC);
 
-#line 334 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 343 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if((litaC_cur.tv_sec > litaC_ts.tv_sec) || ((litaC_cur.tv_sec == litaC_ts.tv_sec) && (litaC_cur.tv_nsec >= litaC_ts.tv_nsec))) {{
-#line 335 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 344 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 break;
 
 }
 } 
 
 
-#line 338 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 347 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_dur.tv_sec = litaC_ts.tv_sec - litaC_cur.tv_sec;
 
-#line 339 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 348 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_dur.tv_nsec = litaC_ts.tv_nsec - litaC_cur.tv_nsec;
 
-#line 340 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 349 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(litaC_dur.tv_nsec < 0) {{
-#line 341 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 350 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_dur.tv_sec -= 1;
 
-#line 342 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 351 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_dur.tv_nsec += 1000000000;
 
 }
 } 
 
 
-#line 345 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 354 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if((litaC_dur.tv_sec != 0) || (litaC_dur.tv_nsec > 5000000)) {{
-#line 346 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 355 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_dur.tv_sec = 0;
 
-#line 347 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 356 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_dur.tv_nsec = 5000000;
 
 }
 } 
 
 
-#line 350 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 359 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 nanosleep(&(litaC_dur), NULL);
 
 }}
 
-#line 353 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 362 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 switch(litaC_rc) {
-#line 354 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 363 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 case 0: 
-#line 355 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 364 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 {return litaC_std__thread__thread_posix__ThreadStatus_SUCCESS;
 
 
 }
 
-#line 356 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 365 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 case ETIMEDOUT: 
-#line 357 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 366 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 
 case EBUSY: 
-#line 358 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 367 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 {return litaC_std__thread__thread_posix__ThreadStatus_TIMEDOUT;
 
 
 }
 default: 
-#line 359 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 368 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 {
-#line 360 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 369 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 
@@ -31363,83 +31725,83 @@ return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 #endif
 
 
-#line 363 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 372 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_SUCCESS;
 
 }
 
 
-#line 377 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 386 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_init(litaC_std__thread__thread_posix__Cond* litaC_this) {
-#line 378 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 387 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return 
-#line 379 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 388 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 (
-#line 378 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 387 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_cond_init(&((litaC_this->cond)), NULL) == 0) ? 
-#line 379 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 388 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 }
 
 
-#line 382 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 391 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__Cond_destroy(litaC_std__thread__thread_posix__Cond* litaC_this) {
-#line 383 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 392 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_cond_destroy(&((litaC_this->cond)));
 }
 
 
-#line 387 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 396 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_signal(litaC_std__thread__thread_posix__Cond* litaC_this) {
-#line 388 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 397 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return 
-#line 389 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-(
-#line 388 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-pthread_cond_signal(&((litaC_this->cond))) == 0) ? 
-#line 389 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
-
-}
-
-
-#line 392 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_broadcast(litaC_std__thread__thread_posix__Cond* litaC_this) {
-#line 393 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-return 
-#line 394 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-(
-#line 393 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-pthread_cond_broadcast(&((litaC_this->cond))) == 0) ? 
-#line 394 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
-
-}
-
-
 #line 398 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_wait(litaC_std__thread__thread_posix__Cond* litaC_this,litaC_std__thread__thread_posix__Mutex* litaC_mtx) {
-#line 399 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-return 
-#line 400 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 (
-#line 399 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-pthread_cond_wait(&((litaC_this->cond)), &((litaC_mtx->mtx))) == 0) ? 
-#line 400 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 397 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+pthread_cond_signal(&((litaC_this->cond))) == 0) ? 
+#line 398 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 }
 
 
+#line 401 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_broadcast(litaC_std__thread__thread_posix__Cond* litaC_this) {
+#line 402 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+return 
 #line 403 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+(
+#line 402 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+pthread_cond_broadcast(&((litaC_this->cond))) == 0) ? 
+#line 403 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
+
+}
+
+
+#line 407 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_wait(litaC_std__thread__thread_posix__Cond* litaC_this,litaC_std__thread__thread_posix__Mutex* litaC_mtx) {
+#line 408 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+return 
+#line 409 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+(
+#line 408 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+pthread_cond_wait(&((litaC_this->cond)), &((litaC_mtx->mtx))) == 0) ? 
+#line 409 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
+
+}
+
+
+#line 412 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Cond_timedWait(litaC_std__thread__thread_posix__Cond* litaC_this,litaC_std__thread__thread_posix__Mutex* litaC_mtx,const litaC_std__thread__thread_posix__TimeSpec* litaC_ts) {
-#line 405 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 414 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_ret = pthread_cond_timedwait(&((litaC_this->cond)), &((litaC_mtx->mtx)), &((litaC_ts->ts)));
 
-#line 406 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 415 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(litaC_ret == ETIMEDOUT) {{
-#line 407 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 416 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_TIMEDOUT;
 
 
@@ -31447,48 +31809,48 @@ return litaC_std__thread__thread_posix__ThreadStatus_TIMEDOUT;
 } 
 
 
-#line 409 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 418 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return (litaC_ret == 0) ? litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 }
 
 
-#line 418 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 427 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void* litaC_std__thread__thread_posix___thrd_wrapper_function(litaC_void* litaC_aArg) {
-#line 420 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 429 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStartInfo* litaC_ti = (litaC_std__thread__thread_posix__ThreadStartInfo*)litaC_aArg;
 
-#line 421 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 430 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 (*litaC_fun)(litaC_void*) = litaC_ti->mFunction;
 
-#line 422 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 431 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void* litaC_arg = litaC_ti->mArg;
 
-#line 424 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 433 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_ti->thread->threadId = (litaC_i32)gettid();
 
-#line 427 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 436 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__mem__Allocator_free(litaC_ti->allocator, (litaC_void*)litaC_ti);
 
-#line 430 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 439 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_res = litaC_fun(litaC_arg);
 
-#line 432 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 441 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return (litaC_void*)((litaC_usize)litaC_res);
 
 }
 
 
-#line 451 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 460 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_create(litaC_std__thread__thread_posix__Thread* litaC_this,litaC_i32 (*litaC_fun)(litaC_void*),litaC_void* litaC_arg,const litaC_std__mem__Allocator* litaC_allocator) {
-#line 454 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 463 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 
-#line 458 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 467 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStartInfo* litaC_ti = (litaC_std__thread__thread_posix__ThreadStartInfo*)litaC_std__mem__Allocator_alloc(litaC_allocator, sizeof(litaC_std__thread__thread_posix__ThreadStartInfo));
 
-#line 459 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 468 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(litaC_ti == NULL) {{
-#line 460 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 469 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_NOMEM;
 
 
@@ -31496,33 +31858,33 @@ return litaC_std__thread__thread_posix__ThreadStatus_NOMEM;
 } 
 
 
-#line 462 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 471 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_ti->mFunction = litaC_fun;
 
-#line 463 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 472 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_ti->mArg = litaC_arg;
 
-#line 464 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 473 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_ti->allocator = litaC_allocator;
 
-#line 465 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 474 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_ti->thread = litaC_this;
 
-#line 472 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 481 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(pthread_create(&(litaC_this->thrd), NULL, litaC_std__thread__thread_posix___thrd_wrapper_function, (litaC_void*)litaC_ti) != 0) {{
-#line 473 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 482 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_this->thrd = 0;
 
 }
 } 
 
 
-#line 477 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 486 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(!(litaC_this->thrd)) {{
-#line 478 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 487 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__mem__Allocator_free(litaC_allocator, litaC_ti);
 
-#line 479 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 488 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 
@@ -31530,66 +31892,66 @@ return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 } 
 
 
-#line 482 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 491 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_SUCCESS;
 
 }
 
 
-#line 485 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 494 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_resume(litaC_std__thread__thread_posix__Thread* litaC_thr) {
-#line 487 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 496 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 }
 
 
-#line 490 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 499 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_suspend(litaC_std__thread__thread_posix__Thread* litaC_thr) {
-#line 492 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
-
-}
-
-
-#line 495 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_detach(litaC_std__thread__thread_posix__Thread litaC_this) {
-#line 496 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-return 
-#line 497 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-(
-#line 496 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-pthread_detach(litaC_this.thrd) == 0) ? 
-#line 497 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
-
-}
-
-
-#line 500 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_i32 litaC_std__thread__thread_posix__Thread_id(litaC_std__thread__thread_posix__Thread litaC_this) {
 #line 501 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-return litaC_this.threadId;
+return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 }
 
 
 #line 504 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
-litaC_bool litaC_std__thread__thread_posix__Thread_equal(litaC_std__thread__thread_posix__Thread litaC_this,litaC_std__thread__thread_posix__Thread litaC_other) {
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_detach(litaC_std__thread__thread_posix__Thread litaC_this) {
 #line 505 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+return 
+#line 506 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+(
+#line 505 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+pthread_detach(litaC_this.thrd) == 0) ? 
+#line 506 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_std__thread__thread_posix__ThreadStatus_SUCCESS : litaC_std__thread__thread_posix__ThreadStatus_ERROR;
+
+}
+
+
+#line 509 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_i32 litaC_std__thread__thread_posix__Thread_id(litaC_std__thread__thread_posix__Thread litaC_this) {
+#line 510 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+return litaC_this.threadId;
+
+}
+
+
+#line 513 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+litaC_bool litaC_std__thread__thread_posix__Thread_equal(litaC_std__thread__thread_posix__Thread litaC_this,litaC_std__thread__thread_posix__Thread litaC_other) {
+#line 514 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return pthread_equal(litaC_this.thrd, litaC_other.thrd);
 
 }
 
 
-#line 508 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 517 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__thread_posix__Thread_join(litaC_std__thread__thread_posix__Thread litaC_this,litaC_i32* litaC_res) {
-#line 509 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 518 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void* litaC_pres = NULL;
 
-#line 510 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 519 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(pthread_join(litaC_this.thrd, &(litaC_pres)) != 0) {{
-#line 511 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 520 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 
 
@@ -31597,91 +31959,91 @@ return litaC_std__thread__thread_posix__ThreadStatus_ERROR;
 } 
 
 
-#line 514 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 523 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(litaC_res != NULL) {{
-#line 515 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 524 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 *(litaC_res) = (litaC_i32)((litaC_usize)litaC_pres);
 
 }
 } 
 
 
-#line 517 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 526 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return litaC_std__thread__thread_posix__ThreadStatus_SUCCESS;
 
 }
 
 
-#line 520 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 529 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__Thread_destroy(litaC_std__thread__thread_posix__Thread litaC_this) {
-#line 521 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 530 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_cancel(litaC_this.thrd);
 }
 
 
-#line 524 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 533 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__Thread_yield(litaC_std__thread__thread_posix__Thread litaC_this) {
-#line 525 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 534 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 sched_yield();
 }
 
 
-#line 528 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 537 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Thread litaC_std__thread__thread_posix__ThreadCurrent(void) {
-#line 529 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 538 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_t litaC_thrd = pthread_self();
 
-#line 530 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 539 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return (litaC_std__thread__thread_posix__Thread) {
-#line 531 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 540 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_thrd,
 
-#line 532 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 541 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 gettid()};
 
 }
 
 
-#line 537 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 546 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 TTHREAD_NORETURN 
 litaC_void litaC_std__thread__thread_posix__ThreadExit(litaC_i32 litaC_res) {
-#line 538 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 547 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 pthread_exit(&(litaC_res));
 }
 
 
-#line 541 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 550 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_std__thread__thread_posix__ThreadSleepMSec(litaC_i64 litaC_msec) {
-#line 542 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 551 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__TimeSpec litaC_duration =  {
-#line 543 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 552 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 .sec = litaC_msec / 1000L,
 
-#line 544 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 553 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 .nsec = (litaC_msec % 1000L) * 1000000L};
 
-#line 547 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 556 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_res = nanosleep(&((litaC_duration.ts)), NULL);
 
-#line 548 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 557 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(litaC_res == 0) {{
-#line 549 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 558 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return 0;
 
 
 }
 } else {
-#line 550 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 559 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(errno == EINTR) {{
-#line 551 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 560 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return -(1);
 
 
 }
 } else {
-#line 552 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 561 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 {
-#line 553 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 562 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return -(2);
 
 
@@ -31691,30 +32053,30 @@ return -(2);
 }
 
 
-#line 558 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 567 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_std__thread__thread_posix__ThreadSleep(litaC_std__thread__thread_posix__TimeSpec* litaC_duration,litaC_std__thread__thread_posix__TimeSpec* litaC_remaining) {
-#line 559 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 568 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_res = nanosleep(&((litaC_duration->ts)), &((litaC_remaining->ts)));
 
-#line 560 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 569 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(litaC_res == 0) {{
-#line 561 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 570 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return 0;
 
 
 }
 } else {
-#line 562 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 571 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(errno == EINTR) {{
-#line 563 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 572 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return -(1);
 
 
 }
 } else {
-#line 564 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 573 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 {
-#line 565 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 574 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return -(2);
 
 
@@ -31724,49 +32086,49 @@ return -(2);
 }
 
 
-#line 569 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 578 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_u32 litaC_std__thread__thread_posix__GetNumberOfSystemThreads(void) {
-#line 570 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 579 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i64 litaC_result = sysconf(_SC_NPROCESSORS_ONLN);
 
-#line 571 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 580 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(litaC_result < 1) {{
-#line 572 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 581 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_result = 1;
 
 }
 } 
 
 
-#line 574 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 583 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return (litaC_u32)litaC_result;
 
 }
 
 
-#line 579 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 588 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void litaC_std__thread__thread_posix__ThreadPrintStackTrace(FILE* litaC_fd) {
-#line 580 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 589 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 
 #define litaC_SIZE (256)
 
-#line 581 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 590 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_void* litaC_buffer[256] = {0};
 
-#line 582 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 591 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_size = backtrace(litaC_buffer, litaC_SIZE);
 
-#line 583 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 592 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_char** litaC_result = backtrace_symbols(litaC_buffer, litaC_size);
 
-#line 584 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 593 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 
 
-#line 585 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 594 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 if(litaC_result) {{
-#line 586 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 595 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 for(litaC_i32 litaC_i = 0;litaC_i < litaC_size;litaC_i += 1) {{
-#line 587 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 596 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 fprintf(litaC_fd, "%s\n", litaC_result[litaC_i]);
 
 }}
@@ -31775,316 +32137,87 @@ fprintf(litaC_fd, "%s\n", litaC_result[litaC_i]);
 } 
 
 
-#line 584 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 593 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 free(litaC_result);
 #undef litaC_SIZE
 }
 
 
-#line 598 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 607 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_std__thread__thread_posix__threadFunction(litaC_void* litaC_arg) {
-#line 599 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 608 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Arg* litaC_x = (litaC_std__thread__thread_posix__Arg*)litaC_arg;
 
-#line 600 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 609 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 printf("Processing thread: %d with value: %d\n", litaC_std__thread__thread_posix__Thread_id(litaC_std__thread__thread_posix__ThreadCurrent()), litaC_x->state);
 
-#line 602 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 611 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Mutex_lock(litaC_x->mtx);
 
-#line 603 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 612 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_x->state += 1;
 
-#line 604 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 613 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Mutex_unlock(litaC_x->mtx);
 
-#line 606 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 615 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 return 0;
 
 }
 
 
-#line 610 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 619 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 
 litaC_void litaC_std__thread__thread_posix__testThreads(void) {
-#line 611 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 620 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Mutex litaC_mtx =  {0};
 
-#line 613 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 622 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Mutex_init(&((litaC_mtx)), litaC_std__thread__thread_posix__MutexType_PLAIN);
 
-#line 614 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 623 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 
 
-#line 616 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 625 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Arg litaC_arg =  {
-#line 617 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 626 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 .state = 1,
 
-#line 618 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 627 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 .mtx = &(litaC_mtx)};
 
-#line 621 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 630 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_u32 litaC_NTHREADS = litaC_std__thread__thread_posix__GetNumberOfSystemThreads();
 
-#line 623 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 632 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 printf("Spawning threads: %d\n", litaC_NTHREADS);
 
-#line 624 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 633 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 for(litaC_i32 litaC_i = 0;litaC_i < litaC_NTHREADS;litaC_i += 1) {{
-#line 625 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 634 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Thread litaC_thread =  {0};
 
-#line 626 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 635 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Thread_create(&((litaC_thread)), litaC_std__thread__thread_posix__threadFunction, &(litaC_arg), litaC_std__mem__defaultAllocator);
 
 }}
 
-#line 629 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 638 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__TimeSpec litaC_duration =  {
-#line 630 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 639 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 .sec = 3};
 
-#line 633 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 642 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__ThreadSleep(&((litaC_duration)), NULL);
 
-#line 635 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 644 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_i32 litaC_res = 0;
 
-#line 637 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 646 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 printf("Done with result: %d\n", litaC_res);
 
-#line 614 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
+#line 623 "/Users/tony/projects/litac-lang/stdlib/std/thread/thread_posix.lita"
 litaC_std__thread__thread_posix__Mutex_destroy(&((litaC_mtx)));
-}
-
-
-#line 33 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_init(litaC_http_connection__HttpConnection* litaC_this,const litaC_std__mem__Allocator* litaC_allocator) {
-#line 34 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_init(&((litaC_this->writeBuffer)), litaC_http_connection__WRITE_BUFFER_SIZE, litaC_allocator);
-
-#line 35 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_init(&((litaC_this->readBuffer)), litaC_http_connection__READ_BUFFER_SIZE, litaC_allocator);
-
-#line 37 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_http_connection__HttpConnection_reset(litaC_this);
-}
-
-
-#line 41 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_free(litaC_http_connection__HttpConnection* litaC_this) {
-#line 42 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_free(&((litaC_this->writeBuffer)));
-
-#line 43 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_free(&((litaC_this->readBuffer)));
-
-#line 44 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__net__net_posix__Socket_close(&((litaC_this->socket)));
-}
-
-
-#line 47 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_reset(litaC_http_connection__HttpConnection* litaC_this) {
-#line 48 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_clear(&((litaC_this->writeBuffer)));
-
-#line 49 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_clear(&((litaC_this->readBuffer)));
-}
-
-
-#line 52 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_close(litaC_http_connection__HttpConnection* litaC_this) {
-#line 53 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__net__net_posix__Socket_close(&((litaC_this->socket)));
-
-#line 54 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_this->socket.socket = 0;
-}
-
-
-#line 58 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_i32 litaC_http_connection__HttpConnection_handle(litaC_http_connection__HttpConnection* litaC_this) {
-#line 59 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-return litaC_this->socket.socket;
-
-}
-
-
-#line 62 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_bool litaC_http_connection__HttpConnection_isConnected(litaC_http_connection__HttpConnection* litaC_this) {
-#line 63 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-return litaC_this->socket.socket > 0;
-
-}
-
-
-#line 67 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_void litaC_http_connection__HttpConnection_bufferContents(litaC_http_connection__HttpConnection* litaC_this,litaC_http_request__HttpRequest* litaC_request,litaC_http_response__HttpResponse* litaC_response,litaC_http_server__HttpConfig* litaC_config) {
-#line 71 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-
-#line 72 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_clear(&((litaC_this->writeBuffer)));
-
-#line 74 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-if(litaC_response->status < 0 || litaC_response->status >= litaC_http_response__MAX_STATUS_CODES) {{
-#line 75 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_response->status = 500;
-
-}
-} 
-
-
-#line 79 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "HTTP/1.1 %d %s\r\n", 
-#line 80 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_response->status, litaC_http_response__STATUS_CODES[litaC_response->status]);
-
-#line 84 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-for(litaC_i32 litaC_i = 0;litaC_i < litaC_response->numberOfHeaders;litaC_i += 1) {{
-#line 85 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_http_request__HttpHeader litaC_header = litaC_response->headers[litaC_i];
-
-#line 86 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "%.*s: %.*s\r\n", 
-#line 87 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_header.name.length, litaC_header.name.buffer, 
-#line 88 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_header.values.length, litaC_header.values.buffer);
-
-}}
-
-#line 93 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Server: Ring/0.0.1 (Linux)\r\n");
-
-#line 96 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-switch(litaC_response->type) {
-#line 97 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-case litaC_http_response__ResponseType_NONE: {break;
-
-}
-
-#line 98 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-case litaC_http_response__ResponseType_BODY: {{
-#line 100 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-if(litaC_request->flags & litaC_http_request__HttpFlags_ACCEPT_DEFLATE_ENCODING) {{
-#line 101 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-if(litaC_response->body.asBuffer.length > litaC_config->compressionEnabledOnBodySizeInBytes) {{
-#line 102 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_i32 litaC_position = litaC_this->writeBuffer.asBuffer.length;
-
-#line 104 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Content-Encoding: deflate\r\n");
-
-#line 105 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "\r\n");
-
-#line 107 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_i32 litaC_bodyStartPosition = litaC_this->writeBuffer.asBuffer.length;
-
-#line 108 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__zip__ZipStatus litaC_zipStatus = litaC_std__zip__ZipCompress(
-#line 109 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-&((litaC_this->writeBuffer)), 
-#line 110 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__buffer__StringBuffer_toString(litaC_response->body.asBuffer), 
-#line 111 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-(litaC_std__zip__ZipCompressionLevel)litaC_config->compressionLevel);
-
-#line 113 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_i32 litaC_bodyEndPosition = litaC_this->writeBuffer.asBuffer.length;
-
-#line 114 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-if(litaC_zipStatus == litaC_std__zip__ZipStatus_OK) {{
-#line 115 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_insert(&((litaC_this->writeBuffer)), 
-#line 116 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_position, 
-#line 117 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-"Content-Length: %zu\r\n", 
-#line 118 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_this->writeBuffer.asBuffer.length - litaC_bodyStartPosition);
-
-#line 120 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__log__Info("Compressed info: Full length: %d, Body length: %d\n", 
-#line 121 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_this->writeBuffer.asBuffer.length, 
-#line 122 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_bodyEndPosition - litaC_bodyStartPosition);
-
-#line 124 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-return;
-
-
-}
-} 
-
-
-#line 128 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_this->writeBuffer.asBuffer.length = litaC_position;
-
-}
-} 
-
-
-}
-} 
-
-
-#line 133 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Content-Length: %zu\r\n", litaC_response->body.asBuffer.length);
-
-#line 134 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "\r\n");
-
-#line 135 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "%.*s", 
-#line 136 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_response->body.asBuffer.length, litaC_response->body.asBuffer.buffer);
-
-#line 138 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-break;
-
-}
-
-}
-
-#line 140 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-case litaC_http_response__ResponseType_FILE: {{
-#line 141 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Content-Length: %zu\r\n", litaC_response->fileSize);
-
-#line 143 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "\r\n");
-
-#line 144 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-break;
-
-}
-
-}
-
-#line 146 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-case litaC_http_response__ResponseType_STREAM: {{
-#line 147 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Transfer-Encoding: chunked\r\n");
-
-#line 149 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "\r\n");
-
-#line 150 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-break;
-
-}
-
-}
-default: 
-#line 152 "/Users/tony/projects/ringhttp/src/http_connection.lita"
-{break;
-
-}}
 }
 
 
@@ -32662,6 +32795,235 @@ close(litaC_this->socket);
 
 #line 181 "/Users/tony/projects/litac-lang/stdlib/std/net/net_posix.lita"
 litaC_this->socket = -(1);
+}
+
+
+#line 33 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_init(litaC_http_connection__HttpConnection* litaC_this,const litaC_std__mem__Allocator* litaC_allocator) {
+#line 34 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_init(&((litaC_this->writeBuffer)), litaC_http_connection__WRITE_BUFFER_SIZE, litaC_allocator);
+
+#line 35 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_init(&((litaC_this->readBuffer)), litaC_http_connection__READ_BUFFER_SIZE, litaC_allocator);
+
+#line 37 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_http_connection__HttpConnection_reset(litaC_this);
+}
+
+
+#line 41 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_free(litaC_http_connection__HttpConnection* litaC_this) {
+#line 42 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_this->writeBuffer)));
+
+#line 43 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_free(&((litaC_this->readBuffer)));
+
+#line 44 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__net__net_posix__Socket_close(&((litaC_this->socket)));
+}
+
+
+#line 47 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_reset(litaC_http_connection__HttpConnection* litaC_this) {
+#line 48 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_clear(&((litaC_this->writeBuffer)));
+
+#line 49 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_clear(&((litaC_this->readBuffer)));
+}
+
+
+#line 52 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_close(litaC_http_connection__HttpConnection* litaC_this) {
+#line 53 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__net__net_posix__Socket_close(&((litaC_this->socket)));
+
+#line 54 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_this->socket.socket = 0;
+}
+
+
+#line 58 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_i32 litaC_http_connection__HttpConnection_handle(litaC_http_connection__HttpConnection* litaC_this) {
+#line 59 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+return litaC_this->socket.socket;
+
+}
+
+
+#line 62 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_bool litaC_http_connection__HttpConnection_isConnected(litaC_http_connection__HttpConnection* litaC_this) {
+#line 63 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+return litaC_this->socket.socket > 0;
+
+}
+
+
+#line 67 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_void litaC_http_connection__HttpConnection_bufferContents(litaC_http_connection__HttpConnection* litaC_this,litaC_http_request__HttpRequest* litaC_request,litaC_http_response__HttpResponse* litaC_response,litaC_http_server__HttpConfig* litaC_config) {
+#line 71 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+
+#line 72 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_clear(&((litaC_this->writeBuffer)));
+
+#line 74 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+if(litaC_response->status < 0 || litaC_response->status >= litaC_http_response__MAX_STATUS_CODES) {{
+#line 75 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_response->status = 500;
+
+}
+} 
+
+
+#line 79 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "HTTP/1.1 %d %s\r\n", 
+#line 80 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_response->status, litaC_http_response__STATUS_CODES[litaC_response->status]);
+
+#line 84 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+for(litaC_i32 litaC_i = 0;litaC_i < litaC_response->numberOfHeaders;litaC_i += 1) {{
+#line 85 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_http_request__HttpHeader litaC_header = litaC_response->headers[litaC_i];
+
+#line 86 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "%.*s: %.*s\r\n", 
+#line 87 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_header.name.length, litaC_header.name.buffer, 
+#line 88 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_header.values.length, litaC_header.values.buffer);
+
+}}
+
+#line 93 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Server: Ring/0.0.1 (Linux)\r\n");
+
+#line 96 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+switch(litaC_response->type) {
+#line 97 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+case litaC_http_response__ResponseType_NONE: {break;
+
+}
+
+#line 98 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+case litaC_http_response__ResponseType_BODY: {{
+#line 100 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+if(litaC_request->flags & litaC_http_request__HttpFlags_ACCEPT_DEFLATE_ENCODING) {{
+#line 101 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+if(litaC_response->body.asBuffer.length > litaC_config->compressionEnabledOnBodySizeInBytes) {{
+#line 102 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_i32 litaC_position = litaC_this->writeBuffer.asBuffer.length;
+
+#line 104 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Content-Encoding: deflate\r\n");
+
+#line 105 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "\r\n");
+
+#line 107 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_i32 litaC_bodyStartPosition = litaC_this->writeBuffer.asBuffer.length;
+
+#line 108 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__zip__ZipStatus litaC_zipStatus = litaC_std__zip__ZipCompress(
+#line 109 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+&((litaC_this->writeBuffer)), 
+#line 110 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__buffer__StringBuffer_toString(litaC_response->body.asBuffer), 
+#line 111 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+(litaC_std__zip__ZipCompressionLevel)litaC_config->compressionLevel);
+
+#line 113 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_i32 litaC_bodyEndPosition = litaC_this->writeBuffer.asBuffer.length;
+
+#line 114 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+if(litaC_zipStatus == litaC_std__zip__ZipStatus_OK) {{
+#line 115 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_insert(&((litaC_this->writeBuffer)), 
+#line 116 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_position, 
+#line 117 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+"Content-Length: %zu\r\n", 
+#line 118 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_this->writeBuffer.asBuffer.length - litaC_bodyStartPosition);
+
+#line 120 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__log__Info("Compressed info: Full length: %d, Body length: %d\n", 
+#line 121 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_this->writeBuffer.asBuffer.length, 
+#line 122 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_bodyEndPosition - litaC_bodyStartPosition);
+
+#line 124 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+return;
+
+
+}
+} 
+
+
+#line 128 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_this->writeBuffer.asBuffer.length = litaC_position;
+
+}
+} 
+
+
+}
+} 
+
+
+#line 133 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Content-Length: %zu\r\n", litaC_response->body.asBuffer.length);
+
+#line 134 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "\r\n");
+
+#line 135 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "%.*s", 
+#line 136 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_response->body.asBuffer.length, litaC_response->body.asBuffer.buffer);
+
+#line 138 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+break;
+
+}
+
+}
+
+#line 140 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+case litaC_http_response__ResponseType_FILE: {{
+#line 141 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Content-Length: %zu\r\n", litaC_response->fileSize);
+
+#line 143 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "\r\n");
+
+#line 144 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+break;
+
+}
+
+}
+
+#line 146 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+case litaC_http_response__ResponseType_STREAM: {{
+#line 147 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "Transfer-Encoding: chunked\r\n");
+
+#line 149 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_this->writeBuffer)), "\r\n");
+
+#line 150 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+break;
+
+}
+
+}
+default: 
+#line 152 "/Users/tony/projects/ringhttp/src/http_connection.lita"
+{break;
+
+}}
 }
 
 
@@ -36284,6 +36646,9 @@ litaC_this->numberOfHeaders = 0;
 
 #line 166 "/Users/tony/projects/ringhttp/src/http_response.lita"
 litaC_this->fileBytesSent = 0;
+
+#line 167 "/Users/tony/projects/ringhttp/src/http_response.lita"
+litaC_this->status = 200;
 }
 
 
@@ -38728,30 +39093,33 @@ case litaC_http_common__Status_ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
 case litaC_http_common__Status_ERROR_INVALID_HEADER_EXCEEDED_LIMIT: 
 #line 283 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
-case litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT: {{
+case litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT: 
 #line 284 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+
+case litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST: {{
+#line 285 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_sendBadRequest(litaC_this, litaC_session, litaC_status);
 
-#line 285 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 286 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 
 }
 default: 
-#line 287 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-{{
 #line 288 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+{{
+#line 289 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_sendServerError(litaC_this, litaC_session, litaC_status);
 
-#line 289 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 290 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 
 }}
 
-#line 292 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 293 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -38759,56 +39127,70 @@ return;
 } 
 
 
-#line 295 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 296 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_reqStatus = litaC_http_worker_kqueue__WorkerThread_handleHttpRequest(litaC_this, litaC_session);
 
-#line 296 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_reqStatus != litaC_http_common__Status_OK) {{
 #line 297 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_reqStatus != litaC_http_common__Status_OK) {{
+#line 298 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("HTTP request error %s for socket: %d\n", litaC_http_common__StatusAsStr(litaC_reqStatus), litaC_http_connection__HttpConnection_handle(litaC_connection));
 
-#line 298 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 299 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_reqStatus == litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST || 
+#line 300 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_reqStatus == litaC_http_common__Status_ERROR_WEB_SOCKET_SECURITY_KEY) {{
+#line 301 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_worker_kqueue__WorkerThread_sendBadRequest(litaC_this, litaC_session, litaC_reqStatus);
+
+}
+} else {
+#line 303 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+{
+#line 304 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_sendServerError(litaC_this, litaC_session, litaC_reqStatus);
+
+}} 
+
 
 }
 } 
 
 
-#line 300 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 307 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 
 }
 
-#line 302 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 309 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 case litaC_http_context__SessionState_WEB_SOCKET_OPERATION: {{
-#line 303 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 310 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_status = litaC_http_worker_kqueue__WorkerThread_handleWebSocketFrame(litaC_this, litaC_session, (litaC_i32)litaC_bytesRead);
 
-#line 304 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 311 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_status == litaC_http_common__Status_WEB_SOCKET_CLOSED) {{
-#line 305 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 312 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
 }
 } else {
-#line 307 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 314 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_status == litaC_http_common__Status_PARTIAL_WEB_SOCKET_DISPATCHING_READ) {{
-#line 308 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 315 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
 }
 } else {
-#line 310 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 317 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_status != litaC_http_common__Status_OK) {{
-#line 311 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 318 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("WebSocket frame error for socket: %d: %s\n", 
-#line 312 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 319 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection_handle(litaC_connection), litaC_http_common__StatusAsStr(litaC_status));
 
-#line 313 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 320 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
 }
@@ -38817,21 +39199,21 @@ litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 } 
 
 
-#line 315 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 322 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 
 }
 default: 
-#line 317 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 324 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {{
-#line 318 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 325 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Warn("Unexpected read in state %s for socket: %d\n", 
-#line 319 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 326 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_context__SessionStateAsStr(litaC_session->state), litaC_http_connection__HttpConnection_handle(litaC_connection));
 
-#line 320 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 327 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
@@ -38840,133 +39222,133 @@ break;
 }
 
 
-#line 325 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 332 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_handleWriteReady(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 326 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 333 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 switch(litaC_session->state) {
-#line 327 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 334 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 case litaC_http_context__SessionState_WRITTEN_HTTP_RESPONSE: 
-#line 328 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 335 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
 case litaC_http_context__SessionState_WRITTEN_HTTP_RESPONSE_MORE: {{
-#line 330 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 337 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_flushResponse(litaC_this, litaC_session);
 
-#line 331 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 338 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 
 }
 
-#line 333 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 340 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 case litaC_http_context__SessionState_WRITTEN_FILE: {{
-#line 335 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 342 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_flushFileResponse(litaC_this, litaC_session);
 
-#line 336 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 343 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 
 }
-
-#line 338 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-case litaC_http_context__SessionState_WRITING_STREAM: {{
-#line 342 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_i32 litaC_result = litaC_http_worker_kqueue__WorkerThread_doSend(litaC_this, litaC_session);
-
-#line 343 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_result < 0) {{
-#line 344 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
 #line 345 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-break;
-
-}
-} 
-
-
-#line 347 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_result > 0) {{
-#line 348 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
-
+case litaC_http_context__SessionState_WRITING_STREAM: {{
 #line 349 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-break;
-
-}
-} 
-
-
-#line 352 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_flushStreamResponse(litaC_this, litaC_session);
-
-#line 353 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-break;
-
-}
-
-}
-
-#line 355 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-case litaC_http_context__SessionState_WRITING_SSE: {{
-#line 356 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_result = litaC_http_worker_kqueue__WorkerThread_doSend(litaC_this, litaC_session);
 
-#line 357 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 350 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result < 0) {{
-#line 358 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 351 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
-#line 359 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 352 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 } 
 
 
-#line 361 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 354 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result > 0) {{
-#line 362 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 355 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
 
-#line 363 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 356 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 } 
 
 
+#line 359 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_worker_kqueue__WorkerThread_flushStreamResponse(litaC_this, litaC_session);
+
+#line 360 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+break;
+
+}
+
+}
+
+#line 362 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+case litaC_http_context__SessionState_WRITING_SSE: {{
+#line 363 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_i32 litaC_result = litaC_http_worker_kqueue__WorkerThread_doSend(litaC_this, litaC_session);
+
+#line 364 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_result < 0) {{
 #line 365 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_flushSseResponse(litaC_this, litaC_session);
+litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
 #line 366 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
+} 
+
+
+#line 368 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_result > 0) {{
+#line 369 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
+
+#line 370 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+break;
+
+}
+} 
+
+
+#line 372 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_worker_kqueue__WorkerThread_flushSseResponse(litaC_this, litaC_session);
+
+#line 373 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+break;
 
 }
 
-#line 368 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+}
+
+#line 375 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 case litaC_http_context__SessionState_WEB_SOCKET_OPERATION: {{
-#line 369 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 376 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_flushWebSocketWrite(litaC_this, litaC_session);
 
-#line 370 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 377 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 
 }
 default: 
-#line 372 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 379 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {{
-#line 375 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 382 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_deregisterWrite(litaC_this, litaC_session);
 
-#line 376 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 383 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
@@ -38975,51 +39357,51 @@ break;
 }
 
 
-#line 385 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 392 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_http_worker_kqueue__WorkerThread_doSend(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 387 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 394 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
-#line 388 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 395 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection* litaC_connection = &(litaC_session->connection);
 
-#line 389 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 396 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder* litaC_writeBuffer = &(litaC_connection->writeBuffer);
 
-#line 391 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 398 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_remaining = litaC_writeBuffer->asBuffer.length - (litaC_i32)litaC_session->submissions;
 
-#line 392 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 399 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_remaining <= 0) {{
-#line 393 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 400 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return 0;
 
 
 }
 } 
 
-
-#line 396 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_i64 litaC_sent = send(
-#line 397 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_connection__HttpConnection_handle(litaC_connection), 
-#line 398 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_writeBuffer->asBuffer.buffer + (litaC_i32)litaC_session->submissions, 
-#line 399 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-(litaC_usize)litaC_remaining, 
-#line 400 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-0);
 
 #line 403 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_sent > 0) {{
+litaC_i64 litaC_sent = send(
 #line 404 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_connection__HttpConnection_handle(litaC_connection), 
+#line 405 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_writeBuffer->asBuffer.buffer + (litaC_i32)litaC_session->submissions, 
+#line 406 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+(litaC_usize)litaC_remaining, 
+#line 407 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+0);
+
+#line 410 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_sent > 0) {{
+#line 411 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->submissions += (litaC_u32)litaC_sent;
 
-#line 405 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 412 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if((litaC_i32)litaC_session->submissions >= litaC_writeBuffer->asBuffer.length) {{
-#line 406 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 413 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->submissions = 0;
 
-#line 407 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 414 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return 0;
 
 
@@ -39027,7 +39409,7 @@ return 0;
 } 
 
 
-#line 409 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 416 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return 1;
 
 
@@ -39035,9 +39417,9 @@ return 1;
 } 
 
 
-#line 412 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 419 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_sent < 0) {{
-#line 414 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 421 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return 1;
 
 
@@ -39045,180 +39427,164 @@ return 1;
 } 
 
 
-#line 417 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 424 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return -(1);
 
 }
 
 
-#line 420 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 427 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 421 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 428 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 kevent_t litaC_change =  {
-#line 422 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 429 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .ident = (litaC_usize)litaC_http_connection__HttpConnection_handle(&((litaC_session->connection))),
 
-#line 423 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 430 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .filter = EVFILT_WRITE,
 
-#line 424 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 431 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .flags = EV_ADD | EV_ENABLE | EV_ONESHOT,
 
-#line 425 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 432 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .fflags = 0U,
 
-#line 426 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 433 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .data = 0L,
 
-#line 427 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.udata = litaC_session};
-
-#line 429 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-kevent(litaC_this->kq, &(litaC_change), 1, NULL, 0, NULL);
-}
-
-
-#line 432 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_void litaC_http_worker_kqueue__WorkerThread_deregisterWrite(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 433 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-kevent_t litaC_change =  {
 #line 434 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.ident = (litaC_usize)litaC_http_connection__HttpConnection_handle(&((litaC_session->connection))),
-
-#line 435 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.filter = EVFILT_WRITE,
+.udata = litaC_session};
 
 #line 436 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.flags = EV_DELETE,
-
-#line 437 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.fflags = 0U,
-
-#line 438 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.data = 0L,
-
-#line 439 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.udata = litaC_session};
-
-#line 441 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 kevent(litaC_this->kq, &(litaC_change), 1, NULL, 0, NULL);
 }
 
 
-#line 444 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_void litaC_http_worker_kqueue__WorkerThread_deregisterAll(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 445 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_i32 litaC_fd = litaC_http_connection__HttpConnection_handle(&((litaC_session->connection)));
+#line 439 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_void litaC_http_worker_kqueue__WorkerThread_deregisterWrite(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
+#line 440 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+kevent_t litaC_change =  {
+#line 441 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.ident = (litaC_usize)litaC_http_connection__HttpConnection_handle(&((litaC_session->connection))),
 
-#line 447 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-kevent_t litaC_changes[2] = {0};
-
-#line 448 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_changes[0] = (kevent_t) {
-#line 449 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.ident = (litaC_usize)litaC_fd,
-
-#line 450 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.filter = EVFILT_READ,
-
-#line 451 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.flags = EV_DELETE,
-
-#line 452 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.fflags = 0U,
-
-#line 453 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.data = 0L,
-
-#line 454 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.udata = NULL};
-
-#line 456 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_changes[1] = (kevent_t) {
-#line 457 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.ident = (litaC_usize)litaC_fd,
-
-#line 458 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 442 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .filter = EVFILT_WRITE,
 
-#line 459 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 443 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .flags = EV_DELETE,
 
-#line 460 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 444 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .fflags = 0U,
 
-#line 461 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 445 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .data = 0L,
 
-#line 462 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 446 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.udata = litaC_session};
+
+#line 448 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+kevent(litaC_this->kq, &(litaC_change), 1, NULL, 0, NULL);
+}
+
+
+#line 451 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_void litaC_http_worker_kqueue__WorkerThread_deregisterAll(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
+#line 452 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_i32 litaC_fd = litaC_http_connection__HttpConnection_handle(&((litaC_session->connection)));
+
+#line 454 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+kevent_t litaC_changes[2] = {0};
+
+#line 455 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_changes[0] = (kevent_t) {
+#line 456 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.ident = (litaC_usize)litaC_fd,
+
+#line 457 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.filter = EVFILT_READ,
+
+#line 458 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.flags = EV_DELETE,
+
+#line 459 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.fflags = 0U,
+
+#line 460 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.data = 0L,
+
+#line 461 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .udata = NULL};
 
+#line 463 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_changes[1] = (kevent_t) {
 #line 464 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.ident = (litaC_usize)litaC_fd,
+
+#line 465 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.filter = EVFILT_WRITE,
+
+#line 466 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.flags = EV_DELETE,
+
+#line 467 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.fflags = 0U,
+
+#line 468 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.data = 0L,
+
+#line 469 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.udata = NULL};
+
+#line 471 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 kevent(litaC_this->kq, litaC_changes, 2, NULL, 0, NULL);
 }
 
 
-#line 471 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 478 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_beginWriteHttpResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 472 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 479 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection* litaC_connection = &(litaC_session->connection);
 
-#line 473 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 480 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_request__HttpRequest* litaC_request = &(litaC_session->request);
 
-#line 474 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 481 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse* litaC_response = &(litaC_session->response);
 
-#line 476 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 483 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection_bufferContents(litaC_connection, litaC_request, litaC_response, litaC_this->config);
 
-#line 478 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 485 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Info("Writing HTTP response (socket: %d, length: %d)\n", 
-#line 479 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 486 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection_handle(litaC_connection), litaC_connection->writeBuffer.asBuffer.length);
 
-#line 481 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 488 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->state = litaC_http_context__SessionState_WRITTEN_HTTP_RESPONSE;
 
-#line 482 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 489 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->submissions = 0;
 
-#line 484 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 491 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_flushResponse(litaC_this, litaC_session);
 }
 
 
-#line 487 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 494 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 488 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 495 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse* litaC_response = &(litaC_session->response);
 
-#line 489 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 496 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_result = litaC_http_worker_kqueue__WorkerThread_doSend(litaC_this, litaC_session);
 
-#line 491 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 498 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result < 0) {{
-#line 492 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 499 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("Send error on socket: %d\n", litaC_http_connection__HttpConnection_handle(&((litaC_session->connection))));
 
-#line 493 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
-
-#line 494 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-return;
-
-
-}
-} 
-
-
-#line 497 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_result > 0) {{
-#line 499 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_session->state = litaC_http_context__SessionState_WRITTEN_HTTP_RESPONSE;
-
 #line 500 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
+litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
 #line 501 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
@@ -39228,42 +39594,58 @@ return;
 } 
 
 
-#line 505 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_response->type == litaC_http_response__ResponseType_FILE) {{
+#line 504 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_result > 0) {{
 #line 506 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_session->state = litaC_http_context__SessionState_WRITTEN_FILE;
+litaC_session->state = litaC_http_context__SessionState_WRITTEN_HTTP_RESPONSE;
 
 #line 507 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_session->fileOffset = 0;
+litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
 
 #line 508 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+return;
+
+
+}
+} 
+
+
+#line 512 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_response->type == litaC_http_response__ResponseType_FILE) {{
+#line 513 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_session->state = litaC_http_context__SessionState_WRITTEN_FILE;
+
+#line 514 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_session->fileOffset = 0;
+
+#line 515 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_flushFileResponse(litaC_this, litaC_session);
 
 }
 } else {
-#line 510 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 517 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_response->type == litaC_http_response__ResponseType_STREAM) {{
-#line 511 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 518 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->state = litaC_http_context__SessionState_WRITING_STREAM;
 
-#line 512 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 519 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_flushStreamResponse(litaC_this, litaC_session);
 
 }
 } else {
-#line 514 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 521 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_response->type == litaC_http_response__ResponseType_SSE) {{
-#line 515 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 522 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->state = litaC_http_context__SessionState_WRITING_SSE;
 
-#line 516 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 523 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_flushSseResponse(litaC_this, litaC_session);
 
 }
 } else {
-#line 518 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 525 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 520 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 527 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_onResponseComplete(litaC_this, litaC_session);
 
 }} 
@@ -39273,55 +39655,55 @@ litaC_http_worker_kqueue__WorkerThread_onResponseComplete(litaC_this, litaC_sess
 }
 
 
-#line 524 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 531 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushFileResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 525 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 532 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection* litaC_connection = &(litaC_session->connection);
 
-#line 526 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 533 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse* litaC_response = &(litaC_session->response);
 
-#line 528 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 535 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_fileFd = litaC_response->fileHandle;
 
-#line 529 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 536 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_usize litaC_fileSize = litaC_response->fileSize;
 
-#line 530 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 537 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_socketFd = litaC_http_connection__HttpConnection_handle(litaC_connection);
 
-#line 532 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 539 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 while(litaC_session->fileOffset < litaC_fileSize) {{
-#line 533 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 540 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i64 litaC_len = (litaC_i64)(litaC_fileSize - litaC_session->fileOffset);
 
-#line 535 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 542 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_result = sendfile(litaC_fileFd, litaC_socketFd, litaC_session->fileOffset, &(litaC_len), NULL, 0);
 
-#line 536 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 543 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_len > 0) {{
-#line 537 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 544 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->fileOffset += litaC_len;
 
 }
 } 
 
 
-#line 540 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 547 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result < 0) {{
-#line 541 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 548 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_len > 0) {{
-#line 544 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 551 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 continue;
 
 }
 } 
 
 
-#line 548 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 555 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
 
-#line 549 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 556 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39331,44 +39713,44 @@ return;
 
 }}
 
-#line 554 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 561 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_response->fileHandle > 0) {{
-#line 555 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 562 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 close(litaC_response->fileHandle);
 
-#line 556 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 563 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->fileHandle = 0;
 
-#line 557 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 564 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->file = 0;
 
 }
 } 
 
 
-#line 560 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 567 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_onResponseComplete(litaC_this, litaC_session);
 }
 
 
-#line 563 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 570 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushStreamResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {    litaC_http_response__Stream __tmp0;
 
-#line 564 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 571 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection* litaC_connection = &(litaC_session->connection);
 
-#line 565 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 572 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse* litaC_response = &(litaC_session->response);
 
-#line 566 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 573 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_response->stream.__this)) {{
-#line 567 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 574 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("No stream attached to connection: %d\n", litaC_http_connection__HttpConnection_handle(litaC_connection));
 
-#line 568 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 575 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
-#line 569 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 576 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39376,39 +39758,39 @@ return;
 } 
 
 
-#line 572 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 579 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder* litaC_writeBuffer = &(litaC_connection->writeBuffer);
 
-#line 573 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 580 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_clear(litaC_writeBuffer);
 
-#line 575 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 582 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_numberOfBytesRead = (__tmp0 = litaC_response->stream, __tmp0.__vtable)->read(__tmp0.__this, litaC_response->body.asBuffer.buffer, litaC_response->body.asBuffer.capacity);
 
-#line 576 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 583 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_bool litaC_moreContents = litaC_numberOfBytesRead > 0;
 
-#line 578 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 585 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_moreContents)) {{
-#line 579 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 586 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->state = litaC_http_context__SessionState_WRITTEN_HTTP_RESPONSE;
 
-#line 580 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 587 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_append(litaC_writeBuffer, "0\r\n\r\n");
 
 }
 } else {
-#line 582 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 589 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 583 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 590 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_std__string__builder__StringBuilder_reserve(litaC_writeBuffer, litaC_numberOfBytesRead + 16))) {{
-#line 584 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 591 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("Out of memory for stream on socket: %d\n", litaC_http_connection__HttpConnection_handle(litaC_connection));
 
-#line 585 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 592 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
-#line 586 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 593 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39416,36 +39798,36 @@ return;
 } 
 
 
-#line 589 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 596 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_append(litaC_writeBuffer, "%08X\r\n", litaC_numberOfBytesRead);
 
-#line 590 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 597 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->body.asBuffer.length = litaC_numberOfBytesRead;
 
-#line 591 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 598 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_copyTo(&((litaC_response->body)), litaC_writeBuffer->asBuffer.buffer + litaC_writeBuffer->asBuffer.length, litaC_numberOfBytesRead, litaC_false);
 
-#line 592 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 599 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_writeBuffer->asBuffer.length += litaC_numberOfBytesRead;
 
-#line 593 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 600 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_appendStrn(litaC_writeBuffer, "\r\n", 2);
 
 }} 
 
 
-#line 596 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 603 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->submissions = 0;
 
-#line 597 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 604 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_result = litaC_http_worker_kqueue__WorkerThread_doSend(litaC_this, litaC_session);
 
-#line 599 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 606 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result < 0) {{
-#line 600 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 607 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
-#line 601 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 608 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39453,12 +39835,12 @@ return;
 } 
 
 
-#line 604 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 611 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result > 0) {{
-#line 606 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 613 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
 
-#line 607 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 614 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39466,16 +39848,16 @@ return;
 } 
 
 
-#line 610 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 617 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_moreContents) {{
-#line 612 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 619 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_flushStreamResponse(litaC_this, litaC_session);
 
 }
 } else {
-#line 614 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 621 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 615 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 622 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_onResponseComplete(litaC_this, litaC_session);
 
 }} 
@@ -39483,24 +39865,24 @@ litaC_http_worker_kqueue__WorkerThread_onResponseComplete(litaC_this, litaC_sess
 }
 
 
-#line 619 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 626 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushSseResponse(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {    litaC_http_response__Stream __tmp1;
 
-#line 620 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 627 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection* litaC_connection = &(litaC_session->connection);
 
-#line 621 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 628 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse* litaC_response = &(litaC_session->response);
 
-#line 622 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 629 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_response->stream.__this)) {{
-#line 623 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 630 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("No SSE stream attached to connection: %d\n", litaC_http_connection__HttpConnection_handle(litaC_connection));
 
-#line 624 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 631 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
-#line 625 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 632 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39508,39 +39890,39 @@ return;
 } 
 
 
-#line 628 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 635 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder* litaC_writeBuffer = &(litaC_connection->writeBuffer);
 
-#line 629 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 636 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_clear(litaC_writeBuffer);
 
-#line 631 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 638 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_numberOfBytesRead = (__tmp1 = litaC_response->stream, __tmp1.__vtable)->read(__tmp1.__this, litaC_response->body.asBuffer.buffer, litaC_response->body.asBuffer.capacity);
 
-#line 632 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 639 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_bool litaC_moreContents = litaC_numberOfBytesRead > 0;
 
-#line 634 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 641 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_moreContents)) {{
-#line 635 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 642 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->state = litaC_http_context__SessionState_WRITTEN_HTTP_RESPONSE;
 
-#line 636 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 643 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_append(litaC_writeBuffer, "0\r\n\r\n");
 
 }
 } else {
-#line 638 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 645 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 639 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 646 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_std__string__builder__StringBuilder_reserve(litaC_writeBuffer, litaC_numberOfBytesRead + 16))) {{
-#line 640 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 647 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("Out of memory for SSE on socket: %d\n", litaC_http_connection__HttpConnection_handle(litaC_connection));
 
-#line 641 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 648 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
-#line 642 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 649 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39548,36 +39930,36 @@ return;
 } 
 
 
-#line 645 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 652 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_append(litaC_writeBuffer, "%08X\r\n", litaC_numberOfBytesRead);
 
-#line 646 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 653 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->body.asBuffer.length = litaC_numberOfBytesRead;
 
-#line 647 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 654 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_copyTo(&((litaC_response->body)), litaC_writeBuffer->asBuffer.buffer + litaC_writeBuffer->asBuffer.length, litaC_numberOfBytesRead, litaC_false);
 
-#line 648 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 655 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_writeBuffer->asBuffer.length += litaC_numberOfBytesRead;
 
-#line 649 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 656 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_appendStrn(litaC_writeBuffer, "\r\n", 2);
 
 }} 
 
 
-#line 652 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 659 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->submissions = 0;
 
-#line 653 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 660 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_result = litaC_http_worker_kqueue__WorkerThread_doSend(litaC_this, litaC_session);
 
-#line 655 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 662 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result < 0) {{
-#line 656 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 663 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
-#line 657 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 664 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39585,12 +39967,12 @@ return;
 } 
 
 
-#line 660 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 667 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result > 0) {{
-#line 661 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 668 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
 
-#line 662 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 669 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39598,16 +39980,16 @@ return;
 } 
 
 
-#line 665 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 672 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_moreContents) {{
-#line 666 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 673 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_flushSseResponse(litaC_this, litaC_session);
 
 }
 } else {
-#line 668 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 675 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 669 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 676 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_onResponseComplete(litaC_this, litaC_session);
 
 }} 
@@ -39615,17 +39997,17 @@ litaC_http_worker_kqueue__WorkerThread_onResponseComplete(litaC_this, litaC_sess
 }
 
 
-#line 673 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 680 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_flushWebSocketWrite(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 674 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 681 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_result = litaC_http_worker_kqueue__WorkerThread_doSend(litaC_this, litaC_session);
 
-#line 675 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 682 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result < 0) {{
-#line 676 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 683 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
-#line 677 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 684 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39633,23 +40015,10 @@ return;
 } 
 
 
-#line 679 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 686 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result > 0) {{
-#line 680 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
-
-#line 681 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-return;
-
-
-}
-} 
-
-
-#line 685 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(!(litaC_session->isWebSocket)) {{
 #line 687 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
+litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
 
 #line 688 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
@@ -39658,23 +40027,36 @@ return;
 }
 } 
 
+
+#line 692 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(!(litaC_session->isWebSocket)) {{
+#line 694 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
+
+#line 695 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+return;
+
+
+}
+} 
+
 }
 
 
-#line 695 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 702 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_onResponseComplete(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 696 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 703 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Info("Response complete for socket: %d\n", litaC_http_connection__HttpConnection_handle(&((litaC_session->connection))));
 
-#line 700 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 707 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_session->isWebSocket) {{
-#line 702 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 709 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->submissions = 0;
 
-#line 703 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 710 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->state = litaC_http_context__SessionState_WEB_SOCKET_OPERATION;
 
-#line 705 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 712 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
 
@@ -39682,111 +40064,111 @@ return;
 } 
 
 
-#line 708 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 715 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->submissions = 0;
 
-#line 711 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 718 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection* litaC_connection = &(litaC_session->connection);
 
-#line 712 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 719 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_context__SessionContext_begin(litaC_session, litaC_http_connection__HttpConnection_handle(litaC_connection));
 
-#line 715 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 722 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 kevent_t litaC_change =  {
-#line 716 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 723 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .ident = (litaC_usize)litaC_http_connection__HttpConnection_handle(litaC_connection),
 
-#line 717 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 724 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .filter = EVFILT_READ,
 
-#line 718 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 725 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .flags = EV_ADD | EV_ENABLE | EV_CLEAR,
 
-#line 719 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 726 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .fflags = 0U,
 
-#line 720 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 727 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .data = 0L,
 
-#line 721 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 728 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .udata = litaC_session};
 
-#line 723 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 730 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 kevent(litaC_this->kq, &(litaC_change), 1, NULL, 0, NULL);
 
-#line 724 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 731 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->state = litaC_http_context__SessionState_READ_REQUEST_LINE;
 }
 
 
-#line 727 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 734 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session) {
-#line 728 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 735 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_http_connection__HttpConnection_isConnected(&((litaC_session->connection))))) {{
-#line 729 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 736 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return;
 
-
-}
-} 
-
-
-#line 732 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_deregisterAll(litaC_this, litaC_session);
-
-#line 734 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_session->response.fileHandle > 0) {{
-#line 735 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-close(litaC_session->response.fileHandle);
-
-#line 736 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_session->response.fileHandle = 0;
 
 }
 } 
 
 
 #line 739 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_worker_kqueue__WorkerThread_deregisterAll(litaC_this, litaC_session);
+
+#line 741 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_session->response.fileHandle > 0) {{
+#line 742 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+close(litaC_session->response.fileHandle);
+
+#line 743 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_session->response.fileHandle = 0;
+
+}
+} 
+
+
+#line 746 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_context__SessionContext_finish(litaC_session, litaC_true);
 }
 
 
-#line 746 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 753 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handlePartialHttpRequest(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_request,litaC_i32 litaC_bytesRead) {
-#line 749 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 756 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
-#line 751 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 758 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection* litaC_connection = &(litaC_request->connection);
 
-#line 752 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 759 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder* litaC_readBuffer = &(litaC_connection->readBuffer);
 
-#line 754 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 761 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_readBuffer->asBuffer.length += litaC_bytesRead;
 
-#line 756 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 763 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__builtins__String litaC_buffer = litaC_std__string__buffer__StringBuffer_toString(litaC_readBuffer->asBuffer);
 
-#line 757 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 764 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_request->requestLineIndex < 1) {{
-#line 758 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 765 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_request->requestLineIndex = litaC_std__string__String_endIndexOf(litaC_buffer, (litaC_std__builtins__String) { .buffer = "\r\n", .length = 2 });
 
-#line 759 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 766 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_request->requestLineIndex < 0) {{
-#line 760 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 767 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_std__string__builder__StringBuilder_remaining(litaC_readBuffer) < litaC_this->config->maxHttpRequestLineSizeInBytes) {{
-#line 761 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 768 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_reserve(litaC_readBuffer, litaC_readBuffer->asBuffer.capacity + (litaC_i32)litaC_this->config->maxHttpRequestLineSizeInBytes);
 
 }
 } 
 
 
-#line 764 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 771 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Info("RequestLine not fully read, waiting for more data: %d\n", litaC_http_connection__HttpConnection_handle(litaC_connection));
 
-#line 765 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 772 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ;
 
 
@@ -39794,9 +40176,9 @@ return litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ;
 } 
 
 
-#line 768 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 775 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_request->requestLineIndex > litaC_this->config->maxHttpRequestLineSizeInBytes) {{
-#line 769 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 776 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT;
 
 
@@ -39808,26 +40190,26 @@ return litaC_http_common__Status_ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT;
 } 
 
 
-#line 773 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 780 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_request->headerIndex < 1) {{
-#line 774 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 781 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_request->headerIndex = litaC_std__string__String_endIndexOf(litaC_buffer, (litaC_std__builtins__String) { .buffer = "\r\n\r\n", .length = 4 });
 
-#line 775 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 782 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_request->headerIndex < 0) {{
-#line 776 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 783 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_std__string__builder__StringBuilder_remaining(litaC_readBuffer) < litaC_this->config->maxHttpHeaderSizeInBytes) {{
-#line 777 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 784 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_reserve(litaC_readBuffer, litaC_readBuffer->asBuffer.capacity + (litaC_i32)litaC_this->config->maxHttpHeaderSizeInBytes);
 
 }
 } 
 
 
-#line 780 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 787 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Info("Headers not fully read, waiting for more data: %d\n", litaC_http_connection__HttpConnection_handle(litaC_connection));
 
-#line 781 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 788 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ;
 
 
@@ -39835,12 +40217,12 @@ return litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ;
 } 
 
 
-#line 783 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 790 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_headerSize = litaC_request->headerIndex - litaC_request->requestLineIndex;
 
-#line 784 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 791 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_headerSize > litaC_this->config->maxHttpHeaderSizeInBytes) {{
-#line 785 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 792 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_INVALID_HEADER_EXCEEDED_LIMIT;
 
 
@@ -39848,36 +40230,36 @@ return litaC_http_common__Status_ERROR_INVALID_HEADER_EXCEEDED_LIMIT;
 } 
 
 
-#line 788 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 795 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_request->bodyIndex = litaC_request->headerIndex;
 
 }
 } 
 
 
-#line 791 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 798 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_parser__HttpParser litaC_parser =  {0};
 
-#line 792 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 799 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_parser__HttpParser_init(&((litaC_parser)), &(litaC_request->requestAllocator.allocator));
 
-#line 794 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 801 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__builtins__String litaC_input =  {
-#line 795 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 802 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .buffer = litaC_readBuffer->asBuffer.buffer,
 
-#line 796 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 803 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .length = litaC_request->headerIndex};
 
-#line 799 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 806 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_request__HttpRequest* litaC_httpRequest = &(litaC_request->request);
 
-#line 800 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 807 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_parser__ParseStatus litaC_ok = litaC_http_parser__HttpParser_parse(&((litaC_parser)), litaC_input, litaC_httpRequest);
 
-#line 801 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 808 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_ok != litaC_http_parser__ParseStatus_OK) {{
-#line 802 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 809 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST;
 
 
@@ -39885,18 +40267,18 @@ return litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST;
 } 
 
 
-#line 805 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 812 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_httpRequest->flags & litaC_http_request__HttpFlags_CHUNKED_ENCODING) {{
-#line 806 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 813 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_parser__ParseStatus litaC_status = litaC_http_parser__HttpParser_parseChunk(&((litaC_parser)), litaC_std__string__String_substring(litaC_std__string__buffer__StringBuffer_toString(litaC_readBuffer->asBuffer), litaC_request->headerIndex, -(
 #line 34 "/Users/tony/projects/litac-lang/stdlib/std/string/string.lita"
 1)), 
-#line 806 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 813 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_httpRequest);
 
-#line 807 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 814 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_status == litaC_http_parser__ParseStatus_CHUNK_INCOMPLETE) {{
-#line 808 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 815 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ;
 
 
@@ -39904,9 +40286,9 @@ return litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ;
 } 
 
 
-#line 810 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 817 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_status != litaC_http_parser__ParseStatus_OK) {{
-#line 811 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 818 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST;
 
 
@@ -39916,14 +40298,14 @@ return litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST;
 
 }
 } else {
-#line 814 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 821 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_httpRequest->flags & litaC_http_request__HttpFlags_CONTENT_LENGTH_PROVIDED) {{
-#line 815 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 822 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_bodyLength = litaC_httpRequest->bodyLength;
 
-#line 816 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 823 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_this->config->maxHttpBodySizeInBytes > 0 && litaC_bodyLength > litaC_this->config->maxHttpBodySizeInBytes) {{
-#line 817 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 824 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT;
 
 
@@ -39931,18 +40313,18 @@ return litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT;
 } 
 
 
-#line 820 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 827 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_readBuffer->asBuffer.length - litaC_request->headerIndex < litaC_bodyLength) {{
-#line 821 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 828 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_std__string__builder__StringBuilder_remaining(litaC_readBuffer) < 1 * litaC_std__mem__MiB) {{
-#line 822 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 829 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_reserve(litaC_readBuffer, litaC_readBuffer->asBuffer.capacity + 1 * (litaC_i32)litaC_std__mem__MiB);
 
 }
 } 
 
 
-#line 825 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 832 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ;
 
 
@@ -39952,16 +40334,16 @@ return litaC_http_common__Status_PARTIAL_REQUEST_DISPATCHING_READ;
 
 }
 } else {
-#line 828 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 835 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 829 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 836 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__builtins__String litaC_body = litaC_std__string__String_substring(litaC_std__string__buffer__StringBuffer_toString(litaC_readBuffer->asBuffer), litaC_request->headerIndex, -(
 #line 34 "/Users/tony/projects/litac-lang/stdlib/std/string/string.lita"
 1));
 
-#line 830 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 837 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_std__string__String_empty(litaC_body))) {{
-#line 831 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 838 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_UNKNOWN_BODY_LENGTH;
 
 
@@ -39973,57 +40355,57 @@ return litaC_http_common__Status_ERROR_UNKNOWN_BODY_LENGTH;
 } 
 
 
-#line 835 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 842 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_OK;
 
 }
 
 
-#line 838 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handleHttpRequest(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_request) {
-#line 840 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-
-#line 842 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__mem__Allocator* litaC_requestAllocator = &(litaC_request->requestAllocator.allocator);
-
-#line 843 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_connection__HttpConnection* litaC_connection = &(litaC_request->connection);
-
 #line 845 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__string__builder__StringBuilder* litaC_buffer = &(litaC_connection->readBuffer);
-
-#line 846 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__log__Info("Handling HTTP request for socket: %d\n", litaC_http_connection__HttpConnection_handle(litaC_connection));
-
-#line 848 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_parser__HttpParser litaC_parser =  {0};
+litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handleHttpRequest(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_request) {
+#line 847 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
 #line 849 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__mem__Allocator* litaC_requestAllocator = &(litaC_request->requestAllocator.allocator);
+
+#line 850 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_connection__HttpConnection* litaC_connection = &(litaC_request->connection);
+
+#line 852 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__string__builder__StringBuilder* litaC_buffer = &(litaC_connection->readBuffer);
+
+#line 853 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__log__Info("Handling HTTP request for socket: %d\n", litaC_http_connection__HttpConnection_handle(litaC_connection));
+
+#line 855 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_parser__HttpParser litaC_parser =  {0};
+
+#line 856 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_parser__HttpParser_init(&((litaC_parser)), litaC_requestAllocator);
 
-#line 851 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 858 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__builtins__String litaC_input = litaC_std__string__String_substring(litaC_std__string__StringInit(litaC_buffer->asBuffer.buffer, litaC_buffer->asBuffer.length), litaC_request->bodyIndex, -(
 #line 34 "/Users/tony/projects/litac-lang/stdlib/std/string/string.lita"
 1));
 
-#line 852 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 859 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_request__HttpRequest* litaC_httpRequest = &(litaC_request->request);
 
-#line 854 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 861 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_httpRequest->flags & litaC_http_request__HttpFlags_CHUNKED_ENCODING) {{
-#line 855 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 862 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_input = litaC_std__string__buffer__StringBuffer_toString(litaC_httpRequest->payload.body.chunkData.asBuffer);
 
 }
 } 
 
 
-#line 858 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 865 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_parser__ParseStatus litaC_ok = litaC_http_parser__HttpParser_parseBody(&((litaC_parser)), litaC_input, litaC_httpRequest);
 
-#line 859 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 866 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_ok != litaC_http_parser__ParseStatus_OK) {{
-#line 860 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 867 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST;
 
 
@@ -40031,14 +40413,14 @@ return litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST;
 } 
 
 
-#line 863 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 870 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_connection->disableKeepAlive = litaC_httpRequest->flags & litaC_http_request__HttpFlags_DISABLE_KEEP_ALIVE;
 
-#line 865 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 872 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_httpRequest->method == litaC_http_request__HttpMethod_GET) {{
-#line 866 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 873 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_std__string__String_startsWith(litaC_httpRequest->path, litaC_this->server->config->publicServerPath, 0)) {{
-#line 867 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 874 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_worker_kqueue__WorkerThread_handleFileRequest(litaC_this, litaC_request, litaC_httpRequest);
 
 
@@ -40050,86 +40432,86 @@ return litaC_http_worker_kqueue__WorkerThread_handleFileRequest(litaC_this, lita
 } 
 
 
-#line 871 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 878 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_router__RequestHandlerContext litaC_requestContext =  {
-#line 872 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 879 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .allocator = litaC_requestAllocator,
 
-#line 873 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 880 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .request = litaC_httpRequest,
 
-#line 874 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 881 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .response = &(litaC_request->response),
 
-#line 875 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 882 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .userData = NULL,
 
-#line 876 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 883 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .match = NULL,
 
-#line 877 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 884 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .sessionIndex = litaC_request->index};
 
-#line 880 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 887 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_router__RouteMatch litaC_requestMatch = {0};
 
-#line 881 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 888 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_http_router__Router_match(&((litaC_this->server->router)), litaC_httpRequest->method, &((litaC_httpRequest->path)), &(litaC_requestMatch)))) {{
-#line 882 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 889 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_server404(litaC_this, &(litaC_requestContext), litaC_http_common__Status_ERROR_NO_ROUTE_FOUND);
 
 }
 } else {
-#line 884 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 891 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 885 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 892 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_router__RequestHandler litaC_handler = litaC_requestMatch.handler;
 
-#line 886 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 893 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_requestContext.userData = litaC_handler.userData;
 
-#line 887 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 894 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_requestContext.match = &(litaC_requestMatch);
 
-#line 889 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-switch(litaC_handler.type) {
-#line 890 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-case litaC_http_router__RequestHandlerType_HTTP_REQUEST: {{
-#line 891 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_handler.controller.callback(&(litaC_requestContext)) != 1) {{
-#line 892 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_worker_kqueue__WorkerThread_serverError(litaC_this, &(litaC_requestContext), litaC_http_common__Status_ERROR_CONTROLLER_CALLBACK_ERROR);
-
-}
-} 
-
-
-#line 894 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-break;
-
-}
-
-}
-
 #line 896 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-case litaC_http_router__RequestHandlerType_WEB_SOCKET: {{
+switch(litaC_handler.type) {
 #line 897 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_httpRequest->method != litaC_http_request__HttpMethod_GET) {{
+case litaC_http_router__RequestHandlerType_HTTP_REQUEST: {{
 #line 898 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_handler.controller.callback(&(litaC_requestContext)) != 1) {{
+#line 899 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_serverError(litaC_this, &(litaC_requestContext), litaC_http_common__Status_ERROR_CONTROLLER_CALLBACK_ERROR);
 
-#line 899 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+}
+} 
+
+
+#line 901 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+break;
+
+}
+
+}
+
+#line 903 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+case litaC_http_router__RequestHandlerType_WEB_SOCKET: {{
+#line 904 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+if(litaC_httpRequest->method != litaC_http_request__HttpMethod_GET) {{
+#line 905 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_worker_kqueue__WorkerThread_serverError(litaC_this, &(litaC_requestContext), litaC_http_common__Status_ERROR_CONTROLLER_CALLBACK_ERROR);
+
+#line 906 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 } 
 
 
-#line 902 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 909 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_httpRequest->flags & litaC_http_request__HttpFlags_UPGRADE_REQUEST) {{
-#line 903 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 910 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!((litaC_httpRequest->flags & litaC_http_request__HttpFlags_WEB_SOCKET_PROTOCOL))) {{
-#line 904 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 911 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_worker_kqueue__WorkerThread_sendBadRequest(litaC_this, litaC_request, litaC_http_common__Status_ERROR_UNSUPPORTED_UPGRADE_PROTOCOL);
 
 
@@ -40137,13 +40519,13 @@ return litaC_http_worker_kqueue__WorkerThread_sendBadRequest(litaC_this, litaC_r
 } 
 
 
-#line 907 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 914 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_worker_kqueue__WorkerThread_handleWebSocketUpgrade(litaC_this, 
-#line 908 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 915 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_request, 
-#line 909 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 916 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_httpRequest, 
-#line 910 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 917 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 &(litaC_requestContext));
 
 
@@ -40151,16 +40533,25 @@ litaC_httpRequest,
 } 
 
 
-#line 913 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 922 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_requestContext.response->status = 400;
+
+#line 923 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_requestContext.response->type = litaC_http_response__ResponseType_BODY;
+
+#line 924 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_requestContext.response->body)), "WebSocket upgrade required\n");
+
+#line 925 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 
 }
 default: 
-#line 915 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 927 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {{
-#line 916 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 928 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__assert__assert(litaC_false, __FILE__, __LINE__);
 
 }
@@ -40170,25 +40561,25 @@ litaC_std__assert__assert(litaC_false, __FILE__, __LINE__);
 }} 
 
 
-#line 921 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 933 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_beginWriteHttpResponse(litaC_this, litaC_request);
 
-#line 922 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 934 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_OK;
 
 }
 
 
-#line 928 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 940 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handleWebSocketUpgrade(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_context,litaC_http_request__HttpRequest* litaC_httpRequest,litaC_http_router__RequestHandlerContext* litaC_requestContext) {
-#line 932 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 944 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
-#line 934 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 946 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__builtins__String litaC_secKey = litaC_http_request__Payload_getHeaderValue(&((litaC_httpRequest->payload)), (litaC_std__builtins__String) { .buffer = "Sec-WebSocket-Key", .length = 17 });
 
-#line 935 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 947 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_std__string__String_empty(litaC_secKey)) {{
-#line 936 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 948 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_WEB_SOCKET_SECURITY_KEY;
 
 
@@ -40196,128 +40587,128 @@ return litaC_http_common__Status_ERROR_WEB_SOCKET_SECURITY_KEY;
 } 
 
 
-#line 939 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 951 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_char litaC_keyBuffer[128] =  {0};
 
-#line 940 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 952 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__buffer__StringBuffer litaC_keyString = litaC_std__string__buffer__StringBufferInit(litaC_keyBuffer, 128, -(
 #line 33 "/Users/tony/projects/litac-lang/stdlib/std/string/buffer.lita"
 1));
 
-#line 941 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 953 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__buffer__StringBuffer_append(&((litaC_keyString)), "%.*s%s", litaC_secKey.length, litaC_secKey.buffer, litaC_http_websocket__WEB_SOCKET_MAGIC);
 
-#line 943 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 955 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_u8 litaC_hashResult[
-#line 943 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 955 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 SHA1_BLOCK_SIZE] = {0};
 
-#line 944 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 956 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 SHA1_CTX litaC_ctx = {0};
 
-#line 946 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 958 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 sha1_init(&(litaC_ctx));
 
-#line 947 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 959 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 sha1_update(&(litaC_ctx), (litaC_u8*)litaC_std__string__buffer__StringBuffer_cStr(litaC_keyString), litaC_keyString.length);
 
-#line 948 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 960 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 sha1_final(&(litaC_ctx), litaC_hashResult);
 
-#line 950 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 962 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_u8* litaC_keyAccept = (litaC_u8*)litaC_std__mem__Allocator_alloc(&((litaC_context->requestAllocator.allocator)), sizeof(litaC_u8) * 64);
 
-#line 951 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 963 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_usize litaC_bytesEncoded = base64_encode(litaC_hashResult, litaC_keyAccept, SHA1_BLOCK_SIZE, 0);
 
-#line 953 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 965 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse* litaC_response = &(litaC_context->response);
 
-#line 954 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 966 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->status = 101;
 
-#line 955 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 967 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->type = litaC_http_response__ResponseType_BODY;
 
-#line 956 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 968 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse_addHeaderStr(litaC_response, "Upgrade", "websocket");
 
-#line 957 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 969 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse_addHeaderStr(litaC_response, "Connection", "Upgrade");
 
-#line 958 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 970 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse_addHeader(litaC_response, 
-#line 959 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 971 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__StringInit("Sec-WebSocket-Accept", -(
 #line 12 "/Users/tony/projects/litac-lang/stdlib/std/string/string.lita"
 1)), 
-#line 960 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 972 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 (litaC_std__builtins__String) {.buffer = (const litaC_char*)litaC_keyAccept,
 .length = (litaC_i32)litaC_bytesEncoded});
 
-#line 963 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 975 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_context->socketSession.worker = litaC_this;
 
-#line 964 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 976 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_context->socketSession.userData = litaC_requestContext->userData;
 
-#line 965 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 977 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_context->socketSession.allocator = litaC_requestContext->allocator;
 
-#line 967 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 979 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_router__RouteMatch* litaC_requestMatch = litaC_requestContext->match;
 
-#line 968 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 980 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__assert__assert(litaC_requestMatch->handler.type == litaC_http_router__RequestHandlerType_WEB_SOCKET, __FILE__, __LINE__);
 
-#line 969 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 981 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_context->socketHandler = litaC_requestMatch->handler.webSocket;
 
-#line 970 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 982 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_context->state = litaC_http_context__SessionState_WEB_SOCKET_UPGRADED;
 
-#line 971 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 983 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_context->isWebSocket = litaC_true;
 
-#line 973 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 985 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection* litaC_connection = &(litaC_context->connection);
 
-#line 974 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 986 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder* litaC_readBuffer = &(litaC_connection->readBuffer);
 
-#line 975 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 987 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_clear(litaC_readBuffer);
 
-#line 977 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 989 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_beginWriteHttpResponse(litaC_this, litaC_context);
 
-#line 978 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 990 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_OK;
 
 }
 
 
-#line 981 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 993 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handleFileRequest(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session,litaC_http_request__HttpRequest* litaC_httpRequest) {
-#line 984 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 996 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
-#line 986 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 998 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__io__File litaC_file = {0};
 
-#line 987 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 999 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_fileStatus = litaC_http_file__OpenFile(
-#line 988 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1000 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_this->rootPath, 
-#line 989 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1001 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_this->config->publicServerPath, 
-#line 990 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1002 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_httpRequest->path, 
-#line 991 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1003 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 &(litaC_file));
 
-#line 993 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1005 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_fileStatus != litaC_http_common__Status_OK) {{
-#line 994 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1006 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_fileStatus;
 
 
@@ -40325,70 +40716,70 @@ return litaC_fileStatus;
 } 
 
 
-#line 997 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1009 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->file = litaC_std__io__File_handle(&((litaC_file)));
 
-#line 998 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1010 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->fileOffset = 0;
 
-#line 1000 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1012 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse* litaC_response = &(litaC_session->response);
 
-#line 1001 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1013 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->status = 200;
 
-#line 1002 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1014 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->type = litaC_http_response__ResponseType_FILE;
 
-#line 1003 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1015 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->fileHandle = litaC_std__io__File_handle(&((litaC_file)));
 
-#line 1004 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1016 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->fileSize = litaC_std__io__File_length(&((litaC_file)));
 
-#line 1006 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1018 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__builtins__String litaC_mime = litaC_mime__MimeDB_getMimeType(&((litaC_this->server->mime)), litaC_httpRequest->path);
 
-#line 1007 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1019 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_std__string__String_empty(litaC_mime))) {{
-#line 1008 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1020 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse_addHeader(litaC_response, (litaC_std__builtins__String) { .buffer = "Content-Type", .length = 12 }, litaC_mime);
 
 }
 } 
 
 
-#line 1011 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1023 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_beginWriteHttpResponse(litaC_this, litaC_session);
 
-#line 1012 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1024 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_OK;
 
 }
 
 
-#line 1015 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1027 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_handleWebSocketFrame(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session,litaC_i32 litaC_bytesRead) {
-#line 1018 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1030 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
-#line 1020 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1032 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection* litaC_connection = &(litaC_session->connection);
 
-#line 1021 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1033 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder* litaC_readBuffer = &(litaC_connection->readBuffer);
 
-#line 1023 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1035 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_readBuffer->asBuffer.length += litaC_bytesRead;
 
-#line 1025 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1037 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_websocket__Frame litaC_frame =  {0};
 
-#line 1026 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1038 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_status = litaC_http_websocket__Frame_parseHeader(&((litaC_frame)), litaC_readBuffer);
 
-#line 1027 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1039 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_status != litaC_http_parser__ParseStatus_OK) {{
-#line 1028 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1040 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_WEB_SOCKET_FRAME;
 
 
@@ -40396,13 +40787,13 @@ return litaC_http_common__Status_ERROR_WEB_SOCKET_FRAME;
 } 
 
 
-#line 1031 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1043 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_this->config->maxHttpBodySizeInBytes > 0 && 
-#line 1032 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1044 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_frame.payloadLength > litaC_this->config->maxHttpBodySizeInBytes) {
-#line 1033 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1045 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 1034 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1046 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT;
 
 
@@ -40410,28 +40801,28 @@ return litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT;
 } 
 
 
-#line 1037 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1049 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_status = litaC_http_websocket__Frame_parsePayload(&((litaC_frame)), litaC_readBuffer);
 
-#line 1038 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1050 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_status != litaC_http_common__Status_OK) {{
-#line 1039 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1051 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_status == litaC_http_common__Status_ERROR_WEB_SOCKET_FRAME_LENGTH) {{
-#line 1040 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1052 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if((litaC_readBuffer->asBuffer.capacity - litaC_frame.offset) < litaC_frame.payloadLength) {{
-#line 1041 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1053 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i64 litaC_neededSpace = litaC_frame.payloadLength - litaC_readBuffer->asBuffer.capacity;
 
-#line 1042 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1054 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_reserve(litaC_readBuffer, litaC_readBuffer->asBuffer.capacity + (litaC_i32)litaC_neededSpace);
 
-#line 1043 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1055 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("TODO: Grow buffer!\n");
 
-#line 1044 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1056 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 exit(1);
 
-#line 1045 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1057 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_OUT_OF_MEMORY;
 
 
@@ -40439,7 +40830,7 @@ return litaC_http_common__Status_ERROR_OUT_OF_MEMORY;
 } 
 
 
-#line 1047 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1059 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_PARTIAL_WEB_SOCKET_DISPATCHING_READ;
 
 
@@ -40447,7 +40838,7 @@ return litaC_http_common__Status_PARTIAL_WEB_SOCKET_DISPATCHING_READ;
 } 
 
 
-#line 1049 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1061 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_WEB_SOCKET_FRAME;
 
 
@@ -40455,76 +40846,76 @@ return litaC_http_common__Status_ERROR_WEB_SOCKET_FRAME;
 } 
 
 
-#line 1052 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1064 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
 
-#line 1054 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1066 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_session->socketHandler.callback) {{
-#line 1055 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1067 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(!(litaC_session->socketHandler.callback(&(litaC_session->socketSession), &((litaC_frame))))) {{
-#line 1056 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1068 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {litaC_http_common__Status ___result = litaC_http_common__Status_ERROR_WEB_SOCKET_HANDLE_FRAME_ERROR;
 
-#line 1052 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__string__builder__StringBuilder_clear(litaC_readBuffer);
-return ___result;
-}
-
-
-}
-} 
-
-
-}
-} 
-
-
-#line 1060 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-if(litaC_frame.opcode == litaC_http_websocket__Opcode_CLOSE) {{
-#line 1061 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-{litaC_http_common__Status ___result = litaC_http_common__Status_WEB_SOCKET_CLOSED;
-
-#line 1052 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__string__builder__StringBuilder_clear(litaC_readBuffer);
-return ___result;
-}
-
-
-}
-} 
-
-
 #line 1064 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-{litaC_http_common__Status ___result = litaC_http_common__Status_OK;
-
-#line 1052 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_clear(litaC_readBuffer);
 return ___result;
 }
 
-litaC_std__string__builder__StringBuilder_clear(litaC_readBuffer);
+
 }
+} 
 
 
-#line 1067 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_sendWebSocketFrame(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session,litaC_http_websocket__Frame* litaC_frame) {
-#line 1070 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+}
+} 
 
-#line 1071 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_connection__HttpConnection* litaC_connection = &(litaC_session->connection);
 
 #line 1072 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__string__builder__StringBuilder* litaC_writeBuffer = &(litaC_connection->writeBuffer);
-
+if(litaC_frame.opcode == litaC_http_websocket__Opcode_CLOSE) {{
 #line 1073 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__string__builder__StringBuilder_clear(litaC_writeBuffer);
+{litaC_http_common__Status ___result = litaC_http_common__Status_WEB_SOCKET_CLOSED;
 
-#line 1075 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_common__Status litaC_status = litaC_http_websocket__Frame_serialize(litaC_frame, litaC_writeBuffer);
+#line 1064 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__string__builder__StringBuilder_clear(litaC_readBuffer);
+return ___result;
+}
+
+
+}
+} 
+
 
 #line 1076 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+{litaC_http_common__Status ___result = litaC_http_common__Status_OK;
+
+#line 1064 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__string__builder__StringBuilder_clear(litaC_readBuffer);
+return ___result;
+}
+
+litaC_std__string__builder__StringBuilder_clear(litaC_readBuffer);
+}
+
+
+#line 1079 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_sendWebSocketFrame(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session,litaC_http_websocket__Frame* litaC_frame) {
+#line 1082 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+
+#line 1083 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_connection__HttpConnection* litaC_connection = &(litaC_session->connection);
+
+#line 1084 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__string__builder__StringBuilder* litaC_writeBuffer = &(litaC_connection->writeBuffer);
+
+#line 1085 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__string__builder__StringBuilder_clear(litaC_writeBuffer);
+
+#line 1087 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_http_common__Status litaC_status = litaC_http_websocket__Frame_serialize(litaC_frame, litaC_writeBuffer);
+
+#line 1088 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_status != litaC_http_common__Status_OK) {{
-#line 1077 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1089 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_status;
 
 
@@ -40532,21 +40923,21 @@ return litaC_status;
 } 
 
 
-#line 1080 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1092 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->state = litaC_http_context__SessionState_WEB_SOCKET_OPERATION;
 
-#line 1081 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1093 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_session->submissions = 0;
 
-#line 1083 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1095 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_result = litaC_http_worker_kqueue__WorkerThread_doSend(litaC_this, litaC_session);
 
-#line 1084 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1096 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result < 0) {{
-#line 1085 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1097 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_session);
 
-#line 1086 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1098 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_ERROR_IO_ERROR;
 
 
@@ -40554,87 +40945,87 @@ return litaC_http_common__Status_ERROR_IO_ERROR;
 } 
 
 
-#line 1088 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1100 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_result > 0) {{
-#line 1089 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1101 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_registerWrite(litaC_this, litaC_session);
 
 }
 } 
 
 
-#line 1092 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1104 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_OK;
 
 }
 
 
-#line 1099 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1111 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_sendServerError(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_session,litaC_http_common__Status litaC_status) {
-#line 1102 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1114 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
-#line 1103 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1115 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_request__HttpRequest litaC_httpRequest =  {0};
 
-#line 1104 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1116 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_router__RequestHandlerContext litaC_requestContext =  {
-#line 1105 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1117 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .allocator = &(litaC_session->requestAllocator.allocator),
 
-#line 1106 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1118 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .request = &(litaC_httpRequest),
 
-#line 1107 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1119 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .response = &(litaC_session->response),
 
-#line 1108 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1120 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .userData = NULL,
 
-#line 1109 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1121 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 .match = NULL};
 
-#line 1111 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1123 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_serverError(litaC_this, &(litaC_requestContext), litaC_status);
 
-#line 1112 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1124 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_beginWriteHttpResponse(litaC_this, litaC_session);
 }
 
 
-#line 1115 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1127 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_serverError(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_router__RequestHandlerContext* litaC_requestContext,litaC_http_common__Status litaC_status) {    litaC_http_server__HttpHandler __tmp2;
 
-#line 1118 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1130 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
-#line 1119 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1131 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_request__HttpRequest* litaC_request = litaC_requestContext->request;
 
-#line 1120 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1132 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse* litaC_response = litaC_requestContext->response;
 
-#line 1122 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1134 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("Internal error: %s %.*s\n", 
-#line 1123 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1135 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_request__HttpMethodAsStr(litaC_request->method), 
-#line 1124 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1136 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_request->path.length, litaC_request->path.buffer);
 
-#line 1127 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1139 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->status = 500;
 
-#line 1128 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1140 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_this->server->errorHandler.__this) {{
-#line 1129 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1141 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 (__tmp2 = litaC_this->server->errorHandler, __tmp2.__vtable)->handle(__tmp2.__this, litaC_requestContext, litaC_status);
 
 }
 } else {
-#line 1131 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1143 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 1132 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1144 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->type = litaC_http_response__ResponseType_BODY;
 
-#line 1133 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1145 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "Internal Error handling the request.");
 
 }} 
@@ -40642,40 +41033,40 @@ litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "Int
 }
 
 
-#line 1137 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1149 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_server404(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_router__RequestHandlerContext* litaC_requestContext,litaC_http_common__Status litaC_status) {    litaC_http_server__HttpHandler __tmp3;
 
-#line 1140 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1152 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
-#line 1141 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1153 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_request__HttpRequest* litaC_request = litaC_requestContext->request;
 
-#line 1142 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1154 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_response__HttpResponse* litaC_response = litaC_requestContext->response;
 
-#line 1144 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1156 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Error("No route for: %s %.*s\n", 
-#line 1145 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1157 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_request__HttpMethodAsStr(litaC_request->method), 
-#line 1146 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1158 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_request->path.length, litaC_request->path.buffer);
 
-#line 1149 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1161 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->status = 404;
 
-#line 1150 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1162 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_this->server->notFoundHandler.__this) {{
-#line 1151 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1163 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 (__tmp3 = litaC_this->server->notFoundHandler, __tmp3.__vtable)->handle(__tmp3.__this, litaC_requestContext, litaC_status);
 
 }
 } else {
-#line 1153 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1165 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 1154 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1166 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->type = litaC_http_response__ResponseType_BODY;
 
-#line 1155 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1167 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "No route bound.");
 
 }} 
@@ -40683,139 +41074,162 @@ litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "No 
 }
 
 
-#line 1159 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1171 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_common__Status litaC_http_worker_kqueue__WorkerThread_sendBadRequest(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_http_context__SessionContext* litaC_context,litaC_http_common__Status litaC_status) {
-#line 1162 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-
-#line 1163 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_request__HttpRequest litaC_httpRequest =  {0};
-
-#line 1164 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_router__RequestHandlerContext litaC_requestContext =  {
-#line 1165 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.allocator = &(litaC_context->requestAllocator.allocator),
-
-#line 1166 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.request = &(litaC_httpRequest),
-
-#line 1167 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.response = &(litaC_context->response),
-
-#line 1168 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.userData = NULL,
-
-#line 1169 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-.match = NULL};
-
-#line 1172 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_http_response__HttpResponse* litaC_response = litaC_requestContext.response;
-
-#line 1173 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_response->status = 400;
+#line 1174 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 
 #line 1175 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-switch(litaC_status) {
+litaC_http_request__HttpRequest litaC_httpRequest =  {0};
+
 #line 1176 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-case litaC_http_common__Status_ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT: 
+litaC_http_router__RequestHandlerContext litaC_requestContext =  {
 #line 1177 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-{litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), 
+.allocator = &(litaC_context->requestAllocator.allocator),
+
 #line 1178 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-"Request exceeded the max request limit of %d bytes for request line\n", 
+.request = &(litaC_httpRequest),
+
 #line 1179 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_this->config->maxHttpRequestLineSizeInBytes);
+.response = &(litaC_context->response),
+
+#line 1180 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+.userData = NULL,
 
 #line 1181 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-break;
+.match = NULL};
 
-}
-
-#line 1182 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-case litaC_http_common__Status_ERROR_INVALID_HEADER_EXCEEDED_LIMIT: 
-#line 1183 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-{litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), 
 #line 1184 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-"Request exceeded the max request limit of %d bytes for headers\n", 
+litaC_http_response__HttpResponse* litaC_response = litaC_requestContext.response;
+
 #line 1185 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_this->config->maxHttpHeaderSizeInBytes);
+litaC_response->status = 400;
 
 #line 1187 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+switch(litaC_status) {
+#line 1188 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+case litaC_http_common__Status_ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT: 
+#line 1189 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+{litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), 
+#line 1190 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+"Request exceeded the max request limit of %d bytes for request line\n", 
+#line 1191 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_this->config->maxHttpRequestLineSizeInBytes);
+
+#line 1193 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
-
-#line 1188 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-case litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT: 
-#line 1189 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-{litaC_response->status = 413;
-
-#line 1190 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), 
-#line 1191 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-"Request exceeded the max request limit of %d bytes for body\n", 
-#line 1192 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-litaC_this->config->maxHttpBodySizeInBytes);
 
 #line 1194 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-break;
-
-}
-
+case litaC_http_common__Status_ERROR_INVALID_HEADER_EXCEEDED_LIMIT: 
 #line 1195 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-case litaC_http_common__Status_ERROR_UNKNOWN_BODY_LENGTH: 
+{litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), 
 #line 1196 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-{litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "Missing Content-Length or Transfer-Encoding\n");
-
+"Request exceeded the max request limit of %d bytes for headers\n", 
 #line 1197 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_this->config->maxHttpHeaderSizeInBytes);
+
+#line 1199 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
-
-#line 1198 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-case litaC_http_common__Status_ERROR_UNSUPPORTED_UPGRADE_PROTOCOL: 
-#line 1199 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
-{litaC_response->status = 426;
 
 #line 1200 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+case litaC_http_common__Status_ERROR_INVALID_BODY_EXCEEDED_LIMIT: 
+#line 1201 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+{litaC_response->status = 413;
+
+#line 1202 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), 
+#line 1203 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+"Request exceeded the max request limit of %d bytes for body\n", 
+#line 1204 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_this->config->maxHttpBodySizeInBytes);
+
+#line 1206 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+break;
+
+}
+
+#line 1207 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+case litaC_http_common__Status_ERROR_UNKNOWN_BODY_LENGTH: 
+#line 1208 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+{litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "Missing Content-Length or Transfer-Encoding\n");
+
+#line 1209 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+break;
+
+}
+
+#line 1210 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+case litaC_http_common__Status_ERROR_PARSING_HTTP_REQUEST: 
+#line 1211 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+{litaC_response->status = 422;
+
+#line 1212 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "Unprocessable request body\n");
+
+#line 1213 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+break;
+
+}
+
+#line 1214 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+case litaC_http_common__Status_ERROR_WEB_SOCKET_SECURITY_KEY: 
+#line 1215 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+{litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "Missing or invalid Sec-WebSocket-Key\n");
+
+#line 1216 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+break;
+
+}
+
+#line 1217 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+case litaC_http_common__Status_ERROR_UNSUPPORTED_UPGRADE_PROTOCOL: 
+#line 1218 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+{litaC_response->status = 426;
+
+#line 1219 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "The requested protocol upgrade is not supported\n");
 
-#line 1201 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1220 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }
 default: 
-#line 1202 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1221 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 {
-#line 1203 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1222 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), "Bad request\n");
 
-#line 1204 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1223 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 break;
 
 }}
 
-#line 1207 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1226 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_response->type = litaC_http_response__ResponseType_BODY;
 
-#line 1208 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1227 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_beginWriteHttpResponse(litaC_this, litaC_context);
 
-#line 1209 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1228 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_http_common__Status_OK;
 
 }
 
 
-#line 1216 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1235 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_context__SessionContext* litaC_http_worker_kqueue__WorkerThread_handleAccept(litaC_http_worker_kqueue__WorkerThread* litaC_this,litaC_i32 litaC_clientSocket) {
-#line 1217 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1236 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_index = litaC_http_context__ContextPool_alloc(&((litaC_this->sessions)));
 
-#line 1218 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1237 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_index < 0) {{
-#line 1219 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1238 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Warn("SessionContext pool exhausted, dropping connection\n");
 
-#line 1220 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1239 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return NULL;
 
 
@@ -40823,56 +41237,56 @@ return NULL;
 } 
 
 
-#line 1223 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1242 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_context__SessionContext* litaC_session = litaC_http_context__ContextPool_get(&((litaC_this->sessions)), litaC_index);
 
-#line 1224 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1243 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__assert__assert(litaC_session != NULL, __FILE__, __LINE__);
 
-#line 1226 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1245 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_context__SessionContext_begin(litaC_session, litaC_clientSocket);
 
-#line 1227 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1246 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 return litaC_session;
 
 }
 
 
-#line 1230 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1249 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_void litaC_http_worker_kqueue__WorkerThread_checkTimeouts(litaC_http_worker_kqueue__WorkerThread* litaC_this) {
-#line 1231 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1250 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_timeout = litaC_this->config->keepAliveTimeoutInSec;
 
-#line 1232 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1251 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_f64 litaC_currentTime = litaC_std__system__SystemTimeMSec();
 
-#line 1234 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1253 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 for(litaC_i32 litaC_i = 0;litaC_i < litaC_std__array__std__array__Array_size_cb_http_context__SessionContext_ce_(&((litaC_this->sessions.pool)));litaC_i += 1) {{
-#line 1235 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1254 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_context__SessionContext* litaC_context = litaC_std__array__std__array__Array_getPtr_cb_http_context__SessionContext_ce_(&((litaC_this->sessions.pool)), litaC_i);
 
-#line 1236 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1255 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_context->inUse && litaC_http_connection__HttpConnection_isConnected(&((litaC_context->connection)))) {{
-#line 1237 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1256 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_i32 litaC_sessionTimeout = litaC_timeout;
 
-#line 1238 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1257 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_context->isWebSocket) {{
-#line 1239 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1258 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_sessionTimeout = 90;
 
 }
 } 
 
 
-#line 1242 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1261 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 if(litaC_context->lastRequestTime + litaC_sessionTimeout < litaC_currentTime) {{
-#line 1243 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1262 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_std__log__Info("Timeout for socket: %d (index: %d)\n", 
-#line 1244 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1263 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_connection__HttpConnection_handle(&((litaC_context->connection))), litaC_context->index);
 
-#line 1245 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
+#line 1264 "/Users/tony/projects/ringhttp/src/http_worker_kqueue.lita"
 litaC_http_worker_kqueue__WorkerThread_closeSession(litaC_this, litaC_context);
 
 }
@@ -40957,6 +41371,1067 @@ litaC_std__builtins__String litaC_value = litaC_std__string__char_toString(litaC
 
 #line 217 "/Users/tony/projects/ringhttp/src/mime.lita"
 litaC_std__assert__assert(litaC_std__string__String_equals(litaC_type, litaC_value), __FILE__, __LINE__);
+}
+
+
+#line 24 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__FileStream_read(litaC_test_webserver__FileStream* litaC_this,litaC_char* litaC_buffer,litaC_i32 litaC_size) {
+#line 25 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i64 litaC_startPosition = litaC_std__io__File_position(&((litaC_this->file)));
+
+#line 26 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__io__FileStatus litaC_status = litaC_std__io__File_readBytes(&((litaC_this->file)), litaC_buffer, (litaC_usize)litaC_size);
+
+#line 28 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_status == litaC_std__io__FileStatus_Ok) {{
+#line 29 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return (litaC_i32)(litaC_std__io__File_position(&((litaC_this->file))) - litaC_startPosition);
+
+
+}
+} 
+
+
+#line 31 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return -(1);
+
+}
+
+
+#line 37 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__ServerHandler_handle(litaC_test_webserver__ServerHandler* litaC_this,litaC_http_router__RequestHandlerContext* litaC_context,litaC_http_common__Status litaC_status) {
+#line 40 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+
+#line 42 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+const char* litaC_body = "";
+
+#line 43 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_status == litaC_http_common__Status_ERROR_NO_ROUTE_FOUND) {{
+#line 44 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_body = "\n            <html>\n                <body>\n                    <div>\n                        Unknown route for <b>%.*s</b>\n                    </div>\n                </body>\n            </html>\n        ";
+
+}
+} else {
+#line 54 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+{
+#line 55 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_body = "\n            <html>\n                <body>\n                    <div>\n                        Sorry, an internal server error ocurred.\n                    </div>\n                </body>\n            </html>\n        ";
+
+}} 
+
+
+#line 65 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse* litaC_response = litaC_context->response;
+
+#line 66 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_response->type = litaC_http_response__ResponseType_BODY;
+
+#line 67 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_addHeaderStr(litaC_response, "Content-Type", "text/html");
+
+#line 70 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_response->body)), 
+#line 71 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_body, 
+#line 72 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_context->request->path.length, 
+#line 73 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_context->request->path.buffer);
+
+#line 75 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+}
+
+
+#line 78 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__TestWebSocketController(litaC_http_websocket__WebSocketSession* litaC_session,litaC_http_websocket__Frame* litaC_frame) {
+#line 79 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__builtins__String litaC_text = litaC_std__string__StringInit(litaC_frame->payload, (litaC_i32)litaC_frame->payloadLength);
+
+#line 81 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_std__string__String_equalsIgnoreCase(litaC_text, (litaC_std__builtins__String) { .buffer = "exit", .length = 4 })) {{
+#line 82 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_websocket__WebSocketSession_close(litaC_session);
+
+#line 83 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+
+}
+} 
+
+
+#line 86 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder litaC_writeBuffer = litaC_std__string__builder__StringBuilderInit(256, litaC_session->allocator);
+
+#line 87 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_clear(&((litaC_writeBuffer)));
+
+#line 89 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_writeBuffer)), "Server says: '%.*s'\n", litaC_text.length, litaC_text.buffer);
+
+#line 91 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_websocket__Frame litaC_out =  {0};
+
+#line 92 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_out.isFinal = litaC_true;
+
+#line 93 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_out.masked = litaC_false;
+
+#line 94 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_out.payload = litaC_writeBuffer.asBuffer.buffer;
+
+#line 95 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_out.payloadLength = litaC_writeBuffer.asBuffer.length;
+
+#line 96 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_out.opcode = litaC_http_websocket__Opcode_TEXT;
+
+#line 98 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return litaC_http_websocket__WebSocketSession_send(litaC_session, 
+#line 99 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_out));
+
+}
+
+
+#line 104 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__EchoRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context) {
+#line 105 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpRequest* litaC_req = litaC_context->request;
+
+#line 106 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse* litaC_res = litaC_context->response;
+
+#line 108 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpQuery litaC_query = litaC_http_request__HttpQueryInit(litaC_context->allocator);
+
+#line 109 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpRequest_parseQuery(litaC_req, &(litaC_query));
+
+#line 111 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->status = 200;
+
+#line 112 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->type = litaC_http_response__ResponseType_BODY;
+
+#line 113 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_addHeaderStr(litaC_res, "Content-Type", "application/json");
+
+#line 115 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ \"query\": {");
+
+#line 117 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+for(litaC_i32 litaC_i = 0;litaC_i < litaC_std__array__std__array__Array_size_cb_http_request__QueryParam_ce_(&((litaC_query.params)));litaC_i += 1) {{
+#line 118 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__QueryParam* litaC_param = litaC_std__array__std__array__Array_getPtr_cb_http_request__QueryParam_ce_(&((litaC_query.params)), litaC_i);
+
+#line 119 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_i > 0) {litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), ",");
+} 
+
+
+#line 121 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "\"%.*s\": \"%.*s\"", 
+#line 122 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_param->name.length, litaC_param->name.buffer, 
+#line 123 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_param->value.length, litaC_param->value.buffer);
+
+}}
+
+#line 126 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "}}");
+
+#line 130 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+}
+
+
+#line 133 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__DownloadRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context) {
+#line 134 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpRequest* litaC_req = litaC_context->request;
+
+#line 135 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse* litaC_res = litaC_context->response;
+
+#line 137 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->status = 200;
+
+#line 138 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->type = litaC_http_response__ResponseType_STREAM;
+
+#line 139 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_addHeaderStr(litaC_res, "Content-Type", "application/octet-stream");
+
+#line 140 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_addHeaderStr(litaC_res, "Content-Disposition", "attachment; filename=\"big_file.txt\"");
+
+#line 142 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__FileStream* litaC_fileStream = litaC_std__mem__std__mem__new_cb_test_webserver__FileStream_ce_(litaC_context->allocator);
+
+#line 143 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__io__File_open(&((litaC_fileStream->file)), "../test/download_sample.txt", litaC_std__io__FileOpenOp_READ_ONLY);
+
+#line 146 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_asStream(litaC_res, litaC_test_webserver__FileStream__to__litaC_http_response__Stream((litaC_fileStream)));
+
+#line 148 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+}
+
+
+#line 151 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__GzipRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context) {
+#line 152 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpRequest* litaC_req = litaC_context->request;
+
+#line 153 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse* litaC_res = litaC_context->response;
+
+#line 155 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->status = 200;
+
+#line 156 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->type = litaC_http_response__ResponseType_BODY;
+
+#line 157 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_addHeaderStr(litaC_res, "Content-Type", "text/plain");
+
+#line 159 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+
+#define litaC_size (2 * litaC_std__mem__KiB)
+
+#line 160 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+for(litaC_i32 litaC_i = 0;litaC_i < litaC_size;litaC_i += 1) {{
+#line 161 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_b = (litaC_i % (127 - 32)) + 32;
+
+#line 162 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_appendChar(&((litaC_res->body)), (litaC_char)litaC_b);
+
+}}
+
+#line 165 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+#undef litaC_size
+}
+
+
+#line 169 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__SubmitRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context) {
+#line 170 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpRequest* litaC_req = litaC_context->request;
+
+#line 171 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse* litaC_res = litaC_context->response;
+
+#line 173 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->status = 200;
+
+#line 174 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->type = litaC_http_response__ResponseType_BODY;
+
+#line 175 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_addHeaderStr(litaC_res, "Content-Type", "application/json");
+
+#line 177 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ ");
+
+#line 179 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), " \"headers\": ");
+
+#line 180 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__PrintHeaders(&(litaC_req->payload.headers), litaC_res, litaC_context->allocator);
+
+#line 182 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), ", ");
+
+#line 184 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "\"body\": ");
+
+#line 185 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__PrintBody(&(litaC_req->payload.body), litaC_res, litaC_context->allocator);
+
+#line 187 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "} ");
+
+#line 188 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+}
+
+
+#line 191 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_void litaC_test_webserver__PrintHeaders(litaC_std__array__std__array__Array_cb_http_request__HttpHeader_ce_* litaC_headers,litaC_http_response__HttpResponse* litaC_res,const litaC_std__mem__Allocator* litaC_allocator) {
+#line 192 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "[");
+
+#line 194 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder litaC_sb = litaC_std__string__builder__StringBuilderInit(1024, litaC_allocator);
+
+#line 195 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+for(litaC_i32 litaC_i = 0;litaC_i < litaC_std__array__std__array__Array_size_cb_http_request__HttpHeader_ce_(litaC_headers);litaC_i += 1) {{
+#line 196 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_i > 0) {litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), ",");
+} 
+
+
+#line 198 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpHeader* litaC_header = litaC_std__array__std__array__Array_getPtr_cb_http_request__HttpHeader_ce_(litaC_headers, litaC_i);
+
+#line 199 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ ");
+
+#line 200 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "\"name\": \"%.*s\", ", litaC_header->name.length, litaC_header->name.buffer);
+
+#line 202 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__json__JsonEscapeString(&((litaC_sb)), litaC_header->values.buffer, litaC_header->values.length);
+
+#line 203 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "\"value\": \"%.*s\"", litaC_sb.asBuffer.length, litaC_sb.asBuffer.buffer);
+
+#line 204 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "} ");
+
+#line 206 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_clear(&((litaC_sb)));
+
+}}
+
+#line 208 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "]");
+}
+
+
+#line 211 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_void litaC_test_webserver__PrintBody(litaC_http_request__Body* litaC_body,litaC_http_response__HttpResponse* litaC_res,const litaC_std__mem__Allocator* litaC_allocator) {
+#line 212 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+switch(litaC_body->bodyType) {
+#line 213 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+case litaC_http_request__BodyType_FORM_URLENCODED: {{
+#line 214 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ \"post_params\": {");
+
+#line 215 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+for(litaC_i32 litaC_i = 0;litaC_i < litaC_std__array__std__array__Array_size_cb_http_request__FormParam_ce_(&((litaC_body->formParams)));litaC_i += 1) {{
+#line 216 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__FormParam* litaC_param = litaC_std__array__std__array__Array_getPtr_cb_http_request__FormParam_ce_(&((litaC_body->formParams)), litaC_i);
+
+#line 217 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_i > 0) {litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), ",");
+} 
+
+
+#line 219 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "\"%.*s\": \"%.*s\"", 
+#line 220 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_param->name.length, litaC_param->name.buffer, 
+#line 221 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_param->value.length, litaC_param->value.buffer);
+
+}}
+
+#line 224 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "}}");
+
+#line 225 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+break;
+
+}
+
+}
+
+#line 227 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+case litaC_http_request__BodyType_JSON: {{
+#line 228 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_body->json) {{
+#line 229 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__json__JsonNode_print(litaC_body->json, &((litaC_res->body)));
+
+}
+} 
+
+
+#line 231 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+break;
+
+}
+
+}
+
+#line 233 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+case litaC_http_request__BodyType_MULTIPART_FORMDATA: {{
+#line 234 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__MultiPart litaC_multipart = litaC_body->multipart;
+
+#line 235 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ \"multi_part\": { ");
+
+#line 236 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), " \"boundary\": \"%.*s\", ", litaC_multipart.boundary.length, litaC_multipart.boundary.buffer);
+
+#line 238 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), " \"parts\": [");
+
+#line 239 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+for(litaC_i32 litaC_i = 0;litaC_i < litaC_std__array__std__array__Array_size_cb_http_request__Part_ce_(&((litaC_multipart.parts)));litaC_i += 1) {{
+#line 240 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__Part* litaC_part = litaC_std__array__std__array__Array_getPtr_cb_http_request__Part_ce_(&((litaC_multipart.parts)), litaC_i);
+
+#line 241 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_i > 0) {litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), ",");
+} 
+
+
+#line 243 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__PrintBody(&(litaC_part->payload.body), litaC_res, litaC_allocator);
+
+}}
+
+#line 245 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "]}}");
+
+#line 246 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+break;
+
+}
+
+}
+
+#line 248 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+case litaC_http_request__BodyType_FORMDATA: {{
+#line 249 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder litaC_sb = litaC_std__string__builder__StringBuilderInit(litaC_body->formData.value.length + 32, litaC_allocator);
+
+#line 250 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__json__JsonEscapeString(&((litaC_sb)), litaC_body->formData.value.buffer, litaC_body->formData.value.length);
+
+#line 252 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{");
+
+#line 253 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), " \"form_data\": {");
+
+#line 254 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), " \"name\": \"%.*s\",", litaC_body->formData.name.length, litaC_body->formData.name.buffer);
+
+#line 255 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), " \"filename\": \"%.*s\",", litaC_body->formData.filename.length, litaC_body->formData.filename.buffer);
+
+#line 256 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), " \"value\": \"%.*s\"", litaC_sb.asBuffer.length, litaC_sb.asBuffer.buffer);
+
+#line 257 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "  }");
+
+#line 258 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "}");
+
+#line 259 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+break;
+
+}
+
+}
+default: 
+#line 261 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+{{
+#line 262 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder litaC_sb = litaC_std__string__builder__StringBuilderInit(litaC_body->body.length + 32, litaC_allocator);
+
+#line 263 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__json__JsonEscapeString(&((litaC_sb)), litaC_body->body.buffer, litaC_body->body.length);
+
+#line 265 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ \"body\": ");
+
+#line 266 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "\"%.*s\"", litaC_sb.asBuffer.length, litaC_sb.asBuffer.buffer);
+
+#line 267 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "}");
+
+#line 268 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+break;
+
+}
+
+}}
+}
+
+
+#line 273 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__PutRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context) {
+#line 274 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpRequest* litaC_req = litaC_context->request;
+
+#line 275 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse* litaC_res = litaC_context->response;
+
+#line 277 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->status = 200;
+
+#line 278 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->type = litaC_http_response__ResponseType_BODY;
+
+#line 279 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_addHeaderStr(litaC_res, "Content-Type", "application/json");
+
+#line 281 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ \"method\": \"PUT\", ");
+
+#line 282 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "\"body\": ");
+
+#line 283 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__PrintBody(&(litaC_req->payload.body), litaC_res, litaC_context->allocator);
+
+#line 284 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "}");
+
+#line 285 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+}
+
+
+#line 288 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__PatchRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context) {
+#line 289 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpRequest* litaC_req = litaC_context->request;
+
+#line 290 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse* litaC_res = litaC_context->response;
+
+#line 292 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->status = 200;
+
+#line 293 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->type = litaC_http_response__ResponseType_BODY;
+
+#line 294 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_addHeaderStr(litaC_res, "Content-Type", "application/json");
+
+#line 296 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ \"method\": \"PATCH\", ");
+
+#line 297 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "\"body\": ");
+
+#line 298 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__PrintBody(&(litaC_req->payload.body), litaC_res, litaC_context->allocator);
+
+#line 299 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "}");
+
+#line 300 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+}
+
+
+#line 303 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__DeleteRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context) {
+#line 304 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse* litaC_res = litaC_context->response;
+
+#line 306 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->status = 200;
+
+#line 307 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->type = litaC_http_response__ResponseType_BODY;
+
+#line 308 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse_addHeaderStr(litaC_res, "Content-Type", "application/json");
+
+#line 309 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ \"method\": \"DELETE\" }");
+
+#line 310 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+}
+
+
+#line 313 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__PathRequestHandler(litaC_http_router__RequestHandlerContext* litaC_context) {
+#line 314 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpRequest* litaC_req = litaC_context->request;
+
+#line 315 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_response__HttpResponse* litaC_res = litaC_context->response;
+
+#line 316 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_router__RouteMatch* litaC_match = litaC_context->match;
+
+#line 318 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpPathValues litaC_values = litaC_match->values;
+
+#line 320 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->status = 200;
+
+#line 321 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_res->type = litaC_http_response__ResponseType_BODY;
+
+#line 322 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "{ \"path_values\": {");
+
+#line 323 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+for(litaC_i32 litaC_i = 0;litaC_i < litaC_values.numberOfEntries;litaC_i += 1) {{
+#line 324 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpPathEntry litaC_entry = litaC_match->template->entries[litaC_i];
+
+#line 325 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__builtins__String* litaC_value = &(litaC_values.entries[litaC_i]);
+
+#line 327 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_i > 0) {litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), ",");
+} 
+
+
+#line 329 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "\"%.*s\": \"%.*s\"", 
+#line 330 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_entry.name.length, litaC_entry.name.buffer, 
+#line 331 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_value->length, litaC_value->buffer);
+
+}}
+
+#line 334 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__string__builder__StringBuilder_append(&((litaC_res->body)), "}}");
+
+#line 335 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return 1;
+
+}
+
+
+#line 338 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_i32 litaC_test_webserver__WebServerFunction(litaC_void* litaC_arg) {
+#line 339 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__TestServer* litaC_testServer = (litaC_test_webserver__TestServer*)litaC_arg;
+
+#line 340 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+return litaC_test_webserver__runServer(litaC_testServer);
+
+}
+
+
+#line 344 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+
+litaC_i32 litaC_test_webserver__runServer(litaC_test_webserver__TestServer* litaC_testServer) {
+#line 345 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer litaC_server =  {0};
+
+#line 346 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_init(&((litaC_server)), litaC_testServer->config);
+
+#line 348 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__ServerHandler litaC_handler =  {0};
+
+#line 349 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_setErrorHandler(&((litaC_server)), litaC_test_webserver__ServerHandler__to__litaC_http_server__HttpHandler((&(litaC_handler))));
+
+#line 350 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_setNotFoundHandler(&((litaC_server)), litaC_test_webserver__ServerHandler__to__litaC_http_server__HttpHandler((&(litaC_handler))));
+
+#line 352 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_addHttpController(&((litaC_server)), 
+#line 353 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpMethod_GET, 
+#line 354 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+"/echo", 
+#line 355 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_handler), 
+#line 356 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+(litaC_http_server__HttpController) {
+#line 357 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.callback = litaC_test_webserver__EchoRequestHandler});
+
+#line 361 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_addHttpController(&((litaC_server)), 
+#line 362 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpMethod_POST, 
+#line 363 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+"/submit", 
+#line 364 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_handler), 
+#line 365 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+(litaC_http_server__HttpController) {
+#line 366 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.callback = litaC_test_webserver__SubmitRequestHandler});
+
+#line 370 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_addHttpController(&((litaC_server)), 
+#line 371 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpMethod_GET, 
+#line 372 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+"/download", 
+#line 373 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_handler), 
+#line 374 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+(litaC_http_server__HttpController) {
+#line 375 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.callback = litaC_test_webserver__DownloadRequestHandler});
+
+#line 379 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_addHttpController(&((litaC_server)), 
+#line 380 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpMethod_GET, 
+#line 381 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+"/gzip", 
+#line 382 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_handler), 
+#line 383 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+(litaC_http_server__HttpController) {
+#line 384 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.callback = litaC_test_webserver__GzipRequestHandler});
+
+#line 388 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_addHttpController(&((litaC_server)), 
+#line 389 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpMethod_GET, 
+#line 390 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+"/path/{id}", 
+#line 391 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_handler), 
+#line 392 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+(litaC_http_server__HttpController) {
+#line 393 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.callback = litaC_test_webserver__PathRequestHandler});
+
+#line 397 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_addHttpController(&((litaC_server)), 
+#line 398 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpMethod_PUT, 
+#line 399 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+"/put", 
+#line 400 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_handler), 
+#line 401 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+(litaC_http_server__HttpController) {
+#line 402 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.callback = litaC_test_webserver__PutRequestHandler});
+
+#line 406 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_addHttpController(&((litaC_server)), 
+#line 407 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpMethod_PATCH, 
+#line 408 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+"/patch", 
+#line 409 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_handler), 
+#line 410 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+(litaC_http_server__HttpController) {
+#line 411 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.callback = litaC_test_webserver__PatchRequestHandler});
+
+#line 415 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_addHttpController(&((litaC_server)), 
+#line 416 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_request__HttpMethod_DELETE, 
+#line 417 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+"/delete", 
+#line 418 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_handler), 
+#line 419 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+(litaC_http_server__HttpController) {
+#line 420 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.callback = litaC_test_webserver__DeleteRequestHandler});
+
+#line 424 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_addWebSocketController(&((litaC_server)), 
+#line 425 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+"/websocket", 
+#line 426 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+&(litaC_handler), 
+#line 427 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+(litaC_http_server__WebSocketController) {
+#line 428 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.callback = litaC_test_webserver__TestWebSocketController});
+
+#line 433 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__thread__barrier_mac__Barrier_wait(&((litaC_testServer->barrier)));
+
+#line 435 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_common__Status litaC_status = litaC_http_server__HttpServer_start(&((litaC_server)));
+
+#line 436 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+
+
+#line 438 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__assert__assert(litaC_http_common__Status_OK == litaC_status, __FILE__, __LINE__);
+
+#line 439 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+{litaC_i32 ___result = 0;
+
+#line 436 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpServer_close(&((litaC_server)));
+return ___result;
+}
+
+litaC_http_server__HttpServer_close(&((litaC_server)));
+}
+
+
+#line 460 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+
+litaC_void litaC_test_webserver__launch(litaC_test_webserver__TestServer* litaC_testServer) {
+#line 461 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(!(litaC_testServer->config)) {{
+#line 462 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_testServer->config = &(litaC_test_webserver__defaultConfig);
+
+}
+} 
+
+
+#line 465 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(!(litaC_testServer->config->allocator)) {{
+#line 466 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_testServer->config->allocator = litaC_std__mem__defaultAllocator;
+
+}
+} 
+
+
+#line 469 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__thread__barrier_mac__Barrier_init(&((litaC_testServer->barrier)), 2);
+
+#line 470 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+
+
+#line 472 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__thread__thread_posix__Thread litaC_thread =  {0};
+
+#line 473 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+if(litaC_std__thread__thread_posix__Thread_create(&((litaC_thread)), litaC_test_webserver__WebServerFunction, litaC_testServer, litaC_std__mem__defaultAllocator) != litaC_std__thread__thread_posix__ThreadStatus_SUCCESS) {{
+#line 474 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__assert__assert(litaC_false, __FILE__, __LINE__);
+
+}
+} 
+
+
+#line 477 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__thread__barrier_mac__Barrier_wait(&((litaC_testServer->barrier)));
+
+#line 470 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__thread__barrier_mac__Barrier_destroy(&((litaC_testServer->barrier)));
+}
+
+
+#line 482 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+
+litaC_void litaC_test_webserver__testExample(void) {
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_http_server__HttpConfig litaC_config =  {
+#line 484 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.allocator = litaC_std__mem__defaultAllocator,
+
+#line 485 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.port = 8080U,
+
+#line 486 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.numThreads = 8,
+
+#line 487 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.ioQueueDepth = 32,
+
+#line 488 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.isLogEnabled = litaC_true,
+
+#line 489 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.logFilePath = NULL,
+
+#line 490 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxPoolSize = 512,
+
+#line 491 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.keepAliveTimeoutInSec = 5,
+
+#line 492 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.fileServerPath = (litaC_std__builtins__String) { .buffer = "./static/", .length = 9 },
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxHttpRequestLineSizeInBytes = 
+#line 56 "/Users/tony/projects/ringhttp/src/http_server.lita"
+8 * litaC_std__mem__KiB,
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxHttpHeaderSizeInBytes = 
+#line 57 "/Users/tony/projects/ringhttp/src/http_server.lita"
+8 * litaC_std__mem__KiB,
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxHttpBodySizeInBytes = 
+#line 58 "/Users/tony/projects/ringhttp/src/http_server.lita"
+2 * litaC_std__mem__MiB,
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.maxRequestSizeInBytes = 
+#line 61 "/Users/tony/projects/ringhttp/src/http_server.lita"
+8 * litaC_std__mem__MiB,
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.requestBucketSizeInBytes = 
+#line 64 "/Users/tony/projects/ringhttp/src/http_server.lita"
+2 * litaC_std__mem__MiB,
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.fileSpliceSizeInBytes = 
+#line 66 "/Users/tony/projects/ringhttp/src/http_server.lita"
+16 * litaC_std__mem__KiB,
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.compressionLevel = 
+#line 69 "/Users/tony/projects/ringhttp/src/http_server.lita"
+6,
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.compressionEnabledOnBodySizeInBytes = 
+#line 71 "/Users/tony/projects/ringhttp/src/http_server.lita"
+1 * litaC_std__mem__KiB,
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.publicServerPath = 
+#line 75 "/Users/tony/projects/ringhttp/src/http_server.lita"
+(litaC_std__builtins__String) { .buffer = "/static/", .length = 8 },
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.timeoutCheckMSec = 
+#line 80 "/Users/tony/projects/ringhttp/src/http_server.lita"
+5000L,
+
+#line 483 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.disableSignal = 
+#line 90 "/Users/tony/projects/ringhttp/src/http_server.lita"
+litaC_false};
+
+#line 495 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__TestServer litaC_testServer =  {
+#line 496 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+.config = &(litaC_config)};
+
+#line 499 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_test_webserver__launch(&(litaC_testServer));
+
+#line 500 "/Users/tony/projects/ringhttp/test/test_webserver.lita"
+litaC_std__thread__thread_posix__ThreadSleepMSec(2500000);
+}
+
+
+#line 15 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__barrier_mac__Barrier_init(litaC_std__thread__barrier_mac__Barrier* litaC_this,litaC_i32 litaC_threadCount) {
+#line 16 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_s = litaC_std__thread__thread_posix__Mutex_init(&((litaC_this->mtx)), litaC_std__thread__thread_posix__MutexType_PLAIN);
+
+#line 17 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+if(litaC_s != litaC_std__thread__thread_posix__ThreadStatus_SUCCESS) {{
+#line 18 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+return litaC_s;
+
+
+}
+} 
+
+
+#line 21 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_s = litaC_std__thread__thread_posix__Cond_init(&((litaC_this->cond)));
+
+#line 22 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+if(litaC_s != litaC_std__thread__thread_posix__ThreadStatus_SUCCESS) {{
+#line 23 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__Mutex_destroy(&((litaC_this->mtx)));
+
+#line 24 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+return litaC_s;
+
+
+}
+} 
+
+
+#line 27 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_this->count = litaC_threadCount;
+
+#line 28 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_this->waiting = 0;
+
+#line 29 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_this->phase = 0;
+
+#line 30 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+return litaC_std__thread__thread_posix__ThreadStatus_SUCCESS;
+
+}
+
+
+#line 33 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__barrier_mac__Barrier_destroy(litaC_std__thread__barrier_mac__Barrier* litaC_this) {
+#line 34 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__Cond_destroy(&((litaC_this->cond)));
+
+#line 35 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__Mutex_destroy(&((litaC_this->mtx)));
+
+#line 36 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+return litaC_std__thread__thread_posix__ThreadStatus_SUCCESS;
+
+}
+
+
+#line 39 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__ThreadStatus litaC_std__thread__barrier_mac__Barrier_wait(litaC_std__thread__barrier_mac__Barrier* litaC_this) {
+#line 40 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__Mutex_lock(&((litaC_this->mtx)));
+
+#line 42 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_i32 litaC_myPhase = litaC_this->phase;
+
+#line 43 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_this->waiting += 1;
+
+#line 45 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+if(litaC_this->waiting >= litaC_this->count) {{
+#line 47 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_this->waiting = 0;
+
+#line 48 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_this->phase += 1;
+
+#line 49 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__Cond_broadcast(&((litaC_this->cond)));
+
+}
+} else {
+#line 51 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+{
+#line 53 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+while(litaC_this->phase == litaC_myPhase) {{
+#line 54 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__Cond_wait(&((litaC_this->cond)), &(litaC_this->mtx));
+
+}}
+
+}} 
+
+
+#line 58 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+litaC_std__thread__thread_posix__Mutex_unlock(&((litaC_this->mtx)));
+
+#line 59 "/Users/tony/projects/litac-lang/stdlib/std/thread/barrier_mac.lita"
+return litaC_std__thread__thread_posix__ThreadStatus_SUCCESS;
+
 }
 
 
@@ -44891,329 +46366,6 @@ litaC_m->entries = NULL;
 }
 
 
-#line 65 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_void litaC_std__map__std__map__Map_init_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_emptyValue,litaC_i32 litaC_initialSize,const litaC_std__mem__Allocator* litaC_allocator,litaC_std__builtins__String litaC_emptyKey) {
-#line 68 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-
-#line 69 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(!(litaC_allocator)) {{
-#line 70 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_allocator = litaC_std__mem__defaultAllocator;
-
-}
-} 
-
-
-#line 73 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->length = 0;
-
-#line 74 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->capacity = 0;
-
-#line 75 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->entries = 0;
-
-#line 76 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->allocator = litaC_allocator;
-
-#line 77 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->emptyValue = litaC_emptyValue;
-
-#line 78 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->emptyKey = litaC_emptyKey;
-
-#line 80 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_initialSize = (litaC_i32)litaC_std__map__nextPowerOf2(litaC_initialSize);
-
-#line 81 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__MapGrow_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_m, litaC_initialSize);
-}
-
-
-#line 259 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_bool litaC_std__map__std__map__MapGrow_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_i32 litaC_newlength) {
-#line 260 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(litaC_newlength < 16) {{
-#line 261 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_newlength = 16;
-
-}
-} 
-
-
-#line 264 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_newEntries = (litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_*)litaC_std__mem__Allocator_calloc(litaC_m->allocator, litaC_newlength, sizeof(litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_));
-
-#line 265 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(!(litaC_newEntries)) {{
-#line 266 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-return litaC_false;
-
-
-}
-} 
-
-
-#line 269 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_newMap =  {
-#line 270 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.length = 0,
-
-#line 271 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.capacity = litaC_newlength,
-
-#line 272 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.entries = litaC_newEntries,
-
-#line 273 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.emptyValue = litaC_m->emptyValue,
-
-#line 274 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.emptyKey = litaC_m->emptyKey,
-
-#line 275 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.allocator = litaC_m->allocator};
-
-#line 278 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-for(litaC_i32 litaC_i = 0;litaC_i < litaC_m->capacity;litaC_i += 1) {{
-#line 279 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_k = &(litaC_m->entries[litaC_i]);
-
-#line 280 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(litaC_k->hash < 2) {{
-#line 281 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-continue;
-
-}
-} 
-
-
-#line 284 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Map_put_cb_std__builtins__String_c_std__builtins__String_ce_(&((litaC_newMap)), litaC_k->key, litaC_k->value);
-
-}}
-
-#line 287 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Map_free_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_m);
-
-#line 289 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-*(litaC_m) = litaC_newMap;
-
-#line 290 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-return litaC_true;
-
-}
-
-
-#line 106 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 litaC_std__map__std__map__Map_put_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_key,litaC_std__builtins__String litaC_value) {
-#line 108 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(2 * litaC_m->length >= litaC_m->capacity) {{
-#line 109 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(!(litaC_std__map__std__map__MapGrow_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_m, 2 * litaC_m->capacity))) {{
-#line 110 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-return -(1);
-
-
-}
-} 
-
-
-}
-} 
-
-
-#line 114 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_u32 litaC_hash = litaC_std__string__String_hash(litaC_key) + 2;
-
-#line 115 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_u32 litaC_i = litaC_hash;
-
-#line 116 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-for(;;) {{
-#line 117 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i &= litaC_m->capacity - 1;
-
-#line 118 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_k = &(litaC_m->entries[litaC_i]);
-
-#line 120 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(litaC_k->hash < 2) {{
-#line 121 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->length += 1;
-
-#line 122 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_k->key = litaC_key;
-
-#line 123 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_k->value = litaC_value;
-
-#line 124 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_k->hash = litaC_hash;
-
-#line 125 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-return 1;
-
-
-}
-} 
-
-
-#line 127 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(litaC_k->hash == litaC_hash && litaC_std__string__String_equals(litaC_k->key, litaC_key)) {{
-#line 128 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_k->key = litaC_key;
-
-#line 129 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_k->value = litaC_value;
-
-#line 130 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_k->hash = litaC_hash;
-
-#line 131 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-return 0;
-
-
-}
-} 
-
-
-#line 134 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i += 1;
-
-}}
-
-#line 137 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-return 0;
-
-}
-
-
-#line 84 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_void litaC_std__map__std__map__Map_free_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m) {
-#line 85 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(litaC_m) {{
-#line 86 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->capacity = 0;
-
-#line 87 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->length = 0;
-
-#line 88 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(litaC_m->entries) {{
-#line 89 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__mem__Allocator_free(litaC_m->allocator, (litaC_void*)litaC_m->entries);
-
-}
-} 
-
-
-#line 92 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_m->entries = NULL;
-
-}
-} 
-
-}
-
-
-#line 101 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_bool litaC_std__map__std__map__Map_empty_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m) {
-#line 102 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-return litaC_m->length == 0;
-
-}
-
-
-#line 296 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__Map_iter_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m) {
-#line 297 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-return (litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_) {
-#line 298 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.m = litaC_m,
-
-#line 299 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.it = 0,
-
-#line 300 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.prevIt = 0,
-
-#line 301 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.count = 0};
-
-}
-
-
-#line 305 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_bool litaC_std__map__std__map__MapIterator_hasNext_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_iter) {
-#line 306 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-return litaC_iter->count < litaC_iter->m->length;
-
-}
-
-
-#line 309 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_std__map__std__map__MapIterator_next_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__MapIterator_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_iter) {
-#line 310 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_i32 litaC_i = litaC_iter->it;
-
-#line 311 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__assert__assert(litaC_i < litaC_iter->m->capacity, __FILE__, __LINE__);
-
-#line 313 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-
-
-#line 315 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-for(;litaC_i < litaC_iter->m->capacity;litaC_i += 1) {{
-#line 316 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_k = &(litaC_iter->m->entries[litaC_i]);
-
-#line 317 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-if(litaC_k->hash < 2) {{
-#line 318 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-continue;
-
-}
-} 
-
-
-#line 322 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_iter->count += 1;
-
-#line 323 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_iter->prevIt = litaC_i;
-
-#line 325 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-{litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_ ___result = (litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_) {
-#line 326 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.key = litaC_k->key,
-
-#line 327 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.value = litaC_k->value,
-
-#line 328 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-.valuePtr = &(litaC_k->value)};
-
-#line 313 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_iter->it = litaC_i + 1;
-return ___result;
-}
-
-
-}}
-
-#line 333 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-{litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_ ___result = (litaC_std__map__std__map__MapEntry_cb_std__builtins__String_c_std__builtins__String_ce_) {0};
-
-#line 313 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
-litaC_iter->it = litaC_i + 1;
-return ___result;
-}
-
-litaC_iter->it = litaC_i + 1;
-}
-
-
 #line 15 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
 litaC_std__array__std__array__Array_cb_std__builtins__String_ce_ litaC_std__array__std__array__ArrayInit_cb_std__builtins__String_ce_(litaC_i32 litaC_initialSize,const litaC_std__mem__Allocator* litaC_alloc) {
 #line 16 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
@@ -46884,6 +48036,232 @@ return litaC_m;
 }
 
 
+#line 65 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_void litaC_std__map__std__map__Map_init_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_emptyValue,litaC_i32 litaC_initialSize,const litaC_std__mem__Allocator* litaC_allocator,litaC_std__builtins__String litaC_emptyKey) {
+#line 68 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+
+#line 69 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(!(litaC_allocator)) {{
+#line 70 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_allocator = litaC_std__mem__defaultAllocator;
+
+}
+} 
+
+
+#line 73 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->length = 0;
+
+#line 74 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->capacity = 0;
+
+#line 75 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->entries = 0;
+
+#line 76 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->allocator = litaC_allocator;
+
+#line 77 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->emptyValue = litaC_emptyValue;
+
+#line 78 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->emptyKey = litaC_emptyKey;
+
+#line 80 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_initialSize = (litaC_i32)litaC_std__map__nextPowerOf2(litaC_initialSize);
+
+#line 81 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__MapGrow_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_m, litaC_initialSize);
+}
+
+
+#line 259 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_bool litaC_std__map__std__map__MapGrow_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_i32 litaC_newlength) {
+#line 260 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(litaC_newlength < 16) {{
+#line 261 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_newlength = 16;
+
+}
+} 
+
+
+#line 264 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_newEntries = (litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_*)litaC_std__mem__Allocator_calloc(litaC_m->allocator, litaC_newlength, sizeof(litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_));
+
+#line 265 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(!(litaC_newEntries)) {{
+#line 266 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+return litaC_false;
+
+
+}
+} 
+
+
+#line 269 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_ litaC_newMap =  {
+#line 270 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+.length = 0,
+
+#line 271 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+.capacity = litaC_newlength,
+
+#line 272 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+.entries = litaC_newEntries,
+
+#line 273 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+.emptyValue = litaC_m->emptyValue,
+
+#line 274 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+.emptyKey = litaC_m->emptyKey,
+
+#line 275 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+.allocator = litaC_m->allocator};
+
+#line 278 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+for(litaC_i32 litaC_i = 0;litaC_i < litaC_m->capacity;litaC_i += 1) {{
+#line 279 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_k = &(litaC_m->entries[litaC_i]);
+
+#line 280 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(litaC_k->hash < 2) {{
+#line 281 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+continue;
+
+}
+} 
+
+
+#line 284 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__Map_put_cb_std__builtins__String_c_std__builtins__String_ce_(&((litaC_newMap)), litaC_k->key, litaC_k->value);
+
+}}
+
+#line 287 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__Map_free_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_m);
+
+#line 289 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+*(litaC_m) = litaC_newMap;
+
+#line 290 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+return litaC_true;
+
+}
+
+
+#line 106 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i32 litaC_std__map__std__map__Map_put_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_key,litaC_std__builtins__String litaC_value) {
+#line 108 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(2 * litaC_m->length >= litaC_m->capacity) {{
+#line 109 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(!(litaC_std__map__std__map__MapGrow_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_m, 2 * litaC_m->capacity))) {{
+#line 110 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+return -(1);
+
+
+}
+} 
+
+
+}
+} 
+
+
+#line 114 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_u32 litaC_hash = litaC_std__string__String_hash(litaC_key) + 2;
+
+#line 115 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_u32 litaC_i = litaC_hash;
+
+#line 116 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+for(;;) {{
+#line 117 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i &= litaC_m->capacity - 1;
+
+#line 118 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__map__std__map__Entry_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_k = &(litaC_m->entries[litaC_i]);
+
+#line 120 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(litaC_k->hash < 2) {{
+#line 121 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->length += 1;
+
+#line 122 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_k->key = litaC_key;
+
+#line 123 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_k->value = litaC_value;
+
+#line 124 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_k->hash = litaC_hash;
+
+#line 125 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+return 1;
+
+
+}
+} 
+
+
+#line 127 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(litaC_k->hash == litaC_hash && litaC_std__string__String_equals(litaC_k->key, litaC_key)) {{
+#line 128 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_k->key = litaC_key;
+
+#line 129 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_k->value = litaC_value;
+
+#line 130 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_k->hash = litaC_hash;
+
+#line 131 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+return 0;
+
+
+}
+} 
+
+
+#line 134 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_i += 1;
+
+}}
+
+#line 137 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+return 0;
+
+}
+
+
+#line 84 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_void litaC_std__map__std__map__Map_free_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m) {
+#line 85 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(litaC_m) {{
+#line 86 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->capacity = 0;
+
+#line 87 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->length = 0;
+
+#line 88 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+if(litaC_m->entries) {{
+#line 89 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_std__mem__Allocator_free(litaC_m->allocator, (litaC_void*)litaC_m->entries);
+
+}
+} 
+
+
+#line 92 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
+litaC_m->entries = NULL;
+
+}
+} 
+
+}
+
+
 #line 141 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
 litaC_std__builtins__String litaC_std__map__std__map__Map_get_cb_std__builtins__String_c_std__builtins__String_ce_(litaC_std__map__std__map__Map_cb_std__builtins__String_c_std__builtins__String_ce_* litaC_m,litaC_std__builtins__String litaC_key) {
 #line 142 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
@@ -46937,6 +48315,37 @@ litaC_i += 1;
 
 #line 163 "/Users/tony/projects/litac-lang/stdlib/std/map.lita"
 return litaC_m->emptyValue;
+
+}
+
+
+#line 272 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+LITAC_INLINE 
+litaC_i32 litaC_std__array__std__array__Array_size_cb_http_request__QueryParam_ce_(litaC_std__array__std__array__Array_cb_http_request__QueryParam_ce_* litaC_a) {
+#line 273 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+return litaC_a->length;
+
+}
+
+
+#line 81 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_http_request__QueryParam* litaC_std__array__std__array__Array_getPtr_cb_http_request__QueryParam_ce_(litaC_std__array__std__array__Array_cb_http_request__QueryParam_ce_* litaC_a,litaC_i32 litaC_index) {
+#line 82 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+litaC_std__assert__assert(litaC_index >= 0 && litaC_index < litaC_a->length, __FILE__, __LINE__);
+
+#line 84 "/Users/tony/projects/litac-lang/stdlib/std/array.lita"
+return &(litaC_a->elements[litaC_index]);
+
+}
+
+
+#line 36 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
+litaC_test_webserver__FileStream* litaC_std__mem__std__mem__new_cb_test_webserver__FileStream_ce_(const litaC_std__mem__Allocator* litaC_a) {
+#line 37 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
+litaC_test_webserver__FileStream* litaC_result = (litaC_test_webserver__FileStream*)litaC_std__mem__Allocator_calloc(litaC_a, 1, sizeof(litaC_test_webserver__FileStream));
+
+#line 38 "/Users/tony/projects/litac-lang/stdlib/std/mem/mem.lita"
+return litaC_result;
 
 }
 
@@ -47059,48 +48468,138 @@ return litaC_a->elements[litaC_index];
 }
 
 
-#line 2 "/Users/tony/projects/ringhttp/test/main_test.lita"
-litaC_i32 litaC_main_test____LitaTestMain(litaC_i32 litaC_len,litaC_char** litaC_args) {
-#line 3 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 2 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_i32 litaC_http_websocket_test____LitaTestMain(litaC_i32 litaC_len,litaC_char** litaC_args) {
+#line 3 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 litaC_std__test__TestSuite_init(&((litaC_std__test__testSuite)), litaC_std__mem__defaultAllocator);
 
 
-#line 4 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 4 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 litaC_i32 litaC_isJsonFormated = 0;
 
-#line 5 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 5 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase* litaC___testCase0 = litaC_std__test__TestSuite_enterTest(&((litaC_std__test__testSuite)));
+
+#line 6 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(setjmp(litaC_std__test__testSuite.env) == 0) {{
+#line 7 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__test_websocket_handshake();
+
+}
+} 
+
+
+#line 8 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase_printResults(litaC___testCase0, "test_websocket_handshake", litaC_isJsonFormated);
+
+#line 9 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase* litaC___testCase1 = litaC_std__test__TestSuite_enterTest(&((litaC_std__test__testSuite)));
+
+#line 10 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(setjmp(litaC_std__test__testSuite.env) == 0) {{
+#line 11 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__test_websocket_echo();
+
+}
+} 
+
+
+#line 12 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase_printResults(litaC___testCase1, "test_websocket_echo", litaC_isJsonFormated);
+
+#line 13 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase* litaC___testCase2 = litaC_std__test__TestSuite_enterTest(&((litaC_std__test__testSuite)));
+
+#line 14 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(setjmp(litaC_std__test__testSuite.env) == 0) {{
+#line 15 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__test_websocket_close();
+
+}
+} 
+
+
+#line 16 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase_printResults(litaC___testCase2, "test_websocket_close", litaC_isJsonFormated);
+
+#line 17 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase* litaC___testCase3 = litaC_std__test__TestSuite_enterTest(&((litaC_std__test__testSuite)));
+
+#line 18 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(setjmp(litaC_std__test__testSuite.env) == 0) {{
+#line 19 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__test_websocket_wrong_upgrade_protocol();
+
+}
+} 
+
+
+#line 20 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase_printResults(litaC___testCase3, "test_websocket_wrong_upgrade_protocol", litaC_isJsonFormated);
+
+#line 21 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase* litaC___testCase4 = litaC_std__test__TestSuite_enterTest(&((litaC_std__test__testSuite)));
+
+#line 22 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(setjmp(litaC_std__test__testSuite.env) == 0) {{
+#line 23 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__test_websocket_missing_key();
+
+}
+} 
+
+
+#line 24 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase_printResults(litaC___testCase4, "test_websocket_missing_key", litaC_isJsonFormated);
+
+#line 25 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase* litaC___testCase5 = litaC_std__test__TestSuite_enterTest(&((litaC_std__test__testSuite)));
+
+#line 26 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+if(setjmp(litaC_std__test__testSuite.env) == 0) {{
+#line 27 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__test_websocket_route_no_upgrade();
+
+}
+} 
+
+
+#line 28 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_std__test__TestCase_printResults(litaC___testCase5, "test_websocket_route_no_upgrade", litaC_isJsonFormated);
+
+#line 29 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 for(;;) {{
-#line 6 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 30 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 litaC_std__test__TestCase* litaC_test = litaC_std__test__TestSuite_enterDynamicTest(&((litaC_std__test__testSuite)));
 
-#line 7 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 31 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 if(!(litaC_test)) {break;
 } 
 
 
-#line 8 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 32 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 if(!(litaC_test->testFn)) {continue;
 } 
 
 
-#line 9 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 33 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 if(setjmp(litaC_std__test__testSuite.env) == 0) {{
-#line 10 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 34 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 litaC_std__test__TestSuite_executeDynamicTest(&((litaC_std__test__testSuite)));
 
 }
 } 
 
 
-#line 12 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 36 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 litaC_std__test__TestSuite_printDynamicTest(&((litaC_std__test__testSuite)), litaC_isJsonFormated);
 
 }}
 
-#line 14 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 38 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 {litaC_i32 ___result = 0;
 
-#line 3 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 3 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 litaC_std__test__TestSuite_free(&((litaC_std__test__testSuite)));
 return ___result;
 }
@@ -47109,20 +48608,53 @@ litaC_std__test__TestSuite_free(&((litaC_std__test__testSuite)));
 }
 
 
-#line 1 "/Users/tony/projects/ringhttp/test/main_test.lita"
-litaC_void litaC_main_test____litaModuleInit(void) {
-#line 2 "/Users/tony/projects/ringhttp/test/main_test.lita"
+#line 1 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_void litaC_http_websocket_test____litaModuleInit(void) {
+#line 2 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test__init_ws_tests();
+
+#line 3 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 litaC_std__system__SystemInit();
 }
 
 
+#line 5 "generated"
 
-#line 1 "/Users/tony/projects/ringhttp/test/main_test.lita"
+litaC_i32 litaC_http_websocket_test____test_webserver__FileStream_read_wrapper(litaC_void* litaC_this,litaC_char* litaC__0,litaC_i32 litaC__1) {
+#line 6 "generated"
+litaC_test_webserver__FileStream* litaC___this = (litaC_test_webserver__FileStream*)litaC_this;
+
+#line 7 "generated"
+return litaC_test_webserver__FileStream_read(litaC___this, litaC__0, litaC__1);
+
+}
+
+
+#line 18 "generated"
+
+litaC_i32 litaC_http_websocket_test____test_webserver__ServerHandler_handle_wrapper(litaC_void* litaC_this,litaC_http_router__RequestHandlerContext* litaC__0,litaC_http_common__Status litaC__1) {
+#line 19 "generated"
+litaC_test_webserver__ServerHandler* litaC___this = (litaC_test_webserver__ServerHandler*)litaC_this;
+
+#line 20 "generated"
+return litaC_test_webserver__ServerHandler_handle(litaC___this, litaC__0, litaC__1);
+
+}
+
+litaC_http_response__Stream litaC_test_webserver__FileStream__to__litaC_http_response__Stream(litaC_test_webserver__FileStream* x) {return (litaC_http_response__Stream) {.__vtable = litaC_http_websocket_test__http_response__Stream__vtables[0],
+.__this = x};
+}
+litaC_http_server__HttpHandler litaC_test_webserver__ServerHandler__to__litaC_http_server__HttpHandler(litaC_test_webserver__ServerHandler* x) {return (litaC_http_server__HttpHandler) {.__vtable = litaC_http_websocket_test__http_server__HttpHandler__vtables[0],
+.__this = x};
+}
+
+
+#line 1 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
 litaC_i32 main(litaC_i32 litaC_len,litaC_char** litaC_args) {
-#line 2 "/Users/tony/projects/ringhttp/test/main_test.lita"
-litaC_main_test____litaModuleInit();
+#line 2 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+litaC_http_websocket_test____litaModuleInit();
 
-#line 3 "/Users/tony/projects/ringhttp/test/main_test.lita"
-return litaC_main_test____LitaTestMain(litaC_len, litaC_args);
+#line 3 "/Users/tony/projects/ringhttp/test/http_websocket_test.lita"
+return litaC_http_websocket_test____LitaTestMain(litaC_len, litaC_args);
 
 }

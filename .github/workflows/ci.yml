@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "macos_port" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout ringhttp
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc \
+            liburing-dev \
+            libcurl4-openssl-dev \
+            ca-certificates
+
+      - name: Clone litac-lang
+        run: git clone https://github.com/tonysparks/litac-lang $HOME/litac-lang
+
+      - name: Build litac compiler
+        working-directory: ${{ env.HOME }}/litac-lang
+        run: |
+          chmod +x bootstrap.sh build.sh
+          ./bootstrap.sh && ./build.sh
+          echo "$HOME/litac-lang/bin" >> $GITHUB_PATH
+
+      - name: Clone litac liburing bindings
+        run: git clone https://github.com/tonysparks/liburing $HOME/litac-liburing
+
+      - name: Patch liburing dependency path
+        run: |
+          sed -i "s|file:///home/tony/projects/liburing|file://$HOME/litac-liburing|g" pkg.json
+
+      - name: Run tests
+        env:
+          LITAC_HOME: ${{ env.HOME }}/litac-lang
+        run: litac test
+
+  test-macos:
+    name: Test (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout ringhttp
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: brew install curl
+
+      - name: Clone litac-lang
+        run: git clone https://github.com/tonysparks/litac-lang $HOME/litac-lang
+
+      - name: Build litac compiler
+        working-directory: ${{ env.HOME }}/litac-lang
+        run: |
+          chmod +x bootstrap.sh build.sh
+          ./bootstrap.sh && ./build.sh
+          echo "$HOME/litac-lang/bin" >> $GITHUB_PATH
+
+      - name: Clone litac liburing bindings
+        run: git clone https://github.com/tonysparks/liburing $HOME/litac-liburing
+
+      - name: Patch liburing dependency path
+        run: |
+          sed -i '' "s|file:///home/tony/projects/liburing|file://$HOME/litac-liburing|g" pkg.json
+
+      - name: Run tests
+        env:
+          LITAC_HOME: ${{ env.HOME }}/litac-lang
+        run: litac test

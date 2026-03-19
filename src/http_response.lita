@@ -164,6 +164,7 @@ public func (this: *HttpResponse) reset() {
     this.type = ResponseType.NONE
     this.numberOfHeaders = 0
     this.fileBytesSent = 0
+    this.status = 200
     // if(this.fileHandle > 0) {
     //     close(this.fileHandle)
     // }
