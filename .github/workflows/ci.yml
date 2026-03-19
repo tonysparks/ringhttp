@@ -33,6 +33,7 @@ jobs:
           chmod +x build_bootstrap.sh build.sh
           ./build_bootstrap.sh && ./build.sh
           echo "$HOME/litac-lang/bin" >> $GITHUB_PATH
+          echo "LITAC_HOME=$HOME/litac-lang" >> $GITHUB_ENV
 
       - name: Clone litac liburing bindings
         run: git clone https://github.com/tonysparks/liburing $HOME/litac-liburing
@@ -42,8 +43,6 @@ jobs:
           sed -i "s|file:///home/tony/projects/liburing|file://$HOME/litac-liburing|g" pkg.json
 
       - name: Run tests
-        env:
-          LITAC_HOME: ${{ env.HOME }}/litac-lang
         run: litac test
 
   test-macos:
@@ -66,6 +65,7 @@ jobs:
           chmod +x build_bootstrap.sh build.sh
           ./build_bootstrap.sh && ./build.sh
           echo "$HOME/litac-lang/bin" >> $GITHUB_PATH
+          echo "LITAC_HOME=$HOME/litac-lang" >> $GITHUB_ENV
 
       - name: Clone litac liburing bindings
         run: git clone https://github.com/tonysparks/liburing $HOME/litac-liburing
@@ -75,6 +75,4 @@ jobs:
           sed -i '' "s|file:///home/tony/projects/liburing|file://$HOME/litac-liburing|g" pkg.json
 
       - name: Run tests
-        env:
-          LITAC_HOME: ${{ env.HOME }}/litac-lang
         run: litac test
