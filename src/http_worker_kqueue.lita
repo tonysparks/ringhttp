@@ -1036,7 +1036,7 @@ func (this: *WorkerThread) handleWebSocketFrame(
 
     var frame = Frame{}
     var status = frame.parseHeader(readBuffer)
-    if(status != ParseStatus.OK) {
+    if(status != Status.OK) {
         return Status.ERROR_WEB_SOCKET_FRAME
     }
 

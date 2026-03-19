@@ -114,8 +114,7 @@
         {
             "name" : "liburing",
             "version" : "v0.0.3",
-            "repo": "file:///home/tony/projects/liburing"
-            //"repo" : "https://github.com/tonysparks/liburing"
+            "repo" : "https://github.com/tonysparks/liburing"
         }
     ],
 

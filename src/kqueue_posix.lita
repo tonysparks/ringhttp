@@ -3,6 +3,7 @@
     "<sys/time.h>",
     "<sys/types.h>",
     "<sys/socket.h>",
+    "<sys/uio.h>",
     "<unistd.h>",
     "<fcntl.h>",
     "<errno.h>",
