@@ -10,6 +10,15 @@
     "<pthread.h>"
 );
 
+// Ensure _DARWIN_C_SOURCE is defined so sys/socket.h and sys/uio.h expose
+// sendfile.  This is appended to every C compiler invocation on macOS
+// (including the litac test child processes that use BUILD_CMD_DEFAULT),
+// so it cannot be left to pkg.json alone.
+@compiler_option(
+    .os = "mac",
+    .options = "-D_DARWIN_C_SOURCE"
+);
+
 @raw(
     """
     typedef struct kevent kevent_t;
