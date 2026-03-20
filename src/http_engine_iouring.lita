@@ -99,7 +99,7 @@ internal func (this: *HttpRingEngine) listen() : Status {
         this.workers.add(WorkerThread{})
 
         var worker = this.workers.getPtr(i)
-        worker.init(this.server, i)
+        worker.init(this.server, i, &this.barrier, &this.isRunning, this.ring.ring_fd)
     }
 
     pthread_barrier_wait(&this.barrier)

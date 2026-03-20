@@ -23,29 +23,7 @@ import "http_request"
 import "http_response"
 
 import "http_server"
-import "http_worker_kqueue"
-/*
-internal struct HttpRingEngine {
-    safeAllocator: ThreadSafeAllocator
-}
-internal func (this: *HttpRingEngine) init(
-    server: *HttpServer
-) {}
-internal func (this: *HttpRingEngine) close() {}
-internal func (this: *HttpRingEngine) listen(): Status {
-    return Status.OK
-}
-*/
-/*
-internal struct WorkerThread {
-
-}
-internal func (this: *WorkerThread) sendWebSocketFrame(
-    session: *SessionContext,
-    frame:   *Frame
-) : Status {
-    return Status.OK
-}*/
+import "http_worker"
 
 const MAX_ENGINE_EVENTS : i32 = 64
 
@@ -108,7 +86,7 @@ internal func (this: *HttpRingEngine) listen() : Status {
         this.workers.add(WorkerThread{})
 
         var worker = this.workers.getPtr(i)
-        worker.init(this.server, i)
+        worker.init(this.server, i, &this.barrier, &this.isRunning)
     }
 
     // Wait for all workers to finish initialization

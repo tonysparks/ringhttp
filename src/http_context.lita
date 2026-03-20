@@ -8,7 +8,6 @@ import "std/log"
 
 // posix specific
 import "std/net/posix_socket"
-import "pipe_posix"
 
 import "http_connection"
 import "http_common"
@@ -16,26 +15,6 @@ import "http_request"
 import "http_response"
 import "http_websocket"
 import "http_server"
-
-@asStr
-internal enum RingOpcode {
-    TIMEOUT,
-    MSG_RING,
-    ACCEPT,
-    SPLICE,
-    SENDMSG,
-    READ,
-    CANCEL,
-    CLOSE,
-}
-
-internal union RingOperation {
-    struct {
-        opcode: i32
-        contextIndex: i32
-    }
-    data: u64
-}
 
 @asStr
 internal enum SessionState {

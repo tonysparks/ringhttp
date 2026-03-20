@@ -1,6 +1,516 @@
-#if (OS == "LINUX")
-    import using "http_worker_iouring"
-#elseif (OS == "MAC")
+import "std/string/builder"
+import "std/string/buffer"
+import "std/string"
+import "std/mem"
+import "std/libc"
+import "std/thread"
+import "std/atomic"
+import "std/assert"
+import "std/log"
+import "std/system"
+
+import "http_connection"
+import "http_parser"
+import "http_common"
+import "http_request"
+import "http_response"
+import "http_file"
+import "http_server"
+import "http_router"
+import "http_context"
+import "http_websocket"
+import "mime"
+
+import "std/crypto/sha1"
+import "std/encoding/base64"
+
+import "std/net/posix_socket"
+#if (OS == "MAC")
     import using "http_worker_kqueue"
+    // import "kqueue_posix"
+#elseif (OS == "LINUX")
+    import using "http_worker_iouring"
+    // import "pipe_posix"
+    // import "liburing"
 #else_error "Unsupported Operating System target"
 #end
+
+// ---------------------------------------------------------------
+// Shared HTTP methods
+// Backend provides: queueSend, closeSession, rearmTimeout, sendWebSocketFrame
+// ---------------------------------------------------------------
+
+internal func (this: *WorkerThread) handleAccept(clientSocket: i32) : *SessionContext {
+    var index = this.sessions.alloc()
+    if(index < 0) {
+        Warn("SessionContext pool exhausted, dropping connection\n")
+        return null
+    }
+
+    var session = this.sessions.get(index)
+    assert(session != null)
+
+    session.begin(clientSocket)
+    return session
+}
+
+internal func (this: *WorkerThread) serverError(
+    requestContext: *RequestHandlerContext,
+    status: Status
+) {
+    var request  = requestContext.request
+    var response = requestContext.response
+
+    Error("Internal error: %s %.*s\n",
+        HttpMethodAsStr(request.method),
+        request.path.length, request.path.buffer
+    )
+
+    response.status = 500
+    if(this.server.errorHandler.__this) {
+        this.server.errorHandler.handle(requestContext, status)
+    }
+    else {
+        response.type = ResponseType.BODY
+        response.body.append("Internal Error handling the request.")
+    }
+}
+
+internal func (this: *WorkerThread) server404(
+    requestContext: *RequestHandlerContext,
+    status: Status
+) {
+    var request  = requestContext.request
+    var response = requestContext.response
+
+    Error("No route for: %s %.*s\n",
+        HttpMethodAsStr(request.method),
+        request.path.length, request.path.buffer
+    )
+
+    response.status = 404
+    if(this.server.notFoundHandler.__this) {
+        this.server.notFoundHandler.handle(requestContext, status)
+    }
+    else {
+        response.type = ResponseType.BODY
+        response.body.append("No route bound.")
+    }
+}
+
+internal func (this: *WorkerThread) sendBadRequest(
+    context: *SessionContext,
+    status:  Status
+): Status {
+    var httpRequest = HttpRequest{}
+    var requestContext = RequestHandlerContext {
+        .allocator = &context.requestAllocator.allocator,
+        .request   = &httpRequest,
+        .response  = &context.response,
+        .userData  = null,
+        .match     = null
+    }
+
+    var response = requestContext.response
+    response.status = 400
+    response.type   = ResponseType.BODY
+
+    switch(status) {
+        case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
+            response.body.append(
+                "Request exceeded the max request limit of %d bytes for request line\n",
+                this.config.maxHttpRequestLineSizeInBytes
+            )
+            break
+        case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
+            response.body.append(
+                "Request exceeded the max request limit of %d bytes for headers\n",
+                this.config.maxHttpHeaderSizeInBytes
+            )
+            break
+        case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT:
+            response.status = 413
+            response.body.append(
+                "Request exceeded the max request limit of %d bytes for body\n",
+                this.config.maxHttpBodySizeInBytes
+            )
+            break
+        case Status.ERROR_UNKNOWN_BODY_LENGTH:
+            response.body.append("Missing Content-Length or Transfer-Encoding\n")
+            break
+        case Status.ERROR_PARSING_HTTP_REQUEST:
+            response.status = 422
+            response.body.append("Unprocessable request body\n")
+            break
+        case Status.ERROR_WEB_SOCKET_SECURITY_KEY:
+            response.body.append("Missing or invalid Sec-WebSocket-Key\n")
+            break
+        case Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL:
+            response.status = 426
+            response.body.append("The requested protocol upgrade is not supported\n")
+            break
+        default:
+            response.body.append("Bad request\n")
+            break
+    }
+
+    return this.queueSend(context)
+}
+
+internal func (this: *WorkerThread) sendServerError(
+    session: *SessionContext,
+    status:  Status
+): Status {
+    var httpRequest = HttpRequest{}
+    var requestContext = RequestHandlerContext {
+        .allocator = &session.requestAllocator.allocator,
+        .request   = &httpRequest,
+        .response  = &session.response,
+        .userData  = null,
+        .match     = null
+    }
+    this.serverError(&requestContext, status)
+    return this.queueSend(session)
+}
+
+internal func (this: *WorkerThread) handlePartialHttpRequest(
+    request:   *SessionContext,
+    bytesRead: i32
+): Status {
+
+    var connection = &request.connection
+    var readBuffer = &connection.readBuffer
+
+    readBuffer.length += bytesRead
+
+    var buffer = readBuffer.toString()
+    if(request.requestLineIndex < 1) {
+        request.requestLineIndex = buffer.endIndexOf($"\r\n")
+        if(request.requestLineIndex < 0) {
+            if(readBuffer.remaining() < this.config.maxHttpRequestLineSizeInBytes) {
+                readBuffer.reserve(readBuffer.capacity + this.config.maxHttpRequestLineSizeInBytes as (i32))
+            }
+
+            Info("RequestLine not fully read, waiting for more data: %d\n", connection.handle())
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        }
+
+        if(request.requestLineIndex > this.config.maxHttpRequestLineSizeInBytes) {
+            return Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT
+        }
+    }
+
+    if(request.headerIndex < 1) {
+        request.headerIndex = buffer.endIndexOf($"\r\n\r\n")
+        if(request.headerIndex < 0) {
+            if(readBuffer.remaining() < this.config.maxHttpHeaderSizeInBytes) {
+                readBuffer.reserve(readBuffer.capacity + this.config.maxHttpHeaderSizeInBytes as (i32))
+            }
+
+            Info("Headers not fully read, waiting for more data: %d\n", connection.handle())
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        }
+
+        var headerSize = request.headerIndex - request.requestLineIndex
+        if(headerSize > this.config.maxHttpHeaderSizeInBytes) {
+            return Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT
+        }
+
+        request.bodyIndex = request.headerIndex
+    }
+
+    var parser = HttpParser{}
+    parser.init(&request.requestAllocator.allocator)
+
+    var input = String {
+        .buffer = readBuffer.buffer,
+        .length = request.headerIndex
+    }
+
+    var httpRequest = &request.request
+    var ok = parser.parse(input, httpRequest)
+    if(ok != ParseStatus.OK) {
+        return Status.ERROR_PARSING_HTTP_REQUEST
+    }
+
+    if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
+        var status = parser.parseChunk(readBuffer.toString().substring(request.headerIndex), httpRequest)
+        if(status == ParseStatus.CHUNK_INCOMPLETE) {
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        }
+        if(status != ParseStatus.OK) {
+            return Status.ERROR_PARSING_HTTP_REQUEST
+        }
+    }
+    else if(httpRequest.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) {
+        var bodyLength = httpRequest.bodyLength
+        if(this.config.maxHttpBodySizeInBytes > 0 && bodyLength > this.config.maxHttpBodySizeInBytes) {
+            return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
+        }
+
+        if(readBuffer.length - request.headerIndex < bodyLength) {
+            if(readBuffer.remaining() < 1 * MiB) {
+                readBuffer.reserve(readBuffer.capacity + 1 * MiB as (i32))
+            }
+
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        }
+    }
+    else {
+        var body = readBuffer.toString().substring(request.headerIndex)
+        if(!body.empty()) {
+            return Status.ERROR_UNKNOWN_BODY_LENGTH
+        }
+    }
+
+    return Status.OK
+}
+
+internal func (this: *WorkerThread) handleHttpRequest(
+    request: *SessionContext
+): Status {
+
+    var requestAllocator = &request.requestAllocator.allocator
+    var connection = &request.connection
+
+    var buffer = &connection.readBuffer
+    Info("Handling HTTP request for socket: %d\n", connection.handle())
+
+    var parser = HttpParser{}
+    parser.init(requestAllocator)
+
+    var input = StringInit(buffer.buffer, buffer.length).substring(request.bodyIndex)
+    var httpRequest = &request.request
+
+    if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
+        input = httpRequest.body.chunkData.toString()
+    }
+
+    var ok = parser.parseBody(input, httpRequest)
+    if(ok != ParseStatus.OK) {
+        return Status.ERROR_PARSING_HTTP_REQUEST
+    }
+
+    connection.disableKeepAlive = httpRequest.flags & HttpFlags.DISABLE_KEEP_ALIVE
+
+    if(httpRequest.method == HttpMethod.GET) {
+        if(httpRequest.path.startsWith(this.server.config.publicServerPath)) {
+            return this.handleFileRequest(request, httpRequest)
+        }
+    }
+
+    var requestContext = RequestHandlerContext {
+        .allocator    = requestAllocator,
+        .request      = httpRequest,
+        .response     = &request.response,
+        .userData     = null,
+        .match        = null,
+        .sessionIndex = request.index
+    }
+
+    var requestMatch: RouteMatch;
+    if(!this.server.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
+        this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
+    }
+    else {
+        var handler = requestMatch.handler
+        requestContext.userData = handler.userData
+        requestContext.match    = &requestMatch
+
+        switch(handler.type) {
+            case RequestHandlerType.HTTP_REQUEST: {
+                if(handler.controller.callback(&requestContext) != 1) {
+                    this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
+                }
+                break
+            }
+            case RequestHandlerType.WEB_SOCKET: {
+                if(httpRequest.method != HttpMethod.GET) {
+                    this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
+                    break
+                }
+
+                if(httpRequest.flags & HttpFlags.UPGRADE_REQUEST) {
+                    if(!(httpRequest.flags & HttpFlags.WEB_SOCKET_PROTOCOL)) {
+                        return this.sendBadRequest(request, Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL)
+                    }
+
+                    return this.handleWebSocketUpgrade(
+                        request,
+                        httpRequest,
+                        &requestContext
+                    )
+                }
+
+                // Non-upgrade GET to a WebSocket-only endpoint
+                requestContext.response.status = 400
+                requestContext.response.type   = ResponseType.BODY
+                requestContext.response.body.append("WebSocket upgrade required\n")
+                break
+            }
+            default: {
+                assert(false)
+            }
+        }
+    }
+
+    return this.queueSend(request)
+}
+
+internal func (this: *WorkerThread) handleWebSocketUpgrade(
+    context:        *SessionContext,
+    httpRequest:    *HttpRequest,
+    requestContext: *RequestHandlerContext
+): Status {
+
+    var secKey = httpRequest.getHeaderValue($"Sec-WebSocket-Key")
+    if(secKey.empty()) {
+        return Status.ERROR_WEB_SOCKET_SECURITY_KEY
+    }
+
+    var keyBuffer = [128]char;
+    var keyString = StringBufferInit(keyBuffer, 128)
+    keyString.append("%.*s%s", secKey.length, secKey.buffer, WEB_SOCKET_MAGIC)
+
+    var hashResult:[SHA1_BLOCK_SIZE]u8;
+    var ctx: sha1_ctx;
+
+    sha1_init(&ctx)
+    sha1_update(&ctx, keyString.cStr() as (*u8), keyString.length)
+    sha1_final(&ctx, hashResult)
+
+    var keyAccept = context.requestAllocator.alloc(sizeof(:u8) * 64) as (*u8)
+    var bytesEncoded = base64_encode(hashResult, keyAccept, SHA1_BLOCK_SIZE, 0)
+
+    var response = &context.response
+    response.status = 101
+    response.type   = ResponseType.BODY
+    response.addHeaderStr("Upgrade", "websocket")
+    response.addHeaderStr("Connection", "Upgrade")
+    response.addHeader(
+        StringInit("Sec-WebSocket-Accept"),
+        String{.buffer = keyAccept as (*const char), .length = bytesEncoded as (i32)}
+    )
+
+    context.socketSession.worker   = this
+    context.socketSession.userData = requestContext.userData
+    context.socketSession.allocator = requestContext.allocator
+
+    var requestMatch = requestContext.match
+    assert(requestMatch.handler.type == RequestHandlerType.WEB_SOCKET)
+    context.socketHandler = requestMatch.handler.webSocket
+    context.state         = SessionState.WEB_SOCKET_UPGRADED
+    context.isWebSocket   = true
+
+    var connection = &context.connection
+    var readBuffer = &connection.readBuffer
+    readBuffer.clear()
+
+    return this.queueSend(context)
+}
+
+internal func (this: *WorkerThread) handleFileRequest(
+    session:     *SessionContext,
+    httpRequest: *HttpRequest
+): Status {
+
+    var fileResult = OpenFileInfo(
+        this.rootPath,
+        this.config.publicServerPath,
+        httpRequest.path
+    )
+    if(fileResult.status != Status.OK) {
+        return fileResult.status
+    }
+
+    session.file       = fileResult.fd
+    session.fileOffset = 0
+
+    var response = &session.response
+    response.status     = 200
+    response.type       = ResponseType.FILE
+    response.fileHandle = fileResult.fd
+    response.fileSize   = fileResult.fileSize as (usize)
+
+    var mime = this.server.mime.getMimeType(httpRequest.path)
+    if(!mime.empty()) {
+        response.addHeader($"Content-Type", mime)
+    }
+
+    return this.queueSend(session)
+}
+
+internal func (this: *WorkerThread) handleWebSocketFrame(
+    session:   *SessionContext,
+    bytesRead: i32
+): Status {
+
+    var connection = &session.connection
+    var readBuffer = &connection.readBuffer
+
+    readBuffer.length += bytesRead
+
+    var frame = Frame{}
+    var status = frame.parseHeader(readBuffer)
+    if(status != Status.OK) {
+        return Status.ERROR_WEB_SOCKET_FRAME
+    }
+
+    if(this.config.maxHttpBodySizeInBytes > 0 &&
+       frame.payloadLength > this.config.maxHttpBodySizeInBytes
+    ) {
+        return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
+    }
+
+    status = frame.parsePayload(readBuffer)
+    if(status != Status.OK) {
+        if(status == Status.ERROR_WEB_SOCKET_FRAME_LENGTH) {
+            if((readBuffer.capacity - frame.offset) < frame.payloadLength) {
+                var neededSpace = frame.payloadLength - readBuffer.capacity
+                readBuffer.reserve(readBuffer.capacity + neededSpace as (i32))
+                Error("TODO: Grow buffer!\n")
+                exit(1)
+                return Status.ERROR_OUT_OF_MEMORY
+            }
+            return Status.PARTIAL_WEB_SOCKET_DISPATCHING_READ
+        }
+        return Status.ERROR_WEB_SOCKET_FRAME
+    }
+
+    defer readBuffer.clear()
+
+    if(session.socketHandler.callback) {
+        if(!session.socketHandler.callback(&session.socketSession, frame)) {
+            return Status.ERROR_WEB_SOCKET_HANDLE_FRAME_ERROR
+        }
+    }
+
+    if(frame.opcode == Opcode.CLOSE) {
+        return Status.WEB_SOCKET_CLOSED
+    }
+
+    return Status.OK
+}
+
+internal func (this: *WorkerThread) checkTimeouts() {
+    var timeout = this.config.keepAliveTimeoutInSec
+    const currentTime = SystemTimeMSec()
+
+    for(var i = 0; i < this.sessions.pool.length; i+=1) {
+        var context = this.sessions.get(i)
+        if(context.inUse && context.connection.isConnected()) {
+            var sessionTimeout = timeout
+            if(context.isWebSocket) {
+                sessionTimeout = 90
+            }
+
+            if(context.lastRequestTime + sessionTimeout < currentTime) {
+                Info("Timeout for socket: %d (index: %d)\n",
+                    context.connection.handle(), context.index)
+                this.closeSession(context)
+            }
+        }
+    }
+
+    this.rearmTimeout()
+}

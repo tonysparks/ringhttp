@@ -61,9 +61,11 @@ public func KEventCall(
 // macOS sendfile declaration — emitted directly to avoid header-macro visibility issues
 // (sys/socket.h gates it on !_POSIX_C_SOURCE || _DARWIN_C_SOURCE)
 @raw("""
+#if !(defined(__APPLE__) && defined(_DARWIN_C_SOURCE))
 #ifndef _KQUEUE_POSIX_SENDFILE_DECL
 #define _KQUEUE_POSIX_SENDFILE_DECL
 int sendfile(int fd, int s, off_t offset, off_t *len, void *hdtr, int flags);
+#endif
 #endif
 """);
 @foreign
