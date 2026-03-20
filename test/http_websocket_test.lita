@@ -20,10 +20,12 @@ import "test_webserver"
 @foreign
 func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
 
+const WS_TEST_PORT = 19082_u16
+
 var wsTestServer = TestServer{}
 var wsConfig = HttpConfig {
     .allocator = null,
-    .port = 8082_u16,
+    .port = WS_TEST_PORT,
     .numThreads = 4,
     .ioQueueDepth = 16,
     .maxPoolSize = 32,
@@ -153,7 +155,6 @@ func test_websocket_handshake() {
     defer expectedAccept.free()
     computeAccept(testKey, testKeyLen, &expectedAccept)
 
-    // Open TCP connection to ws server on port 8082
     var sock = socket(AF_INET, SOCK_STREAM, 0)
     assert(sock >= 0)
     defer close(sock)
@@ -161,7 +162,7 @@ func test_websocket_handshake() {
     var addr: sockaddr_in
     memset(&addr, 0, sizeof(addr))
     addr.sin_family = AF_INET
-    addr.sin_port = htons(8082_u16)
+    addr.sin_port = htons(WS_TEST_PORT)
     inet_pton(AF_INET, "127.0.0.1", (&addr.sin_addr) as (*void))
 
     var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
@@ -171,7 +172,7 @@ func test_websocket_handshake() {
     var reqBuilder = StringBuilderInit(512)
     defer reqBuilder.free()
     reqBuilder.append("GET /websocket HTTP/1.1\r\n")
-    reqBuilder.append("Host: localhost:8082\r\n")
+    reqBuilder.append("Host: localhost:%d\r\n", WS_TEST_PORT as (i32))
     reqBuilder.append("Upgrade: websocket\r\n")
     reqBuilder.append("Connection: Upgrade\r\n")
     reqBuilder.append("Sec-WebSocket-Key: %s\r\n", testKey)
@@ -207,7 +208,7 @@ func test_websocket_echo() {
     var addr: sockaddr_in
     memset(&addr, 0, sizeof(addr))
     addr.sin_family = AF_INET
-    addr.sin_port = htons(8082_u16)
+    addr.sin_port = htons(WS_TEST_PORT)
     inet_pton(AF_INET, "127.0.0.1", (&addr.sin_addr) as (*void))
 
     var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
@@ -217,7 +218,7 @@ func test_websocket_echo() {
     var reqBuilder = StringBuilderInit(512)
     defer reqBuilder.free()
     reqBuilder.append("GET /websocket HTTP/1.1\r\n")
-    reqBuilder.append("Host: localhost:8082\r\n")
+    reqBuilder.append("Host: localhost:%d\r\n", WS_TEST_PORT as (i32))
     reqBuilder.append("Upgrade: websocket\r\n")
     reqBuilder.append("Connection: Upgrade\r\n")
     reqBuilder.append("Sec-WebSocket-Key: %s\r\n", testKey)
@@ -266,7 +267,7 @@ func test_websocket_close() {
     var addr: sockaddr_in
     memset(&addr, 0, sizeof(addr))
     addr.sin_family = AF_INET
-    addr.sin_port = htons(8082_u16)
+    addr.sin_port = htons(WS_TEST_PORT)
     inet_pton(AF_INET, "127.0.0.1", (&addr.sin_addr) as (*void))
 
     var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
@@ -276,7 +277,7 @@ func test_websocket_close() {
     var reqBuilder = StringBuilderInit(512)
     defer reqBuilder.free()
     reqBuilder.append("GET /websocket HTTP/1.1\r\n")
-    reqBuilder.append("Host: localhost:8082\r\n")
+    reqBuilder.append("Host: localhost:%d\r\n", WS_TEST_PORT as (i32))
     reqBuilder.append("Upgrade: websocket\r\n")
     reqBuilder.append("Connection: Upgrade\r\n")
     reqBuilder.append("Sec-WebSocket-Key: %s\r\n", testKey)
@@ -307,7 +308,6 @@ func test_websocket_close() {
     assert(opcode == 0x8)  // CLOSE opcode
 }
 
-// Helper: open a TCP connection to the ws server on port 8082
 func connectToWsServer() : i32 {
     var sock = socket(AF_INET, SOCK_STREAM, 0)
     if (sock < 0) {
@@ -317,7 +317,7 @@ func connectToWsServer() : i32 {
     var addr: sockaddr_in
     memset(&addr, 0, sizeof(addr))
     addr.sin_family = AF_INET
-    addr.sin_port = htons(8082_u16)
+    addr.sin_port = htons(WS_TEST_PORT)
     inet_pton(AF_INET, "127.0.0.1", (&addr.sin_addr) as (*void))
 
     if (connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t)) != 0) {
@@ -339,7 +339,7 @@ func test_websocket_wrong_upgrade_protocol() {
     var req = StringBuilderInit(256)
     defer req.free()
     req.append("GET /websocket HTTP/1.1\r\n")
-    req.append("Host: localhost:8082\r\n")
+    req.append("Host: localhost:%d\r\n", WS_TEST_PORT as (i32))
     req.append("Connection: Upgrade\r\n")
     req.append("Upgrade: ftp\r\n")
     req.append("\r\n")
@@ -364,7 +364,7 @@ func test_websocket_missing_key() {
     var req = StringBuilderInit(256)
     defer req.free()
     req.append("GET /websocket HTTP/1.1\r\n")
-    req.append("Host: localhost:8082\r\n")
+    req.append("Host: localhost:%d\r\n", WS_TEST_PORT as (i32))
     req.append("Connection: Upgrade\r\n")
     req.append("Upgrade: websocket\r\n")
     req.append("Sec-WebSocket-Version: 13\r\n")
@@ -390,7 +390,7 @@ func test_websocket_route_no_upgrade() {
     var req = StringBuilderInit(256)
     defer req.free()
     req.append("GET /websocket HTTP/1.1\r\n")
-    req.append("Host: localhost:8082\r\n")
+    req.append("Host: localhost:%d\r\n", WS_TEST_PORT as (i32))
     req.append("Connection: keep-alive\r\n")
     req.append("\r\n")
     send(sock, req.buffer, req.length, 0)

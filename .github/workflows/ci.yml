@@ -64,4 +64,6 @@ jobs:
           echo "LITAC_HOME=$HOME/litac-lang" >> $GITHUB_ENV
 
       - name: Run tests
-        run: litac test
+        run: |
+          clang -dM -E - < /dev/null
+          litac test
