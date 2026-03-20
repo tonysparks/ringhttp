@@ -10,14 +10,6 @@
     "<pthread.h>"
 );
 
-// Ensure _DARWIN_C_SOURCE is defined so sys/socket.h and sys/uio.h expose
-// sendfile.  This is appended to every C compiler invocation on macOS
-// (including the litac test child processes that use BUILD_CMD_DEFAULT),
-// so it cannot be left to pkg.json alone.
-@compiler_option(
-    .os = "mac",
-    .options = "-D_DARWIN_C_SOURCE"
-);
 
 @raw(
     """
@@ -67,14 +59,14 @@ public func KEventCall(
 @foreign public const NOTE_USECONDS: u32;
 @foreign public const NOTE_NSECONDS: u32;
 
-// macOS sendfile declaration — emitted directly to avoid header-macro visibility issues
-// (sys/socket.h gates it on !_POSIX_C_SOURCE || _DARWIN_C_SOURCE)
+// Always forward-declare sendfile with the exact macOS signature (struct sf_hdtr *).
+// A compatible redeclaration is harmless if sys/socket.h already provides it;
+// the include guard prevents emitting it twice within one translation unit.
 @raw("""
-#if !(defined(__APPLE__) && defined(_DARWIN_C_SOURCE))
 #ifndef _KQUEUE_POSIX_SENDFILE_DECL
 #define _KQUEUE_POSIX_SENDFILE_DECL
-int sendfile(int fd, int s, off_t offset, off_t *len, void *hdtr, int flags);
-#endif
+struct sf_hdtr;
+int sendfile(int fd, int s, off_t offset, off_t *len, struct sf_hdtr *hdtr, int flags);
 #endif
 """);
 @foreign
