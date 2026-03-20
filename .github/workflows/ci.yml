@@ -66,4 +66,5 @@ jobs:
       - name: Run tests
         run: |
           clang -dM -E - < /dev/null
+          clang --version
           litac test
