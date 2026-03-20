@@ -145,7 +145,8 @@ internal func (this: *WorkerThread) queueSend(session: *SessionContext) : Status
     connection.bufferContents(request, response, this.config)
 
     Info("Writing HTTP response (socket: %d, length: %d)\n",
-        connection.handle(), connection.writeBuffer.length)
+        connection.handle(), connection.writeBuffer.length
+    )
 
     session.state       = SessionState.WRITTEN_HTTP_RESPONSE
     session.submissions = 0
@@ -204,6 +205,7 @@ func (this: *WorkerThread) flushResponse(session: *SessionContext) {
         this.advanceChunkedResponse(session)
     }
     else if(response.type == ResponseType.SSE) {
+        // TODO: SSE is not implemented yet
         session.state = SessionState.WRITING_SSE
         this.advanceChunkedResponse(session)
     }
