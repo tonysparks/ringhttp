@@ -149,6 +149,15 @@ public func (this: *HttpConnection) bufferContents(
             this.writeBuffer.append("\r\n")
             break;
         }
+        case ResponseType.SSE: {
+            this.writeBuffer.append("Content-Type: text/event-stream\r\n")
+            this.writeBuffer.append("Cache-Control: no-cache\r\n")
+            this.writeBuffer.append("Connection: keep-alive\r\n")
+            this.writeBuffer.append("X-Accel-Buffering: no\r\n")
+            // Blank Line
+            this.writeBuffer.append("\r\n")
+            break;
+        }
         default: break;
     }
 }

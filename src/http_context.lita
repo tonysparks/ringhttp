@@ -14,6 +14,7 @@ import "http_common"
 import "http_request"
 import "http_response"
 import "http_websocket"
+import "http_sse"
 import "http_server"
 
 @asStr
@@ -29,6 +30,9 @@ internal enum SessionState {
 
     WEB_SOCKET_UPGRADED,
     WEB_SOCKET_OPERATION,
+
+    SSE_UPGRADED,
+    SSE_OPERATION,
 
     PREP_CLOSE,
     CLOSED,
@@ -52,6 +56,10 @@ internal struct SessionContext {
 
     socketHandler: WebSocketController
     socketSession: WebSocketSession
+
+    sseHandler: SseController
+    sseSession: SseSession
+    isSse: bool
 
     requestLineIndex: i32
     headerIndex: i32
@@ -90,8 +98,10 @@ internal func (this: *SessionContext) begin(
 
     this.connection.socket.socket = clientSocket
     this.socketSession.context = this
+    this.sseSession.context = this
 
     this.isWebSocket = false
+    this.isSse = false
 
     this.submissions = 0
 
@@ -129,6 +139,7 @@ internal func (this: *SessionContext) finish(forceClose: bool = false) {
     Info("Finishing Request for socket: %d\n", this.connection.handle())
 
     this.isWebSocket = false
+    this.isSse = false
     this.submissions = 0
 
     this.requestLineIndex = 0

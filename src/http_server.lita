@@ -19,6 +19,7 @@ import "http_response"
 import "http_file"
 import "http_router"
 import "http_websocket"
+import "http_sse"
 import "http_engine"
 import "mime"
 
@@ -43,6 +44,12 @@ public struct HttpController {
 public struct WebSocketController {
     @doc("Handle receiving web socket frames from the client")
     callback: func(*WebSocketSession, *Frame) : i32;
+}
+
+@doc("Handler for an SSE stream — called once when the client connects and headers are flushed")
+public struct SseController {
+    @doc("Called once with the live session handle; store it to push events later")
+    callback: func(*SseSession) : i32;
 }
 
 public struct HttpConfig {
@@ -136,6 +143,20 @@ public func (this: *HttpServer) addWebSocketController(
         .type = RequestHandlerType.WEB_SOCKET,
         .userData = userData,
         .webSocket = controller
+    }
+    return this.addRequestHandler(HttpMethod.GET, path, handler)
+}
+
+public func (this: *HttpServer) addSseController(
+    path:       *const char,
+    userData:   *void,
+    controller: SseController
+) : Status {
+
+    var handler = RequestHandler {
+        .type = RequestHandlerType.SSE_STREAM,
+        .userData = userData,
+        .sseController = controller
     }
     return this.addRequestHandler(HttpMethod.GET, path, handler)
 }

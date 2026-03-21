@@ -19,6 +19,7 @@ import "http_server"
 import "http_router"
 import "http_context"
 import "http_websocket"
+import "http_sse"
 import "mime"
 
 import "std/crypto/sha1"
@@ -324,6 +325,13 @@ internal func (this: *WorkerThread) handleHttpRequest(
                 }
                 break
             }
+            case RequestHandlerType.SSE_STREAM: {
+                if(httpRequest.method != HttpMethod.GET) {
+                    this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
+                    break
+                }
+                return this.handleSseSetup(request, httpRequest, &requestContext)
+            }
             case RequestHandlerType.WEB_SOCKET: {
                 if(httpRequest.method != HttpMethod.GET) {
                     this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
@@ -404,6 +412,33 @@ internal func (this: *WorkerThread) handleWebSocketUpgrade(
 
     var connection = &context.connection
     var readBuffer = &connection.readBuffer
+    readBuffer.clear()
+
+    return this.queueSend(context)
+}
+
+internal func (this: *WorkerThread) handleSseSetup(
+    context:        *SessionContext,
+    httpRequest:    *HttpRequest,
+    requestContext: *RequestHandlerContext
+): Status {
+
+    var response = &context.response
+    response.status = 200
+    response.type   = ResponseType.SSE
+
+    context.sseSession.worker    = this
+    context.sseSession.context   = context
+    context.sseSession.userData  = requestContext.userData
+    context.sseSession.allocator = requestContext.allocator
+
+    var requestMatch = requestContext.match
+    assert(requestMatch.handler.type == RequestHandlerType.SSE_STREAM)
+    context.sseHandler = requestMatch.handler.sseController
+    context.state      = SessionState.SSE_UPGRADED
+    context.isSse      = true
+
+    var readBuffer = &context.connection.readBuffer
     readBuffer.clear()
 
     return this.queueSend(context)
@@ -500,7 +535,7 @@ internal func (this: *WorkerThread) checkTimeouts() {
         var context = this.sessions.get(i)
         if(context.inUse && context.connection.isConnected()) {
             var sessionTimeout = timeout
-            if(context.isWebSocket) {
+            if(context.isWebSocket || context.isSse) {
                 sessionTimeout = 90
             }
 
