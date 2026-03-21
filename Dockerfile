@@ -22,15 +22,13 @@ RUN gcc -O2 -o /usr/local/bin/litac /opt/litac-lang/bootstrap/litac_linux.c \
 ENV LITAC_HOME=/opt/litac-lang
 
 # Fetch the litac liburing bindings package
-RUN git clone https://github.com/tonysparks/liburing /opt/litac-liburing
+# RUN git clone https://github.com/tonysparks/liburing /opt/litac-liburing
 
 # Copy and build the project
 WORKDIR /build
 COPY . .
 
-# Patch the local file:// dep to the path inside the container
-RUN sed -i 's|file:///home/tony/projects/liburing|file:///opt/litac-liburing|g' pkg.json \
-    && litac build
+RUN litac install && litac build
 
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM ubuntu:24.04
