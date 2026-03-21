@@ -842,6 +842,10 @@ func (this: *WorkerThread) handleCompletionRing(
             )
 
             if(session.submissions <= 0) {
+                if(session.isWebSocket) {
+                    session.state = SessionState.WEB_SOCKET_OPERATION
+                    return this.queueReadWebSocket(ring, session)
+                }
                 Info("Preparing connection for another HTTP request for socket: %d\n", connection.handle())
                 session.begin(connection.handle())
                 return this.queueReadHttpRequest(ring, session)

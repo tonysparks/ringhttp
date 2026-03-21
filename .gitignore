@@ -2,6 +2,7 @@ bin/ring
 bin/ring.c
 bin/*.c
 bin/test_file
+bin/litac_test_file
 .pkgs/liburing/v0.0.2/.litac_pkg
 .pkgs/
 *.log
