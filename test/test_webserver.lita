@@ -9,6 +9,7 @@ import "std/io"
 import "std/assert"
 
 import "std/thread"
+import "std/thread/barrier"
 
 // posix specific
 import "std/net/posix_socket"
@@ -269,6 +270,46 @@ func PrintBody(body: *Body, res: *HttpResponse, allocator: *const Allocator) {
     }
 }
 
+func PutRequestHandler(context: *RequestHandlerContext) : i32 {
+    var req = context.request
+    var res = context.response
+
+    res.status = 200
+    res.type = ResponseType.BODY
+    res.addHeaderStr("Content-Type", "application/json")
+
+    res.body.append("{ \"method\": \"PUT\", ")
+    res.body.append("\"body\": ")
+    PrintBody(&req.body, res, context.allocator)
+    res.body.append("}")
+    return 1
+}
+
+func PatchRequestHandler(context: *RequestHandlerContext) : i32 {
+    var req = context.request
+    var res = context.response
+
+    res.status = 200
+    res.type = ResponseType.BODY
+    res.addHeaderStr("Content-Type", "application/json")
+
+    res.body.append("{ \"method\": \"PATCH\", ")
+    res.body.append("\"body\": ")
+    PrintBody(&req.body, res, context.allocator)
+    res.body.append("}")
+    return 1
+}
+
+func DeleteRequestHandler(context: *RequestHandlerContext) : i32 {
+    var res = context.response
+
+    res.status = 200
+    res.type = ResponseType.BODY
+    res.addHeaderStr("Content-Type", "application/json")
+    res.body.append("{ \"method\": \"DELETE\" }")
+    return 1
+}
+
 func PathRequestHandler(context: *RequestHandlerContext) : i32 {
     var req = context.request
     var res = context.response
@@ -353,6 +394,33 @@ public func runServer(testServer: *TestServer) : i32 {
         }
     )
 
+    server.addHttpController(
+        HttpMethod.PUT,
+        "/put",
+        &handler,
+        HttpController {
+            .callback = PutRequestHandler
+        }
+    )
+
+    server.addHttpController(
+        HttpMethod.PATCH,
+        "/patch",
+        &handler,
+        HttpController {
+            .callback = PatchRequestHandler
+        }
+    )
+
+    server.addHttpController(
+        HttpMethod.DELETE,
+        "/delete",
+        &handler,
+        HttpController {
+            .callback = DeleteRequestHandler
+        }
+    )
+
     server.addWebSocketController(
         "/websocket",
         &handler,
@@ -362,17 +430,18 @@ public func runServer(testServer: *TestServer) : i32 {
     )
 
     // signal we are ready
-    pthread_barrier_wait(&testServer.barrier)
+    testServer.barrier.wait()
 
     var status = server.start()
     defer server.close()
 
     assert(Status.OK == status)
+    return 0
 }
 
 public struct TestServer {
     config: *HttpConfig
-    barrier: pthread_barrier_t
+    barrier: Barrier
 }
 
 var defaultConfig = HttpConfig {
@@ -397,16 +466,15 @@ public func launch(testServer: *TestServer) {
         testServer.config.allocator = defaultAllocator
     }
 
-    pthread_barrier_init(&testServer.barrier, null, 2)
-    defer pthread_barrier_destroy(&testServer.barrier)
-
+    testServer.barrier.init(2)
+    defer testServer.barrier.destroy()
 
     var thread = Thread{}
     if(thread.create(WebServerFunction, testServer) != ThreadStatus.SUCCESS) {
         assert(false)
     }
 
-    pthread_barrier_wait(&testServer.barrier)
+    testServer.barrier.wait()
 }
 
 

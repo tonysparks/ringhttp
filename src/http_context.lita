@@ -8,7 +8,6 @@ import "std/log"
 
 // posix specific
 import "std/net/posix_socket"
-import "pipe_posix"
 
 import "http_connection"
 import "http_common"
@@ -16,26 +15,6 @@ import "http_request"
 import "http_response"
 import "http_websocket"
 import "http_server"
-
-@asStr
-internal enum RingOpcode {
-    TIMEOUT,
-    MSG_RING,
-    ACCEPT,
-    SPLICE,
-    SENDMSG,
-    READ,
-    CANCEL,
-    CLOSE,
-}
-
-internal union RingOperation {
-    struct {
-        opcode: i32
-        contextIndex: i32
-    }
-    data: u64
-}
 
 @asStr
 internal enum SessionState {
@@ -46,6 +25,7 @@ internal enum SessionState {
     WRITTEN_HTTP_RESPONSE_MORE,
     WRITTEN_FILE,
     WRITING_STREAM,
+    WRITING_SSE,
 
     WEB_SOCKET_UPGRADED,
     WEB_SOCKET_OPERATION,
@@ -83,6 +63,8 @@ internal struct SessionContext {
 
     // for file transmission
     pipes: [2]i32
+    // sendfile progress on macOS
+    fileOffset: i64
 
     // file handle if opened
     file: i32
@@ -119,6 +101,7 @@ internal func (this: *SessionContext) begin(
 
     this.state = SessionState.CONNECTED
 
+#if (OS == "LINUX")
     if(this.pipes[0] > 0) {
         close(this.pipes[0])
     }
@@ -127,13 +110,16 @@ internal func (this: *SessionContext) begin(
         close(this.pipes[1])
     }
 
+    this.pipes[0] = 0
+    this.pipes[1] = 0
+#else
+    this.fileOffset = 0
+#end
+
     if(this.file > 0) {
         // close(this.file)
     }
     this.file = 0
-
-    this.pipes[0] = 0
-    this.pipes[1] = 0
 
     this.clientAddrLen = sizeof(this.clientAddr) as (socklen_t);
 }
@@ -150,6 +136,7 @@ internal func (this: *SessionContext) finish(forceClose: bool = false) {
     this.bodyIndex = 0
     this.workerIndex = -1
 
+#if (OS == "LINUX")
     if(this.pipes[0] > 0) {
         close(this.pipes[0])
     }
@@ -157,6 +144,9 @@ internal func (this: *SessionContext) finish(forceClose: bool = false) {
     if(this.pipes[1] > 0) {
         close(this.pipes[1])
     }
+#else
+    this.fileOffset = 0
+#end
 
     if(this.file > 0) {
         // close(this.file)

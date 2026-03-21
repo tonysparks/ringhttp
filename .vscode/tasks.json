@@ -8,7 +8,7 @@
             "type": "shell",
             "command": "litac",
             "args": [
-                "-pkg-build",
+                "build",
                 "-run"
             ],
             "presentation": {
@@ -30,7 +30,7 @@
             "type": "shell",
             "command": "litac",
             "args": [
-                "-pkg-build",
+                "build",
                 "-release",
                 "-run"
             ],
@@ -53,7 +53,7 @@
             "type": "shell",
             "command": "litac",
             "args": [
-                "-pkg-build"
+                "build"
             ],
             "presentation": {
                 "echo": true,
@@ -100,9 +100,10 @@
             "type": "shell",
             "command": "litac",
             "args": [
-                "-pkg-build",
-                "-run",
-                "-testFile",
+                "test",
+                "-output",
+                "litac_test_file",
+                "-file",
                 "${file}"
             ],
             "presentation": {
@@ -124,10 +125,7 @@
             "type": "shell",
             "command": "litac",
             "args": [
-                "-pkg-build",
-                "-run",
-                "-test",
-                ".*"
+                "test",
             ],
             "presentation": {
                 "echo": true,

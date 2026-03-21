@@ -21,6 +21,24 @@
 
     "build_command" : {
         "default" : {
+            "linux" : {
+                "default" : {
+                    "cc" : "gcc",
+                    "cc_options" : "-g -std=gnu99 %input% -o %output% -D_CRT_SECURE_NO_WARNINGS",
+                    "lita_options" : [
+                        "-verbose"
+                    ]
+                }
+            },
+            "mac" : {
+                "default" : {
+                    "cc" : "clang",
+                    "cc_options" : "-g -std=gnu99 %input% -o %output% -D_CRT_SECURE_NO_WARNINGS -D_DARWIN_C_SOURCE",
+                    "lita_options" : [
+                        "-verbose"
+                    ]
+                }
+            },
             "default" : {
                 "default" : {
                     "cc" : "gcc",
@@ -32,6 +50,43 @@
             }
         },
         "release" : {
+            "linux" : {
+                "default" : {
+                    "cc" : "gcc",
+                    "cc_options": [
+                        "-std=gnu99",
+                        "-O3",
+                        "-march=native",
+                        "-mtune=native",
+                        "%input%",
+                        "-o",
+                        "%output%",
+                        "-D_CRT_SECURE_NO_WARNINGS"
+                    ],
+                    "lita_options" : [
+                        "-verbose"
+                    ]
+                }
+            },
+            "macos" : {
+                "default" : {
+                    "cc" : "clang",
+                    "cc_options": [
+                        "-std=gnu99",
+                        "-O3",
+                        "-march=native",
+                        "-mtune=native",
+                        "%input%",
+                        "-o",
+                        "%output%",
+                        "-D_CRT_SECURE_NO_WARNINGS",
+                        "-D_DARWIN_C_SOURCE"
+                    ],
+                    "lita_options" : [
+                        "-verbose"
+                    ]
+                }
+            },
             "default" : {
                 "default" : {
                     "cc" : "gcc",
@@ -56,9 +111,8 @@
     "dependencies": [
         {
             "name" : "liburing",
-            "version" : "v0.0.3",
-            "repo": "file:///home/tony/projects/liburing"
-            //"repo" : "https://github.com/tonysparks/liburing"
+            "version" : "v0.0.4",
+            "repo" : "https://github.com/tonysparks/liburing"
         }
     ],
 

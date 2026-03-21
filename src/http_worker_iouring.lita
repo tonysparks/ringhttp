@@ -1,0 +1,875 @@
+import "std/string/builder"
+import "std/string/buffer"
+import "std/string"
+import "std/mem"
+import "std/libc"
+import "std/thread"
+import "std/atomic"
+import "std/assert"
+import "std/log"
+import "std/system"
+
+import "std/net"
+import "std/net/posix_socket"
+
+import "http_connection"
+import "http_parser"
+import "http_common"
+import "http_request"
+import "http_response"
+import "http_file"
+import "http_server"
+import "http_router"
+import "http_context"
+import "http_websocket"
+import "http_worker"
+import "mime"
+
+import "std/crypto/sha1"
+import "std/encoding/base64"
+
+import "pipe_posix"
+import "liburing"
+
+@asStr
+internal enum RingOpcode {
+    TIMEOUT,
+    MSG_RING,
+    ACCEPT,
+    SPLICE,
+    SENDMSG,
+    READ,
+    CANCEL,
+    CLOSE,
+}
+
+internal union RingOperation {
+    struct {
+        opcode: i32
+        contextIndex: i32
+    }
+    data: u64
+}
+
+internal struct WorkerThread {
+    ring: io_uring
+    thread: Thread
+    index: i32
+
+    server: *HttpServer
+    config: *HttpConfig
+    sessions: ContextPool
+
+    rootPath: String
+
+    // Engine state — passed in from engine to avoid circular imports
+    barrier:    *pthread_barrier_t
+    isRunning:  *Atomic<bool>
+    mainRingFd: i32
+}
+
+
+// queueSend: buffer the response and submit it via io_uring sendmsg.
+internal func (this: *WorkerThread) queueSend(session: *SessionContext) : Status {
+    return this.queueWriteHttpResponse(&this.ring, session)
+}
+
+// closeSession: cancel pending operations and close the connection.
+internal func (this: *WorkerThread) closeSession(session: *SessionContext) {
+    this.queueCancelAndClose(&this.ring, session)
+}
+
+// rearmTimeout: re-queue the periodic timeout SQE.
+internal func (this: *WorkerThread) rearmTimeout() {
+    this.queueTimeoutCheck(&this.ring)
+}
+
+// ---------------------------------------------------------------
+// Raw io_uring IO primitives
+// ---------------------------------------------------------------
+
+func (this: *WorkerThread) queueCancelAndClose(
+    ring: *io_uring,
+    request: *SessionContext
+): Status {
+
+    if(request.state == SessionState.CLOSED || !request.connection.isConnected()) {
+        return Status.OK;
+    }
+
+    request.state = SessionState.CLOSED
+
+    var connection = &request.connection
+
+    Info("Setting connection to closed: %d\n", connection.handle())
+    {
+        var sqe = io_uring_get_sqe(ring)
+        if(!sqe) {
+            Error("Error creating SQE for socket: %d\n", connection.handle())
+            goto error;
+        }
+
+        io_uring_prep_cancel(sqe, request, 0)
+
+        io_uring_sqe_set_data64(
+            sqe,
+            RingOperation {
+                .opcode = RingOpcode.CANCEL,
+                .contextIndex = request.index,
+            }.data
+        )
+    }
+
+    request.submissions += 1
+    return Status.OK
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+func (this: *WorkerThread) queueReadHttpRequest(
+    ring: *io_uring,
+    request: *SessionContext
+): Status {
+
+    request.state = SessionState.READ_REQUEST_LINE
+
+    var connection = &request.connection
+
+    Info("Reading HTTP request for socket: %d state: %s\n", connection.handle(), SessionStateAsStr(request.state))
+
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for socket: %d\n", connection.handle())
+        goto error;
+    }
+
+    var readBuffer = &connection.readBuffer
+
+    io_uring_prep_read(
+        sqe,
+        connection.handle(),
+        &readBuffer.buffer[readBuffer.length],
+        readBuffer.remaining(),
+        0
+    )
+
+    io_uring_sqe_set_data64(
+        sqe,
+        RingOperation {
+            .opcode = RingOpcode.READ,
+            .contextIndex = request.index,
+        }.data
+    )
+    return Status.OK
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+func (this: *WorkerThread) queueWriteHttpResponse(
+    ring: *io_uring,
+    session: *SessionContext
+): Status {
+
+    session.state = SessionState.WRITTEN_HTTP_RESPONSE
+
+    var connection = &session.connection
+    var request = &session.request
+    var response = &session.response
+
+    connection.bufferContents(request, response, this.config)
+
+    Info("Writing Http Response (socket: %d, length: %d):\n%.*s\n",
+        connection.handle(),
+        connection.writeBuffer.length,
+        connection.writeBuffer.length, connection.writeBuffer.buffer
+    )
+
+    var iov = iovec {
+        .iov_base = connection.writeBuffer.buffer,
+        .iov_len  = connection.writeBuffer.length,
+    }
+
+    var msg = msghdr {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    }
+
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for socket: %d\n", connection.handle())
+        goto error;
+    }
+
+    var moreContents = (response.type != ResponseType.BODY)
+    io_uring_prep_sendmsg(
+        sqe,
+        connection.handle(),
+        &msg,
+        moreContents ? SocketFlags.MSG_MORE : 0
+    )
+
+    io_uring_sqe_set_data64(
+        sqe,
+        RingOperation {
+            .opcode = RingOpcode.SENDMSG,
+            .contextIndex = session.index,
+        }.data
+    )
+
+    if(response.type == ResponseType.FILE) {
+        sqe.flags |= IOSQE_IO_LINK
+    }
+
+    session.submissions += 1
+
+    if(moreContents) {
+        if(response.type == ResponseType.FILE) {
+            session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
+            return this.queueWriteHttpFileResponse(ring, session)
+        }
+        else if(response.type == ResponseType.SSE) {
+            session.state = SessionState.WRITING_SSE
+        }
+        else {
+            assert(response.type == ResponseType.STREAM)
+            session.state = SessionState.WRITING_STREAM
+        }
+    }
+
+    return Status.OK
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+// advanceChunkedWrite handles both STREAM and SSE chunked responses.
+func (this: *WorkerThread) advanceChunkedWrite(
+    ring: *io_uring,
+    session: *SessionContext
+): Status {
+
+    var connection = &session.connection
+    var response = &session.response
+    if(!response.stream.__this) {
+        Error("No stream attached to connection: %d\n", connection.handle())
+        return Status.ERROR_NO_STREAM_HANDLER_FOUND
+    }
+
+    var writeBuffer = &connection.writeBuffer
+    writeBuffer.clear()
+
+    var numberOfBytesRead = response.stream.read(response.body.buffer, response.body.capacity)
+    var moreContents = numberOfBytesRead > 0
+
+    if(!moreContents) {
+        session.state = SessionState.WRITTEN_HTTP_RESPONSE
+        writeBuffer.append("0\r\n\r\n")
+    }
+    else {
+        if(!writeBuffer.reserve(numberOfBytesRead + 16)) {
+            Error(
+                "Unable to handle stream of %d bytes due to out of memory for connection: %d\n",
+                numberOfBytesRead,
+                connection.handle()
+            )
+            return Status.ERROR_OUT_OF_MEMORY
+        }
+
+        writeBuffer.append("%08X\r\n", numberOfBytesRead)
+        response.body.length = numberOfBytesRead
+        response.body.copyTo(writeBuffer.buffer + writeBuffer.length, numberOfBytesRead, false)
+
+        writeBuffer.length += numberOfBytesRead
+        writeBuffer.appendStrn("\r\n", 2)
+    }
+
+    var iov = iovec {
+        .iov_base = connection.writeBuffer.buffer,
+        .iov_len  = connection.writeBuffer.length,
+    }
+
+    var msg = msghdr {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    }
+
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for socket: %d\n", connection.handle())
+        goto error;
+    }
+
+    io_uring_prep_sendmsg(
+        sqe,
+        connection.handle(),
+        &msg,
+        moreContents ? SocketFlags.MSG_MORE : 0
+    )
+
+    io_uring_sqe_set_data64(
+        sqe,
+        RingOperation {
+            .opcode = RingOpcode.SENDMSG,
+            .contextIndex = session.index,
+        }.data
+    )
+
+    session.submissions += 1
+
+    return Status.OK
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+func (this: *WorkerThread) queueWriteHttpFileResponse(
+    ring: *io_uring,
+    request: *SessionContext
+): Status {
+
+    request.state = SessionState.WRITTEN_FILE
+
+    var response = &request.response
+    var connection = &request.connection
+
+    var fileFd = response.fileHandle
+    var fileSize = response.fileSize
+    var socketFd = connection.handle()
+
+    if(pipe2(request.pipes, O_CLOEXEC | O_NONBLOCK) < 0) {
+        Error("Error creating pipes!")
+        return Status.ERROR_PIPE_ERROR
+    }
+
+    var bufferSize = this.config.fileSpliceSizeInBytes
+    var remainingBytes = fileSize
+    while(remainingBytes > 0) {
+        var spliceSize = (remainingBytes > bufferSize)
+            ? bufferSize : remainingBytes;
+        defer remainingBytes -= spliceSize;
+
+        {
+            var sqe = io_uring_get_sqe(ring)
+            if(!sqe) {
+                Error("Error creating SQE for socket: %d\n", socketFd)
+                goto error;
+            }
+
+            io_uring_prep_splice(
+                sqe,
+                response.fileHandle,
+                (fileSize - remainingBytes) as (i64),
+                request.pipes[1],
+                -1_i64,
+                spliceSize as (u32),
+                SPLICE_F_MORE
+            )
+            sqe.flags |= IOSQE_IO_LINK
+
+            io_uring_sqe_set_data64(
+                sqe,
+                RingOperation {
+                    .opcode = RingOpcode.SPLICE,
+                    .contextIndex = request.index,
+                }.data
+            )
+        }
+
+        {
+            var sqe = io_uring_get_sqe(ring)
+            if(!sqe) {
+                Error("Error creating SQE for socket: %d\n", socketFd)
+                goto error;
+            }
+
+            io_uring_prep_splice(
+                sqe,
+                request.pipes[0],
+                -1_i64,
+                connection.handle(),
+                -1_i64,
+                spliceSize as (u32),
+                SPLICE_F_MORE
+            )
+            sqe.flags |= IOSQE_IO_LINK
+
+            io_uring_sqe_set_data64(
+                sqe,
+                RingOperation {
+                    .opcode = RingOpcode.SPLICE,
+                    .contextIndex = request.index,
+                }.data
+            )
+        }
+
+        request.submissions += 2
+    }
+
+    {
+        var sqe = io_uring_get_sqe(ring)
+        if(!sqe) {
+            Error("Error creating SQE for socket: %d\n", socketFd)
+            goto error;
+        }
+
+        io_uring_prep_close(sqe, response.fileHandle)
+
+        io_uring_sqe_set_data64(
+            sqe,
+            RingOperation {
+                .opcode = RingOpcode.CLOSE,
+                .contextIndex = request.index,
+            }.data
+        )
+        request.submissions += 1
+    }
+
+    return Status.OK
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+public func (this: *WorkerThread) sendWebSocketFrame(
+    session: *SessionContext,
+    frame: *Frame
+) : Status {
+    return this.queueWriteWebSocket(&this.ring, session, frame)
+}
+
+func (this: *WorkerThread) queueWriteWebSocket(
+    ring: *io_uring,
+    session: *SessionContext,
+    frame: *Frame
+): Status {
+
+    session.state = SessionState.WEB_SOCKET_OPERATION
+
+    var connection = &session.connection
+    Info("Started Queued writing of web socket: %d\n", connection.handle())
+
+    var writeBuffer = &connection.writeBuffer
+    writeBuffer.clear()
+
+    var status = frame.serialize(writeBuffer)
+    if(status != Status.OK) {
+        return status
+    }
+
+    var iov = iovec {
+        .iov_base = writeBuffer.buffer,
+        .iov_len  = writeBuffer.length,
+    }
+
+    var msg = msghdr {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+    }
+
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for socket: %d for ring: %d\n", connection.handle(), ring.ring_fd)
+        goto error;
+    }
+
+    io_uring_prep_sendmsg(sqe, connection.handle(), &msg, 0)
+
+    io_uring_sqe_set_data64(
+        sqe,
+        RingOperation {
+            .opcode = RingOpcode.SENDMSG,
+            .contextIndex = session.index,
+        }.data
+    )
+
+    session.submissions += 1
+    io_uring_submit(ring)
+
+    return Status.OK;
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+func (this: *WorkerThread) queueReadWebSocket(
+    ring: *io_uring,
+    session: *SessionContext
+): Status {
+
+    session.state = SessionState.WEB_SOCKET_OPERATION
+    var connection = &session.connection
+
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for socket: %d\n", connection.handle())
+        goto error;
+    }
+
+    var readBuffer = &connection.readBuffer
+
+    io_uring_prep_read(
+        sqe,
+        connection.handle(),
+        &readBuffer.buffer[readBuffer.length],
+        readBuffer.remaining(),
+        0
+    )
+
+    io_uring_sqe_set_data64(
+        sqe,
+        RingOperation {
+            .opcode = RingOpcode.READ,
+            .contextIndex = session.index,
+        }.data
+    )
+
+    return Status.OK
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+func (this: *WorkerThread) queueTimeoutCheck(ring: *io_uring): Status {
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for timeout check\n")
+        goto error;
+    }
+
+    var ts: __kernel_timespec;
+    ts.tv_sec = this.config.timeoutCheckMSec / 1_000;
+    ts.tv_nsec = (this.config.timeoutCheckMSec % 1_000) * 1_000_000;
+
+    io_uring_prep_timeout(sqe, &ts, 0, 0)
+
+    io_uring_sqe_set_data64(
+        sqe,
+        RingOperation {
+            .opcode = RingOpcode.TIMEOUT,
+            .contextIndex = -1,
+        }.data
+    )
+
+    return Status.OK;
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+// ---------------------------------------------------------------
+// io_uring event loop
+// ---------------------------------------------------------------
+
+internal func (this: *WorkerThread) init(
+    server:     *HttpServer,
+    index:      i32,
+    barrier:    *pthread_barrier_t,
+    isRunning:  *Atomic<bool>,
+    mainRingFd: i32
+): Status {
+
+    this.server     = server
+    this.config     = server.config
+    this.index      = index
+    this.ring       = io_uring{}
+    this.barrier    = barrier
+    this.isRunning  = isRunning
+    this.mainRingFd = mainRingFd
+
+    this.rootPath = this.server.config.fileServerPath.empty()
+        ? CurrentWorkingPath().toString() : this.server.config.fileServerPath
+
+    if(this.rootPath.endsWith($"/")) {
+        this.rootPath.length -= 1
+    }
+
+    var status = this.sessions.init(this.server)
+    if(status != Status.OK) {
+        return status
+    }
+
+    this.thread = Thread{}
+    if(this.thread.create(WorkerFunction, this, this.server.config.allocator) != ThreadStatus.SUCCESS) {
+        Error("Error creating worker thread\n")
+        return Status.ERROR_CREATING_THREAD
+    }
+
+    return Status.OK
+}
+
+internal func WorkerFunction(arg: *void) : i32 {
+    var workerThread = arg as (*WorkerThread)
+
+    var ring = &workerThread.ring
+
+    var params = io_uring_params {}
+    params.flags |= IORING_SETUP_SINGLE_ISSUER
+    params.flags |= IORING_SETUP_COOP_TASKRUN
+    params.flags |= IORING_SETUP_DEFER_TASKRUN
+    params.flags |= IORING_SETUP_ATTACH_WQ
+    params.wq_fd = workerThread.mainRingFd
+
+    var ioStatus = io_uring_queue_init_params(workerThread.config.ioQueueDepth, ring, &params)
+    if(ioStatus != 0) {
+        Error("Error initializing the io_uring queue: %d\n", ioStatus)
+        return -1
+    }
+
+    Info("Started worker thread: %d ringfd: %d\n", ThreadCurrent().id(), workerThread.ring.ring_fd)
+
+    pthread_barrier_wait(workerThread.barrier)
+
+    workerThread.queueTimeoutCheck(ring)
+    io_uring_submit(ring)
+
+    var cqe: *io_uring_cqe = null;
+    while(workerThread.isRunning.get()) {
+        var result = io_uring_wait_cqe(ring, &cqe);
+        defer if(cqe)  {
+            io_uring_cqe_seen(ring, cqe)
+            cqe = null
+        }
+
+        var status = workerThread.handleCompletionRing(ring, cqe, result)
+        if(status != Status.OK) {
+            continue
+        }
+
+        io_uring_submit(ring)
+    }
+
+    if(ring.ring_fd > 0) {
+        io_uring_queue_exit(ring)
+    }
+
+    return 0
+}
+
+func (this: *WorkerThread) handleCompletionRing(
+    ring: *io_uring,
+    cqe: *io_uring_cqe,
+    result: i32
+): Status {
+
+    if(!cqe) {
+        Error("Error reading completion queue: %d\n", result)
+        assert(false)
+        return Status.ERROR_IO_ERROR;
+    }
+
+    if(cqe.res < 0) {
+        var operation = RingOperation {
+            .data = io_uring_cqe_get_data64(cqe)
+        }
+
+        if(operation.opcode == RingOpcode.TIMEOUT) {
+            this.checkTimeouts()
+            return Status.OK
+        }
+
+        var session = this.sessions.get(operation.contextIndex)
+        assert(session != null)
+
+        switch(cqe.res) {
+            case -ENOENT:
+            case -EINVAL:
+            case -EALREADY: {
+                if (!session.connection.isConnected()) {
+                    break
+                }
+                Info("Unable to cancel operations for socket: %d due to already in progress or not found\n",
+                    session.connection.handle()
+                )
+                session.finish(.forceClose = true)
+                break
+            }
+            case -ECANCELED: {
+                Info("Canceled request queue entries for socket: %d\n",
+                    session.connection.handle()
+                )
+                break
+            }
+            default: {
+                Error("Error with socket (%d) completion result: %d (%s)\n",
+                    session.connection.handle(),
+                    cqe.res,
+                    strerror(-cqe.res)
+                )
+                Error("Force closing connection: %d due to error\n", session.connection.handle())
+                if (!session.connection.isConnected()) {
+                    break
+                }
+                session.finish(.forceClose = true)
+                break
+            }
+        }
+
+        return Status.OK
+    }
+
+    var operation = RingOperation {
+        .data = io_uring_cqe_get_data64(cqe)
+    }
+
+    var session: *SessionContext = null
+
+    if(operation.opcode == RingOpcode.MSG_RING) {
+        session = this.handleAccept(operation.contextIndex)
+    }
+    else {
+        session = this.sessions.get(operation.contextIndex)
+    }
+
+    assert(session != null)
+
+    session.lastRequestTime = SystemTimeMSec()
+    var connection = &session.connection
+
+    if(!connection.isConnected()) {
+        return Status.OK
+    }
+
+    switch(session.state) {
+        case SessionState.CONNECTED: {
+            Info("Reading HTTP request for socket: %d\n", connection.handle())
+            return this.queueReadHttpRequest(ring, session)
+        }
+        case SessionState.READ_REQUEST_LINE: {
+            var bytesRead = cqe.res
+            Info("READ_REQUEST_LINE: %d for socket: %d subs: %d\n", bytesRead, connection.handle(), session.submissions)
+
+            if(bytesRead == 0) {
+                Info("Client Closed socket: %d\n", connection.handle())
+                return this.queueCancelAndClose(ring, session)
+            }
+
+            var status = this.handlePartialHttpRequest(session, bytesRead)
+
+            if(status == Status.PARTIAL_REQUEST_DISPATCHING_READ) {
+                return this.queueReadHttpRequest(ring, session)
+            }
+
+            if(status != Status.OK) {
+                switch(status) {
+                    case Status.ERROR_UNKNOWN_BODY_LENGTH:
+                    case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
+                    case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
+                    case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT:
+                    case Status.ERROR_PARSING_HTTP_REQUEST: {
+                        return this.sendBadRequest(session, status)
+                    }
+                    default: {
+                        return this.sendServerError(session, status)
+                    }
+                }
+                return status
+            }
+
+            status = this.handleHttpRequest(session)
+
+            if(status != Status.OK) {
+                Error("HTTP Request Bad Status %s with index: %d\n", StatusAsStr(status), session.index)
+                if(status == Status.ERROR_PARSING_HTTP_REQUEST ||
+                   status == Status.ERROR_WEB_SOCKET_SECURITY_KEY) {
+                    return this.sendBadRequest(session, status)
+                }
+                return this.sendServerError(session, status)
+            }
+            break
+        }
+        case SessionState.WEB_SOCKET_UPGRADED: {
+            Info("WebSocket upgraded for socket: %d\n", connection.handle())
+            return this.queueReadWebSocket(ring, session)
+        }
+        case SessionState.WEB_SOCKET_OPERATION: {
+            switch(operation.opcode) {
+                case RingOpcode.SENDMSG: {
+                    Info("WebSocket write completed for socket: %d\n", connection.handle())
+                    session.submissions -= 1
+
+                    if(!session.isWebSocket) {
+                        return this.queueCancelAndClose(ring, session)
+                    }
+                    break
+                }
+                case RingOpcode.READ: {
+                    var bytesRead = cqe.res
+                    Info("WebSocket read completed for socket: %d bytes read: %d\n",
+                        connection.handle(), bytesRead)
+
+                    if(bytesRead == 0) {
+                        Info("Client Closed socket: %d\n", connection.handle())
+                        return this.queueCancelAndClose(ring, session)
+                    }
+
+                    var status = this.handleWebSocketFrame(session, bytesRead)
+                    if(status == Status.WEB_SOCKET_CLOSED) {
+                        Info("Client Closed socket: %d\n", connection.handle())
+                        return this.queueCancelAndClose(ring, session)
+                    }
+                    else if(status != Status.OK) {
+                        Error("Error handling websocket frame for socket: %d: %s\n",
+                            connection.handle(), StatusAsStr(status))
+                        assert(false)
+                        return status
+                    }
+
+                    return this.queueReadWebSocket(ring, session)
+                }
+                default: {
+                    Error("Unsupported web socket operation: %s\n", RingOpcodeAsStr(operation.opcode))
+                    break
+                }
+            }
+            break
+        }
+        case SessionState.WRITING_STREAM:
+        case SessionState.WRITING_SSE: {
+            session.submissions -= 1
+            return this.advanceChunkedWrite(ring, session)
+        }
+        case SessionState.WRITTEN_HTTP_RESPONSE:
+        case SessionState.WRITTEN_HTTP_RESPONSE_MORE:
+        case SessionState.WRITTEN_FILE: {
+            session.submissions -= 1
+            Info("%s for socket: %d subs: %d index: %d\n",
+                SessionStateAsStr(session.state),
+                connection.handle(),
+                session.submissions,
+                session.index
+            )
+
+            if(session.submissions <= 0) {
+                if(session.isWebSocket) {
+                    session.state = SessionState.WEB_SOCKET_OPERATION
+                    return this.queueReadWebSocket(ring, session)
+                }
+                Info("Preparing connection for another HTTP request for socket: %d\n", connection.handle())
+                session.begin(connection.handle())
+                return this.queueReadHttpRequest(ring, session)
+            }
+            break
+        }
+        case SessionState.CLOSED: {
+            Info("Request is forcing closed for connection: %d\n", connection.handle())
+            if (!connection.isConnected()) {
+                break
+            }
+            session.finish(.forceClose = true)
+            break
+        }
+        case SessionState.UNKNOWN: {
+            Info("Request caught in unknown state for connection: %d\n", connection.handle())
+            break
+        }
+        default: {
+            Panic("Unknown state: %d\n", session.state)
+            assert(false)
+            break;
+        }
+    }
+
+    return Status.OK
+}

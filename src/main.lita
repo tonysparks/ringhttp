@@ -1,4 +1,5 @@
-
+import "std/libc"
 func main(len: i32, args: **char) : i32 {
+    printf("Hello World\n")
     return 0;
 }

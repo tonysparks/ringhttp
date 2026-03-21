@@ -280,8 +280,11 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
     else if (header.name.equalsIgnoreCase($"upgrade") && header.values.contains($"websocket")) {
         result.flags |= HttpFlags.WEB_SOCKET_PROTOCOL
     }
+    else if (header.name.equalsIgnoreCase($"accept") && header.values.contains($"text/event-stream")) {
+        result.flags |= HttpFlags.SSE
+    }
     else {
-        this.checkHeaderBody(header, &result.body)
+        this.checkHeaderBody(header, result)
     }
 }
 

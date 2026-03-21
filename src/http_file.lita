@@ -49,3 +49,28 @@ public func OpenFile(
 
     return Status.OK
 }
+
+// FileOpenResult holds the results of OpenFileInfo without exposing File.
+public struct FileOpenResult {
+    fd:       i32
+    fileSize: i64
+    status:   Status
+}
+
+// OpenFileInfo opens a file and returns the handle and size without
+// exposing the File type to callers that don't import std/io.
+public func OpenFileInfo(
+    rootPath: String,
+    publicServerPath: String,
+    path: String
+) : FileOpenResult {
+    var result = FileOpenResult{}
+    var file: File;
+    result.status = OpenFile(rootPath, publicServerPath, path, &file)
+    if(result.status != Status.OK) {
+        return result
+    }
+    result.fd       = file.handle()
+    result.fileSize = file.length()
+    return result
+}

@@ -1,29 +1,24 @@
 import "std/string"
 import "std/string/builder"
+import "std/string/buffer"
 import "std/array"
 import "std/libc"
 import "std/assert"
+import "std/mem"
 
 import "http_request"
 import "http_parser"
 
-func testQueryParsingUrl(url: *const char, expected: *const char) {
+func testQueryParsingUrl(query: *const char, expected: *const char) {
     var request = HttpRequest {}
-    request.path = StringInit(url)
+    request.query = query.toString()
 
-    var result = HttpQuery{}
-    result.params.init()
-
-    request.parseQuery(&result)
+    var result = HttpQueryInit(defaultAllocator)
+    assert(request.parseQuery(&result) == ParseStatus.OK)
 
     var sb = StringBuilderInit()
     for(var i = 0; i < result.params.size(); i+=1) {
         var param = result.params.getPtr(i)
-        printf("Name: '%.*s' -> '%.*s'\n",
-            param.name.length,
-            param.name.buffer,
-            param.value.length,
-            param.value.buffer)
 
         sb.append("'%.*s'->'%.*s'\n",
             param.name.length,
@@ -31,24 +26,208 @@ func testQueryParsingUrl(url: *const char, expected: *const char) {
             param.value.length,
             param.value.buffer)
     }
-    printf("\n")
 
     var expectedView = StringInit(expected)
-    assert(expectedView.equals(sb.cStr()))
+    assert(expectedView.equals(sb.toString()))
 }
 
 @test
 func testQueryParsing() {
-    testQueryParsingUrl("http://google.com", "")
-    testQueryParsingUrl("http://google.com?", "")
-    testQueryParsingUrl("http://google.com?query=this&name=value&yes=1", "'query'->'this'\n'name'->'value'\n'yes'->'1'\n")
-    testQueryParsingUrl("http://google.com?query&name=value&yes=1", "'query'->''\n'name'->'value'\n'yes'->'1'\n")
-    testQueryParsingUrl("http://google.com?query=this&name&yes=1", "'query'->'this'\n'name'->''\n'yes'->'1'\n")
-    testQueryParsingUrl("http://google.com?query=this&name=value&yes", "'query'->'this'\n'name'->'value'\n'yes'->''\n")
-    testQueryParsingUrl("http://google.com?query=this&name&yes", "'query'->'this'\n'name'->''\n'yes'->''\n")
-    testQueryParsingUrl("http://google.com?query&name=value&yes", "'query'->''\n'name'->'value'\n'yes'->''\n")
-    testQueryParsingUrl("http://google.com?query&name&yes=1", "'query'->''\n'name'->''\n'yes'->'1'\n")
-    testQueryParsingUrl("http://google.com?query&name&yes", "'query'->''\n'name'->''\n'yes'->''\n")
+    testQueryParsingUrl("", "")
+    testQueryParsingUrl("query=this&name=value&yes=1", "'query'->'this'\n'name'->'value'\n'yes'->'1'\n")
+    testQueryParsingUrl("query&name=value&yes=1", "'query'->''\n'name'->'value'\n'yes'->'1'\n")
+    testQueryParsingUrl("query=this&name&yes=1", "'query'->'this'\n'name'->''\n'yes'->'1'\n")
+    testQueryParsingUrl("query=this&name=value&yes", "'query'->'this'\n'name'->'value'\n'yes'->''\n")
+    testQueryParsingUrl("query=this&name&yes", "'query'->'this'\n'name'->''\n'yes'->''\n")
+    testQueryParsingUrl("query&name=value&yes", "'query'->''\n'name'->'value'\n'yes'->''\n")
+    testQueryParsingUrl("query&name&yes=1", "'query'->''\n'name'->''\n'yes'->'1'\n")
+    testQueryParsingUrl("query&name&yes", "'query'->''\n'name'->''\n'yes'->''\n")
+}
+
+
+@test
+func testQueryParams() {
+    var queryParam = HttpQueryInit(defaultAllocator)
+    var queryRequest = HttpRequest{}
+
+    // Test empty
+    {
+        queryParam.params.clear()
+        queryRequest.query = StringInit("")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.empty())
+    }
+
+    // Test 1
+    {
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=value")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("value"))
+        }
+    }
+
+    // Test 2
+    {
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=value&thing1=thing2")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 2)
+
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("value"))
+        }
+
+        {
+            var n = queryParam.params.get(1)
+            assert(n.name.equalsString("thing1"))
+            assert(n.value.equalsString("thing2"))
+        }
+    }
+
+    // Missing '='
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString(""))
+        }
+    }
+
+    // Missing '=' with '&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name&value")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 2)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString(""))
+        }
+        {
+            var n = queryParam.params.get(1)
+            assert(n.name.equalsString("value"))
+            assert(n.value.equalsString(""))
+        }
+    }
+
+    // Double '='
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=x=y")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("x=y"))
+        }
+    }
+
+    // Double '=' with '&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=x=y&thing1=thing2")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 2)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("x=y"))
+        }
+
+        {
+            var n = queryParam.params.get(1)
+            assert(n.name.equalsString("thing1"))
+            assert(n.value.equalsString("thing2"))
+        }
+    }
+
+    // Trailing '&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("name=x&")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equalsString("name"))
+            assert(n.value.equalsString("x"))
+        }
+    }
+
+    // Only '&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("&")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.empty())
+    }
+
+    // String of '&&&&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("&&&&&")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.empty())
+    }
+
+    // String of '======'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("====")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 1)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equalsString(""))
+            assert(n.value.equalsString("==="))
+        }
+    }
+
+    // String of '=&=&=&'
+    {
+
+        queryParam.params.clear()
+        queryRequest.query = StringInit("=&=&=&")
+        queryRequest.parseQuery(&queryParam)
+        assert(queryParam.params.size() == 3)
+        {
+            var n = queryParam.params.get(0)
+            assert(n.name.equalsString(""))
+            assert(n.value.equalsString(""))
+        }
+        {
+            var n = queryParam.params.get(1)
+            assert(n.name.equalsString(""))
+            assert(n.value.equalsString(""))
+        }
+        {
+            var n = queryParam.params.get(2)
+            assert(n.name.equalsString(""))
+            assert(n.value.equalsString(""))
+        }
+    }
 }
 
 func assertPathParsing(
@@ -90,7 +269,7 @@ func assertPathParsing(
             value.length, value.buffer
         )
     }
-    printf("%s\n", sb.cStr())
+    //printf("%s\n", sb.cStr())
 
     assert(StringEqual(sb.cStr(), expected))
 }
