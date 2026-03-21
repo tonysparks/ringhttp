@@ -2,6 +2,8 @@ Ring-Http
 ==
 An HTTP server using `io_uring` written purely in [LitaC](https://github.com/tonysparks/litac-lang).  This is still in heavy development and is not production quality - this was more for fun than for actual use (at least for now).
 
+There is also a backend implementation for macOS using `kqueue` primarily written using Claude.  The `kqueue` implementation is really only support development work on macOS - but the intent of the web server is to run on linux for *real* use.
+
 Features/TODO
 ==
 * ✅ Multi-part support
@@ -37,9 +39,11 @@ Features/TODO
     * ✅ Allow for chunked replies (via `Stream`)
     * ✅ Allow for specifying headers
     * ❌ API for specifying content-type (`response.json(..)` `response.html(..)`, etc.)
-    * ❌ Template engine integration (mustache? custom?)
+    * 🔧 Template engine integration (mustache? custom?)
+        * Use the `pre_build` litac feature to pre-compile template files
 * ✅ WebSocket
-* ❌ Test Suite
+* ✅ Server Sent Events (SSE)
+* 🔧 Test Suite
 
 Building
 ==
@@ -50,16 +54,16 @@ __Setup and Build__
 
 ```shell
 # Download the liburing litac bindings dependency (this only needs to be done once)
-litac -pkg-install
+litac install
 
 # Build the project
-litac -pkg-build
+litac build
 ```
 
 __Build and Run__
 ```shell
 # Build the project and run the executable
-litac -pkg-build -run
+litac build -run
 ```
 
 __Run executable__
