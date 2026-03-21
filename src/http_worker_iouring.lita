@@ -30,6 +30,7 @@ import "std/encoding/base64"
 
 import "pipe_posix"
 import "liburing"
+import "http_sse"
 
 @asStr
 internal enum RingOpcode {
@@ -202,12 +203,15 @@ func (this: *WorkerThread) queueWriteHttpResponse(
         goto error;
     }
 
-    var moreContents = (response.type != ResponseType.BODY)
+    // SSE headers must be flushed immediately (no MSG_MORE) so the browser sees
+    // the event-stream content-type right away.  FILE and STREAM still use MSG_MORE
+    // to hint the kernel to batch headers with the first data write.
+    var useMoreFlag = (response.type == ResponseType.FILE || response.type == ResponseType.STREAM)
     io_uring_prep_sendmsg(
         sqe,
         connection.handle(),
         &msg,
-        moreContents ? SocketFlags.MSG_MORE : 0
+        useMoreFlag ? SocketFlags.MSG_MORE : 0
     )
 
     io_uring_sqe_set_data64(
@@ -224,18 +228,17 @@ func (this: *WorkerThread) queueWriteHttpResponse(
 
     session.submissions += 1
 
-    if(moreContents) {
-        if(response.type == ResponseType.FILE) {
-            session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
-            return this.queueWriteHttpFileResponse(ring, session)
-        }
-        else if(response.type == ResponseType.SSE) {
-            session.state = SessionState.WRITING_SSE
-        }
-        else {
-            assert(response.type == ResponseType.STREAM)
-            session.state = SessionState.WRITING_STREAM
-        }
+    if(response.type == ResponseType.FILE) {
+        session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
+        return this.queueWriteHttpFileResponse(ring, session)
+    }
+    else if(response.type == ResponseType.SSE) {
+        // Headers sent; the WRITTEN_HTTP_RESPONSE_MORE CQE handler will invoke
+        // the SSE callback once the send completes.
+        session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
+    }
+    else if(response.type == ResponseType.STREAM) {
+        session.state = SessionState.WRITING_STREAM
     }
 
     return Status.OK
@@ -488,6 +491,69 @@ func (this: *WorkerThread) queueWriteWebSocket(
     io_uring_submit(ring)
 
     return Status.OK;
+
+error:
+    return Status.ERROR_IOURING_ERROR;
+}
+
+public func (this: *WorkerThread) sendSseEvent(
+    session: *SessionContext,
+    event:   *SseEvent
+) : Status {
+    return this.queueWriteSseEvent(&this.ring, session, event)
+}
+
+public func (this: *WorkerThread) closeSseSession(session: *SessionContext) {
+    this.queueCancelAndClose(&this.ring, session)
+    io_uring_submit(&this.ring)
+}
+
+func (this: *WorkerThread) queueWriteSseEvent(
+    ring:    *io_uring,
+    session: *SessionContext,
+    event:   *SseEvent
+): Status {
+
+    session.state = SessionState.SSE_OPERATION
+
+    var connection = &session.connection
+    Info("Writing SSE event for socket: %d\n", connection.handle())
+
+    var writeBuffer = &connection.writeBuffer
+    writeBuffer.clear()
+
+    event.serialize(writeBuffer)
+
+    var iov = iovec {
+        .iov_base = writeBuffer.buffer,
+        .iov_len  = writeBuffer.length,
+    }
+
+    var msg = msghdr {
+        .msg_iov    = &iov,
+        .msg_iovlen = 1,
+    }
+
+    var sqe = io_uring_get_sqe(ring)
+    if(!sqe) {
+        Error("Error creating SQE for socket: %d\n", connection.handle())
+        goto error;
+    }
+
+    io_uring_prep_sendmsg(sqe, connection.handle(), &msg, 0)
+
+    io_uring_sqe_set_data64(
+        sqe,
+        RingOperation {
+            .opcode = RingOpcode.SENDMSG,
+            .contextIndex = session.index,
+        }.data
+    )
+
+    session.submissions += 1
+    io_uring_submit(ring)
+
+    return Status.OK
 
 error:
     return Status.ERROR_IOURING_ERROR;
@@ -827,8 +893,25 @@ func (this: *WorkerThread) handleCompletionRing(
             }
             break
         }
-        case SessionState.WRITING_STREAM:
-        case SessionState.WRITING_SSE: {
+        case SessionState.SSE_OPERATION: {
+            switch(operation.opcode) {
+                case RingOpcode.SENDMSG: {
+                    Info("SSE write completed for socket: %d\n", connection.handle())
+                    session.submissions -= 1
+
+                    if(!session.isSse) {
+                        return this.queueCancelAndClose(ring, session)
+                    }
+                    break
+                }
+                default: {
+                    Error("Unsupported SSE operation: %s\n", RingOpcodeAsStr(operation.opcode))
+                    break
+                }
+            }
+            break
+        }
+        case SessionState.WRITING_STREAM: {
             session.submissions -= 1
             return this.advanceChunkedWrite(ring, session)
         }
@@ -847,6 +930,11 @@ func (this: *WorkerThread) handleCompletionRing(
                 if(session.isWebSocket) {
                     session.state = SessionState.WEB_SOCKET_OPERATION
                     return this.queueReadWebSocket(ring, session)
+                }
+                if(session.isSse) {
+                    session.state = SessionState.SSE_OPERATION
+                    session.sseHandler.callback(&session.sseSession)
+                    return Status.OK
                 }
                 Info("Preparing connection for another HTTP request for socket: %d\n", connection.handle())
                 session.begin(connection.handle())

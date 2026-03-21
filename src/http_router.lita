@@ -33,6 +33,7 @@ public struct RouteMatch {
 public enum RequestHandlerType {
     HTTP_REQUEST,
     WEB_SOCKET,
+    SSE_STREAM,
 }
 
 public struct RequestHandler {
@@ -42,6 +43,7 @@ public struct RequestHandler {
     union {
         controller: HttpController
         webSocket: WebSocketController
+        sseController: SseController
     }
 }
 

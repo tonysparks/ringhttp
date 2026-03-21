@@ -75,6 +75,47 @@ public func (this: *ServerHandler) handle(
     return 1
 }
 
+func SseSingleEventController(session: *SseSession) : i32 {
+    var event = SseEvent {
+        .data = $"hello from sse"
+    }
+    session.send(&event)
+    session.close()
+    return 1
+}
+
+func SseMultiEventController(session: *SseSession) : i32 {
+    var ev1 = SseEvent { .data = $"event one" }
+    var ev2 = SseEvent { .data = $"event two" }
+    var ev3 = SseEvent { .data = $"event three" }
+    session.send(&ev1)
+    session.send(&ev2)
+    session.send(&ev3)
+    session.close()
+    return 1
+}
+
+func SseWithFieldsController(session: *SseSession) : i32 {
+    var event = SseEvent {
+        .id    = $"42",
+        .event = $"update",
+        .data  = $"payload data",
+        .retry = 3000
+    }
+    session.send(&event)
+    session.close()
+    return 1
+}
+
+func SseMultilineController(session: *SseSession) : i32 {
+    var event = SseEvent {
+        .data = $"line one\nline two\nline three"
+    }
+    session.send(&event)
+    session.close()
+    return 1
+}
+
 func TestWebSocketController(session: *WebSocketSession, frame: *Frame) : i32 {
     var text = StringInit(.buffer = frame.payload, .length = frame.payloadLength as (i32))
 
@@ -420,6 +461,22 @@ public func runServer(testServer: *TestServer) : i32 {
             .callback = DeleteRequestHandler
         }
     )
+
+    server.addSseController("/sse/single", &handler, SseController {
+        .callback = SseSingleEventController
+    })
+
+    server.addSseController("/sse/multi", &handler, SseController {
+        .callback = SseMultiEventController
+    })
+
+    server.addSseController("/sse/fields", &handler, SseController {
+        .callback = SseWithFieldsController
+    })
+
+    server.addSseController("/sse/multiline", &handler, SseController {
+        .callback = SseMultilineController
+    })
 
     server.addWebSocketController(
         "/websocket",
