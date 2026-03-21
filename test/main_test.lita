@@ -33,7 +33,6 @@ var defaultConfig = HttpConfig {
 
 @module_init
 public func init_tests() {
-    printf("Init tests\n")
     http.init(http::HttpOptions{})
 
     testServer.config = &defaultConfig
@@ -43,7 +42,6 @@ public func init_tests() {
 
 @module_destroy
 public func destroy_tests() {
-    printf("Cleanup tests\n")
     http.free()
 }
 
@@ -569,4 +567,93 @@ func test_concurrent_requests() {
     }
 
     assert(state.successCount == N)
+}
+
+@test("test POST with multipart form-data text fields")
+func test_post_multipart_text_fields() {
+    const boundary = "TestBoundary1234"
+
+    var bodyBuilder = StringBuilderInit(512)
+    defer bodyBuilder.free()
+
+    bodyBuilder.append("--%s\r\n", boundary)
+    bodyBuilder.append("Content-Disposition: form-data; name=\"username\"\r\n")
+    bodyBuilder.append("\r\n")
+    bodyBuilder.append("alice\r\n")
+
+    bodyBuilder.append("--%s\r\n", boundary)
+    bodyBuilder.append("Content-Disposition: form-data; name=\"email\"\r\n")
+    bodyBuilder.append("\r\n")
+    bodyBuilder.append("alice@example.com\r\n")
+
+    bodyBuilder.append("--%s--", boundary)
+
+    var ctBuilder = StringBuilderInit(64)
+    defer ctBuilder.free()
+    ctBuilder.append("multipart/form-data; boundary=%s", boundary)
+
+    var headers = http::HeadersInit(32)
+    headers.put($"Content-Type", ctBuilder.toString())
+
+    var resp = http::HttpResponse {
+        .body = StringBuilderInit(512)
+    }
+    var req = http::HttpRequest {
+        .url = "http://localhost:8080/submit",
+        .type = http::HttpRequestType.POST,
+        .body = http::HttpBody {
+            .kind = http::HttpBodyKind.BODY,
+            .data = bodyBuilder.toString()
+        },
+        .headers = headers
+    }
+    assert(http.makeRequest(&req, &resp) == true)
+    assert(resp.statusCode == 200)
+    assert(resp.body.contains($"multi_part"))
+    assert(resp.body.contains($"username"))
+    assert(resp.body.contains($"alice"))
+    assert(resp.body.contains($"email"))
+    assert(resp.body.contains($"alice@example.com"))
+}
+
+@test("test POST with multipart file upload")
+func test_post_multipart_file_upload() {
+    const boundary = "TestBoundary5678"
+
+    var bodyBuilder = StringBuilderInit(512)
+    defer bodyBuilder.free()
+
+    bodyBuilder.append("--%s\r\n", boundary)
+    bodyBuilder.append("Content-Disposition: form-data; name=\"file\"; filename=\"hello.txt\"\r\n")
+    bodyBuilder.append("Content-Type: text/plain\r\n")
+    bodyBuilder.append("\r\n")
+    bodyBuilder.append("Hello, World!\r\n")
+
+    bodyBuilder.append("--%s--", boundary)
+
+    var ctBuilder = StringBuilderInit(64)
+    defer ctBuilder.free()
+    ctBuilder.append("multipart/form-data; boundary=%s", boundary)
+
+    var headers = http::HeadersInit(32)
+    headers.put($"Content-Type", ctBuilder.toString())
+
+    var resp = http::HttpResponse {
+        .body = StringBuilderInit(512)
+    }
+    var req = http::HttpRequest {
+        .url = "http://localhost:8080/submit",
+        .type = http::HttpRequestType.POST,
+        .body = http::HttpBody {
+            .kind = http::HttpBodyKind.BODY,
+            .data = bodyBuilder.toString()
+        },
+        .headers = headers
+    }
+    assert(http.makeRequest(&req, &resp) == true)
+    assert(resp.statusCode == 200)
+    assert(resp.body.contains($"multi_part"))
+    assert(resp.body.contains($"file"))
+    assert(resp.body.contains($"hello.txt"))
+    assert(resp.body.contains($"Hello, World!"))
 }
