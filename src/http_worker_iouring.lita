@@ -797,7 +797,8 @@ func (this: *WorkerThread) handleCompletionRing(
                 case RingOpcode.READ: {
                     var bytesRead = cqe.res
                     Info("WebSocket read completed for socket: %d bytes read: %d\n",
-                        connection.handle(), bytesRead)
+                        connection.handle(), bytesRead
+                    )
 
                     if(bytesRead == 0) {
                         Info("Client Closed socket: %d\n", connection.handle())
@@ -811,7 +812,8 @@ func (this: *WorkerThread) handleCompletionRing(
                     }
                     else if(status != Status.OK) {
                         Error("Error handling websocket frame for socket: %d: %s\n",
-                            connection.handle(), StatusAsStr(status))
+                            connection.handle(), StatusAsStr(status)
+                        )
                         assert(false)
                         return status
                     }
