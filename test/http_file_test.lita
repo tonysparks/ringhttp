@@ -3,6 +3,7 @@ import "std/mem"
 import "std/libc"
 import "std/assert"
 import "std/io"
+import "std/system"  // MAX_PATH is defined here
 
 import "http_file"
 import "http_common"
