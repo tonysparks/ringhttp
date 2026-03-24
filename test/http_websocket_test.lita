@@ -476,9 +476,11 @@ func testWebSocketFrameMediumPayload() {
     //   byte 2 : length high byte  (0 for 126)
     //   byte 3 : length low byte   (126) — must NOT be overwritten by payload
     //   byte 4+: payload
-    assert((sb.buffer[1] as (i32)) & 0xFF == 126)  // extended-length marker
-    assert((sb.buffer[2] as (i32)) & 0xFF == 0)    // high byte of 126
-    assert((sb.buffer[3] as (i32)) & 0xFF == 126)  // low byte intact (old bug overwrote this with 'A'=65)
+    // Parentheses around (& 0xFF) are required: in C, & has lower precedence
+    // than ==, so without them the expression would evaluate as & (0xFF == N).
+    assert(((sb.buffer[1] as (i32)) & 0xFF) == 126)  // extended-length marker
+    assert(((sb.buffer[2] as (i32)) & 0xFF) == 0)    // high byte of 126
+    assert(((sb.buffer[3] as (i32)) & 0xFF) == 126)  // low byte intact (old bug overwrote this with 'A'=65)
     assert(sb.buffer[4] == 'A')                    // first payload byte at correct offset 4
     assert(sb.length == 130)                        // 4-byte header + 126-byte payload
 }
