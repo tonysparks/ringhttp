@@ -533,7 +533,12 @@ func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundar
 
     var offset = it.remaining();
     var rewindBytes = boundary.length + 2
-    if(offset.buffer - rewindBytes < input.buffer) {
+    // Use pointer-minus-pointer (always valid within the same allocation) to
+    // compute the distance rather than pointer-minus-integer.  The latter form
+    // offset.buffer - rewindBytes can produce an out-of-bounds pointer before
+    // the comparison fires, which UBSan flags even though we never dereference
+    // the out-of-bounds value.
+    if((offset.buffer - input.buffer) as (i64) < rewindBytes as (i64)) {
         return ParseStatus.ERROR_INVALID_MULTIPART
     }
     *input = String {
