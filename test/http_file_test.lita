@@ -1,0 +1,43 @@
+import "std/string"
+import "std/mem"
+import "std/libc"
+import "std/assert"
+import "std/io"
+
+import "http_file"
+import "http_common"
+
+// Bug 9: OpenFile only checked path.length < MAX_PATH, not the combined
+// rootPath + "/" + path length.  A long rootPath could push the formatted
+// string past MAX_PATH and overflow the stack buffer.
+// After the fix, ERROR_REQUEST_PATH_NOT_ALLOWED is returned whenever
+// rootPath.length + 1 + path.length >= MAX_PATH.
+@test
+func testOpenFileCombinedPathTooLong() {
+    // Construct a rootPath that by itself is just under MAX_PATH, then add
+    // any non-empty path — the combined string must exceed MAX_PATH.
+    var longRoot = [MAX_PATH]char{}
+    for(var i = 0; i < MAX_PATH - 1; i+=1) {
+        longRoot[i] = 'a'
+    }
+    var root = String { .buffer = longRoot, .length = MAX_PATH - 1 }
+    var path = StringInit("index.html")
+
+    var file: File;
+    var status = OpenFile(root, StringInit(""), path, &file)
+    // Combined length is (MAX_PATH - 1) + 1 + 10 >= MAX_PATH → rejected.
+    assert(status == Status.ERROR_REQUEST_PATH_NOT_ALLOWED)
+}
+
+// Sanity-check: a short rootPath + short path must not be blocked by the
+// combined-length guard.
+@test
+func testOpenFileShortCombinedPathNotBlocked() {
+    var root = StringInit("/var/www")
+    var path = StringInit("index.html")
+
+    var file: File;
+    var status = OpenFile(root, StringInit(""), path, &file)
+    // The file won't exist, but the error must NOT be path-not-allowed.
+    assert(status != Status.ERROR_REQUEST_PATH_NOT_ALLOWED)
+}
