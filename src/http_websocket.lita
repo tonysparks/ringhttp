@@ -207,3 +207,96 @@ func testWebSocketFrame() {
     // assert(frame2.maskKey[2] == frame.maskKey[2])
     // assert(frame2.maskKey[3] == frame.maskKey[3])
 }
+
+// Bug 1 & 3: medium-length payload (126-65535 bytes) — the old offset was 3
+// instead of 4, causing the payload to overwrite the low byte of the length
+// field.  Also exercises the +10 capacity guard (bug 3).
+@test
+func testWebSocketFrameMediumPayload() {
+    // Build a 200-byte payload so the 16-bit extended length path is taken.
+    var payloadBuf = [200]char{}
+    for(var i = 0; i < 200; i+=1) {
+        payloadBuf[i] = ('A' + (i % 26)) as (char)
+    }
+
+    var frame = Frame {
+        .payloadLength = 200,
+        .opcode = Opcode.BINARY,
+        .isFinal = true,
+        .masked = false,
+        .offset = 0,
+        .payload = payloadBuf,
+    }
+
+    // Buffer must hold header (4 bytes) + payload (200 bytes).
+    var sb = StringBuilderInit(256)
+    var status = frame.serialize(sb)
+    assert(status == Status.OK)
+
+    // Parse back and verify the round-trip.
+    var frame2 = Frame{}
+    var parseStatus = frame2.parseHeader(sb)
+    assert(parseStatus == Status.OK)
+    assert(frame2.isFinal == frame.isFinal)
+    assert(frame2.opcode == frame.opcode)
+    // Before the fix, payloadLength would be corrupted because the payload
+    // overwrote the length low byte.
+    assert(frame2.payloadLength == 200)
+
+    frame2.parsePayload(sb)
+    // Verify the first and last payload bytes are intact (not overwritten).
+    assert(frame2.payload[0] == 'A')
+    assert(frame2.payload[199] == ('A' + (199 % 26)) as (char))
+}
+
+// Bug 2: large payload (>=65536 bytes) — the old code used << instead of >>
+// when encoding the 8-byte extended length, producing a near-zero length.
+@test
+func testWebSocketFrameLargePayloadLengthEncoding() {
+    // Use a 70000-byte payload to exercise the 64-bit extended length path.
+    var payloadBuf = [70000]char{}
+    for(var i = 0; i < 70000; i+=1) {
+        payloadBuf[i] = ('A' + (i % 26)) as (char)
+    }
+
+    var frame = Frame {
+        .payloadLength = 70000,
+        .opcode = Opcode.BINARY,
+        .isFinal = true,
+        .masked = false,
+        .offset = 0,
+        .payload = payloadBuf,
+    }
+
+    var sb = StringBuilderInit(70016)  // 70000 + 10-byte header + slack
+    var status = frame.serialize(sb)
+    assert(status == Status.OK)
+
+    // Parse back — before the fix the decoded length was near zero.
+    var frame2 = Frame{}
+    var parseStatus = frame2.parseHeader(sb)
+    assert(parseStatus == Status.OK)
+    assert(frame2.payloadLength == 70000)
+}
+
+// Bug 3: capacity guard uses +10, so a buffer of exactly payloadLength+9
+// must be rejected for a large frame.
+@test
+func testWebSocketFrameCapacityGuardLargeFrame() {
+    var payloadBuf = [70000]char{}
+
+    var frame = Frame {
+        .payloadLength = 70000,
+        .opcode = Opcode.BINARY,
+        .isFinal = true,
+        .masked = false,
+        .offset = 0,
+        .payload = payloadBuf,
+    }
+
+    // capacity = payloadLength + 9 — one byte short of the required +10.
+    var sb = StringBuilderInit(70009)
+    sb.capacity = 70009
+    var status = frame.serialize(sb)
+    assert(status == Status.ERROR_WEB_SOCKET_FRAME_LENGTH)
+}
