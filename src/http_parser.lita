@@ -109,7 +109,14 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
         }
 
         var lengthStr = input.substring(0, index)
-        var size = strtol(lengthStr.buffer, null, 16) as (i32) // TODO: check truncation
+        // Bug fix (4): strtol returns long (64-bit); cast directly to i32
+        // truncates large hex values silently (e.g. 0x80000000 → -2147483648),
+        // bypassing the size < 1 guard. Validate the range first.
+        var rawSize = strtol(lengthStr.buffer, null, 16)
+        if(rawSize < 0 || rawSize > 0x7FFFFFFF) {
+            return ParseStatus.ERROR_INVALID_CHUNK
+        }
+        var size = rawSize as (i32)
 
         // check to see if we are at the end of the stream
         if(size < 1) {
@@ -489,7 +496,9 @@ func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundar
                 }
 
                 formData.name = disposition.substring(index, endIndex)
-                if(formData.name.startsWith($"\"") && formData.name.endsWith($"\"")) {
+                // Bug fix (5): if length is 1 (a lone quote), length -= 2
+                // wraps to a huge unsigned value. Require at least 2 chars.
+                if(formData.name.length >= 2 && formData.name.startsWith($"\"") && formData.name.endsWith($"\"")) {
                     formData.name.buffer += 1
                     formData.name.length -= 2
                 }
@@ -507,7 +516,8 @@ func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundar
 
                 formData.filename = disposition.substring(index, endIndex)
                 // TODO: Allow for encoded characters
-                if(formData.filename.startsWith($"\"") && formData.filename.endsWith($"\"")) {
+                // Bug fix (5): same underflow guard as formData.name above.
+                if(formData.filename.length >= 2 && formData.filename.startsWith($"\"") && formData.filename.endsWith($"\"")) {
                     formData.filename.buffer += 1
                     formData.filename.length -= 2
                 }
@@ -518,14 +528,26 @@ func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundar
     // body/value
     if(it.hasNext()) {
         var body = it.next()
+        // Bug fix (6): if body is shorter than 4 bytes, body.length - 4
+        // wraps to a huge unsigned value causing an out-of-bounds read.
+        if(body.length < 4) {
+            return ParseStatus.ERROR_INVALID_MULTIPART
+        }
         // adjust the \r\n--
         formData.value = body.substring(0, body.length - 4)
     }
 
     var offset = it.remaining();
+    // Bug fix (7): subtracting boundary.length + 2 from offset.buffer could
+    // underflow if the remaining pointer is too close to the buffer start.
+    // Validate the rewind stays within the original input.
+    var rewindBytes = boundary.length + 2
+    if(offset.buffer - rewindBytes < input.buffer) {
+        return ParseStatus.ERROR_INVALID_MULTIPART
+    }
     *input = String {
-        .buffer = offset.buffer - boundary.length - 2,
-        .length = offset.length + boundary.length + 2,
+        .buffer = offset.buffer - rewindBytes,
+        .length = offset.length + rewindBytes,
     }
 
     return ParseStatus.OK
