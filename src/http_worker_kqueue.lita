@@ -250,56 +250,58 @@ func (this: *WorkerThread) flushFileResponse(session: *SessionContext) {
 
 // advanceChunkedResponse handles both STREAM and SSE chunked responses.
 func (this: *WorkerThread) advanceChunkedResponse(session: *SessionContext) {
-    var connection = &session.connection
-    var response   = &session.response
-    if(!response.stream.__this) {
-        Error("No stream attached to connection: %d\n", connection.handle())
-        this.closeSession(session)
-        return;
-    }
-
-    var writeBuffer = &connection.writeBuffer
-    writeBuffer.clear()
-
-    var numberOfBytesRead = response.stream.read(response.body.buffer, response.body.capacity)
-    var moreContents      = numberOfBytesRead > 0
-
-    if(!moreContents) {
-        session.state = SessionState.WRITTEN_HTTP_RESPONSE
-        writeBuffer.append("0\r\n\r\n")
-    }
-    else {
-        if(!writeBuffer.reserve(numberOfBytesRead + 16)) {
-            Error("Out of memory for chunked response on socket: %d\n", connection.handle())
+    while(true) {
+        var connection = &session.connection
+        var response   = &session.response
+        if(!response.stream.__this) {
+            Error("No stream attached to connection: %d\n", connection.handle())
             this.closeSession(session)
             return;
         }
 
-        writeBuffer.append("%08X\r\n", numberOfBytesRead)
-        response.body.length = numberOfBytesRead
-        response.body.copyTo(writeBuffer.buffer + writeBuffer.length, numberOfBytesRead, false)
-        writeBuffer.length += numberOfBytesRead
-        writeBuffer.appendStrn("\r\n", 2)
-    }
+        var writeBuffer = &connection.writeBuffer
+        writeBuffer.clear()
 
-    session.submissions = 0
-    var result = this.doSend(session)
+        var numberOfBytesRead = response.stream.read(response.body.buffer, response.body.capacity)
+        var moreContents      = numberOfBytesRead > 0
 
-    if(result < 0) {
-        this.closeSession(session)
-        return;
-    }
+        if(!moreContents) {
+            session.state = SessionState.WRITTEN_HTTP_RESPONSE
+            writeBuffer.append("0\r\n\r\n")
+        }
+        else {
+            if(!writeBuffer.reserve(numberOfBytesRead + 16)) {
+                Error("Out of memory for chunked response on socket: %d\n", connection.handle())
+                this.closeSession(session)
+                return;
+            }
 
-    if(result > 0) {
-        this.registerWrite(session)
-        return;
-    }
+            writeBuffer.append("%08X\r\n", numberOfBytesRead)
+            response.body.length = numberOfBytesRead
+            response.body.copyTo(writeBuffer.buffer + writeBuffer.length, numberOfBytesRead, false)
+            writeBuffer.length += numberOfBytesRead
+            writeBuffer.appendStrn("\r\n", 2)
+        }
 
-    if(moreContents) {
-        this.advanceChunkedResponse(session)
-    }
-    else {
+        session.submissions = 0
+        var result = this.doSend(session)
+
+        if(result < 0) {
+            this.closeSession(session)
+            return;
+        }
+
+        if(result > 0) {
+            this.registerWrite(session)
+            return;
+        }
+
+        if(moreContents) {
+            continue  // read and send next chunk without growing the call stack
+        }
+
         this.resetRequest(session)
+        return;
     }
 }
 

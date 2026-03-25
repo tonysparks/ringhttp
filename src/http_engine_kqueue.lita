@@ -91,7 +91,6 @@ internal func (this: *HttpRingEngine) listen() : Status {
 
     // Wait for all workers to finish initialization
     this.barrier.wait()
-    defer this.barrier.destroy()
 
     for(var i = 0; i < this.workers.length; i+=1) {
         var worker = this.workers.getPtr(i)
