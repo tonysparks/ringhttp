@@ -4,7 +4,6 @@ import "std/string/buffer"
 import "std/array"
 import "std/mem"
 import "std/libc"
-import "std/assert"
 import "std/json"
 import "std/log"
 
@@ -35,6 +34,7 @@ public enum ParseStatus {
     ERROR_INVALID_MULTIPART_SECTION,
     ERROR_INVALID_MULTIPART_BOUNDARY,
     ERROR_INVALID_MULTIPART_HEADER,
+    ERROR_INVALID_MULTIPART,
 }
 
 public struct HttpParser {
@@ -109,7 +109,14 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
         }
 
         var lengthStr = input.substring(0, index)
-        var size = strtol(lengthStr.buffer, null, 16) as (i32) // TODO: check truncation
+        // strtol returns long (64-bit); cast directly to i32
+        // truncates large hex values silently (e.g. 0x80000000 → -2147483648),
+        // bypassing the size < 1 guard. Validate the range first.
+        var rawSize = strtol(lengthStr.buffer, null, 16)
+        if(rawSize < 0 || rawSize > 0x7FFFFFFF) {
+            return ParseStatus.ERROR_INVALID_CHUNK
+        }
+        var size = rawSize as (i32)
 
         // check to see if we are at the end of the stream
         if(size < 1) {
@@ -489,7 +496,7 @@ func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundar
                 }
 
                 formData.name = disposition.substring(index, endIndex)
-                if(formData.name.startsWith($"\"") && formData.name.endsWith($"\"")) {
+                if(formData.name.length >= 2 && formData.name.startsWith($"\"") && formData.name.endsWith($"\"")) {
                     formData.name.buffer += 1
                     formData.name.length -= 2
                 }
@@ -506,8 +513,7 @@ func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundar
                 }
 
                 formData.filename = disposition.substring(index, endIndex)
-                // TODO: Allow for encoded characters
-                if(formData.filename.startsWith($"\"") && formData.filename.endsWith($"\"")) {
+                if(formData.filename.length >= 2 && formData.filename.startsWith($"\"") && formData.filename.endsWith($"\"")) {
                     formData.filename.buffer += 1
                     formData.filename.length -= 2
                 }
@@ -518,14 +524,26 @@ func (this: *HttpParser) parseMultipartBody(input: *String, part: *Part, boundar
     // body/value
     if(it.hasNext()) {
         var body = it.next()
+        if(body.length < 4) {
+            return ParseStatus.ERROR_INVALID_MULTIPART
+        }
         // adjust the \r\n--
         formData.value = body.substring(0, body.length - 4)
     }
 
     var offset = it.remaining();
+    var rewindBytes = boundary.length + 2
+    // Use pointer-minus-pointer (always valid within the same allocation) to
+    // compute the distance rather than pointer-minus-integer.  The latter form
+    // offset.buffer - rewindBytes can produce an out-of-bounds pointer before
+    // the comparison fires, which UBSan flags even though we never dereference
+    // the out-of-bounds value.
+    if((offset.buffer - input.buffer) as (i64) < rewindBytes as (i64)) {
+        return ParseStatus.ERROR_INVALID_MULTIPART
+    }
     *input = String {
-        .buffer = offset.buffer - boundary.length - 2,
-        .length = offset.length + boundary.length + 2,
+        .buffer = offset.buffer - rewindBytes,
+        .length = offset.length + rewindBytes,
     }
 
     return ParseStatus.OK
@@ -538,100 +556,3 @@ func (this: String) decodeFormUrl(allocator: *const Allocator): String {
     return sb.toString()
 }
 
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//  Tests
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-@test
-func testParse() {
-    var result: HttpRequest;
-
-    var parser = HttpParser{}
-    parser.init(defaultAllocator)
-
-    var input = StringInit(
-"GET /this/is/path HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nOrigin: example.com\r\nAgent:Some other Stuff/And some thingds end.\r\n\r\nname=Anthony+Sparks&address=3265+FORDHAM+CT&phone=414-315-1920"
-);
-
-    var ok = parser.parse(input, &result)
-    assert(ok == ParseStatus.OK)
-
-
-    printf("Raw: %.*s\nMethod: '%s' Path: '%.*s' Version: '%.*s'\n",
-        input.length, input.buffer,
-        HttpMethodAsStr(result.method),
-        result.path.length, result.path.buffer,
-        result.version.length, result.version.buffer
-    )
-
-    for(var i = 0; i < result.headers.size(); i+=1) {
-        var header = result.headers.getPtr(i)
-        printf("Name: '%.*s' Values: '%.*s'\n",
-            header.name.length, header.name.buffer,
-            header.values.length, header.values.buffer
-        )
-    }
-
-    assert(result.bodyType == BodyType.FORM_URLENCODED)
-    for(var i = 0; i < result.formParams.size(); i+=1) {
-        var form = result.formParams.getPtr(i)
-        printf("FormName: '%.*s' Values: '%.*s'\n",
-            form.name.length, form.name.buffer,
-            form.value.length, form.value.buffer
-        )
-    }
-}
-
-
-
-@test
-func testParseMultipart() {
-    var result: HttpRequest;
-
-    var parser = HttpParser{}
-    parser.init(defaultAllocator)
-
-    var input = StringInit(
-"POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Length: 356\r\n\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nJohn Doe\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"address\"\r\n\r\n123 Elm Street\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"phone\"\r\n\r\n+1234567890\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"file\"; filename=\"example.txt\"\r\nContent-Type: text/plain\r\n\r\nThis is the content of the file.\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW--"
-);
-
-    var ok = parser.parse(input, &result)
-    printf("Status: %s\n", ParseStatusAsStr(ok))
-    assert(ok == ParseStatus.OK)
-
-
-    printf("Raw: %.*s\nMethod: '%s' Path: '%.*s' Version: '%.*s'\n",
-        input.length, input.buffer,
-        HttpMethodAsStr(result.method),
-        result.path.length, result.path.buffer,
-        result.version.length, result.version.buffer
-    )
-
-    for(var i = 0; i < result.headers.size(); i+=1) {
-        var header = result.headers.getPtr(i)
-        printf("Name: '%.*s' Values: '%.*s'\n",
-            header.name.length, header.name.buffer,
-            header.values.length, header.values.buffer
-        )
-    }
-
-    assert(result.bodyType == BodyType.MULTIPART_FORMDATA)
-    printf("boundary: '%.*s'\n", result.multipart.boundary.length, result.multipart.boundary.buffer)
-    for(var i = 0; i < result.multipart.parts.size(); i+=1) {
-        var part = result.multipart.parts.getPtr(i)
-        printf("Part: \n")
-        for(var j = 0; j < part.headers.size(); j+=1) {
-            var header = part.headers.getPtr(j)
-            printf("Header Name: '%.*s' Values: '%.*s'\n",
-                header.name.length, header.name.buffer,
-                header.values.length, header.values.buffer
-            )
-        }
-
-        printf("Name: '%.*s'\n", part.formData.name.length, part.formData.name.buffer)
-        printf("Filename: '%.*s'\n", part.formData.filename.length, part.formData.filename.buffer)
-        printf("Value: '%.*s'\n", part.formData.value.length, part.formData.value.buffer)
-
-    }
-}

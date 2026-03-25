@@ -6,7 +6,6 @@ import "std/io"
 import "std/system"
 import "std/libc"
 import "std/net"
-import "std/assert"
 
 import "std/array"
 import "http_common"
@@ -20,7 +19,10 @@ public func OpenFile(
     file: *File
 ) : Status {
 
-    if(path.contains($"..") || path.length >= MAX_PATH) {
+    // result is rootPath + "/" + path. If rootPath is non-empty the combined
+    // string can exceed MAX_PATH and overflow the stack buffer. Check the
+    // full combined length (+ 1 for the '/' separator).
+    if(path.contains($"..") || (rootPath.length + 1 + path.length) >= MAX_PATH) {
         return Status.ERROR_REQUEST_PATH_NOT_ALLOWED
     }
 

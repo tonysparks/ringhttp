@@ -33,7 +33,7 @@
             "mac" : {
                 "default" : {
                     "cc" : "clang",
-                    "cc_options" : "-g -std=gnu99 %input% -o %output% -D_CRT_SECURE_NO_WARNINGS -D_DARWIN_C_SOURCE",
+                    "cc_options" : "-fsanitize=address,undefined -g -std=gnu99 %input% -o %output% -D_CRT_SECURE_NO_WARNINGS -D_DARWIN_C_SOURCE",
                     "lita_options" : [
                         "-verbose"
                     ]

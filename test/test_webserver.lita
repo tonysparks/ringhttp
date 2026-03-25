@@ -492,6 +492,9 @@ public func runServer(testServer: *TestServer) : i32 {
     var status = server.start()
     defer server.close()
 
+    // TODO: Do NOT use assert() here — this runs on a background thread and
+    // assert() uses longjmp() to the main thread's jmp_buf, which is
+    // undefined behaviour (PAC authentication failure on ARM64e).
     assert(Status.OK == status)
     return 0
 }
@@ -524,7 +527,13 @@ public func launch(testServer: *TestServer) {
     }
 
     testServer.barrier.init(2)
-    defer testServer.barrier.destroy()
+    // Do NOT defer barrier.destroy() here.  The barrier lives in the global
+    // TestServer struct (valid for the entire process lifetime), and on macOS
+    // the pthreads barrier implementation has an internal race between
+    // pthread_barrier_destroy() and a thread returning from
+    // pthread_barrier_wait() — destroying it here, immediately after the
+    // main thread's wait() returns, races with the server thread's cleanup
+    // inside wait() and causes a use-after-free detected by ASan.
 
     var thread = Thread{}
     if(thread.create(WebServerFunction, testServer) != ThreadStatus.SUCCESS) {

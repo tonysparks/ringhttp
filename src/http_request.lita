@@ -205,6 +205,13 @@ public func ParsePathTemplate(
                 return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_END
             }
 
+            // Bug fix (8): no bounds check existed before writing into the
+            // fixed-size entries array; a template with > MAX_TEMPATE_ENTRIES
+            // parameters would overflow the array onto adjacent stack memory.
+            if(result.numberOfEntries >= MAX_TEMPATE_ENTRIES) {
+                return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START
+            }
+
             var entry = &result.entries[result.numberOfEntries]
             entry.name.buffer = &pathTemplate.buffer[startIndex + 1]
             entry.name.length = index - (startIndex + 1)

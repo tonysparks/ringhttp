@@ -353,3 +353,37 @@ func testPathParsing() {
         "'userId'@1='1234';"
     )
 }
+
+// Bug 8: ParsePathTemplate had no bounds check before writing into the
+// fixed-size entries array (size MAX_TEMPATE_ENTRIES = 32).  A template
+// with more than 32 parameters would overflow onto adjacent stack memory.
+// After the fix it returns ERROR_INVALID_TEMPLATE_NAME_START.
+@test
+func testPathTemplateOverflow() {
+    // Build a path template with 33 parameters — one more than MAX_TEMPATE_ENTRIES.
+    var sb = StringBuilderInit(512)
+    defer sb.free()
+    for(var i = 0; i < 33; i+=1) {
+        sb.append("/{p%d}", i)
+    }
+
+    var template = HttpPathTemplate{}
+    var pathTemplate = sb.toString()
+    var status = ParsePathTemplate(&pathTemplate, &template)
+
+    // Must not overflow the array — the 33rd entry must be rejected.
+    assert(status == ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START)
+
+    // Exactly 32 parameters must still be accepted.
+    var sb2 = StringBuilderInit(512)
+    defer sb2.free()
+    for(var i = 0; i < 32; i+=1) {
+        sb2.append("/{p%d}", i)
+    }
+
+    var template2 = HttpPathTemplate{}
+    var pathTemplate2 = sb2.toString()
+    var status2 = ParsePathTemplate(&pathTemplate2, &template2)
+    assert(status2 == ParseStatus.OK)
+    assert(template2.numberOfEntries == 32)
+}
