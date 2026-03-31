@@ -192,7 +192,7 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
                 readBuffer.reserve(readBuffer.capacity + this.config.maxHttpRequestLineSizeInBytes as (i32))
             }
 
-            Info("RequestLine not fully read, waiting for more data: %d\n", connection.handle())
+            Debug("RequestLine not fully read, waiting for more data: %d\n", connection.handle())
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
         }
 
@@ -208,7 +208,7 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
                 readBuffer.reserve(readBuffer.capacity + this.config.maxHttpHeaderSizeInBytes as (i32))
             }
 
-            Info("Headers not fully read, waiting for more data: %d\n", connection.handle())
+            Debug("Headers not fully read, waiting for more data: %d\n", connection.handle())
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
         }
 
@@ -275,7 +275,7 @@ internal func (this: *WorkerThread) handleHttpRequest(
     var connection = &request.connection
 
     var buffer = &connection.readBuffer
-    Info("Handling HTTP request for socket: %d\n", connection.handle())
+    Debug("Handling HTTP request for socket: %d\n", connection.handle())
 
     var parser = HttpParser{}
     parser.init(requestAllocator)
@@ -362,6 +362,15 @@ internal func (this: *WorkerThread) handleHttpRequest(
         }
     }
 
+    var elapsed = SystemTimeMSec() - request.lastRequestTime
+    var httpReq = &request.request
+    Info("%s %.*s %d %.0fms\n",
+        HttpMethodAsStr(httpReq.method),
+        httpReq.path.length, httpReq.path.buffer,
+        request.response.status,
+        elapsed
+    )
+
     return this.queueSend(request)
 }
 
@@ -414,6 +423,14 @@ internal func (this: *WorkerThread) handleWebSocketUpgrade(
     var readBuffer = &connection.readBuffer
     readBuffer.clear()
 
+    var elapsed = SystemTimeMSec() - context.lastRequestTime
+    Info("%s %.*s %d %.0fms\n",
+        HttpMethodAsStr(httpRequest.method),
+        httpRequest.path.length, httpRequest.path.buffer,
+        context.response.status,
+        elapsed
+    )
+
     return this.queueSend(context)
 }
 
@@ -440,6 +457,14 @@ internal func (this: *WorkerThread) handleSseSetup(
 
     var readBuffer = &context.connection.readBuffer
     readBuffer.clear()
+
+    var elapsed = SystemTimeMSec() - context.lastRequestTime
+    Info("%s %.*s %d %.0fms\n",
+        HttpMethodAsStr(httpRequest.method),
+        httpRequest.path.length, httpRequest.path.buffer,
+        context.response.status,
+        elapsed
+    )
 
     return this.queueSend(context)
 }
@@ -471,6 +496,14 @@ internal func (this: *WorkerThread) handleFileRequest(
     if(!mime.empty()) {
         response.addHeader($"Content-Type", mime)
     }
+
+    var elapsed = SystemTimeMSec() - session.lastRequestTime
+    Info("%s %.*s %d %.0fms\n",
+        HttpMethodAsStr(httpRequest.method),
+        httpRequest.path.length, httpRequest.path.buffer,
+        response.status,
+        elapsed
+    )
 
     return this.queueSend(session)
 }
@@ -540,7 +573,7 @@ internal func (this: *WorkerThread) checkTimeouts() {
             }
 
             if(context.lastRequestTime + sessionTimeout < currentTime) {
-                Info("Timeout for socket: %d (index: %d)\n",
+                Debug("Timeout for socket: %d (index: %d)\n",
                     context.connection.handle(), context.index)
                 this.closeSession(context)
             }

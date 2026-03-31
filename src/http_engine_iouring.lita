@@ -208,7 +208,7 @@ func (this: *HttpRingEngine) queueHandleConnection(
     ring: *io_uring,
     clientSocket: i32
 ) : Status {
-    Info("Delagating to worker thread for socket: %d\n", clientSocket)
+    Debug("Delagating to worker thread for socket: %d\n", clientSocket)
 
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
@@ -219,7 +219,7 @@ func (this: *HttpRingEngine) queueHandleConnection(
     this.distribution = (this.distribution + 1) % (this.workers.length as (u64))
     var worker = this.workers.getPtr(this.distribution as (i32))
 
-    Info("Handing off to thread: %d with ring %d\n", worker.thread.id(), worker.ring.ring_fd)
+    Debug("Handing off to thread: %d with ring %d\n", worker.thread.id(), worker.ring.ring_fd)
 
     // Dispatch to one of the worker threads about this connect
     io_uring_prep_msg_ring(
@@ -258,7 +258,7 @@ func (this: *HttpRingEngine) handleCompletionRing(
 
     switch(operation.opcode) {
         case RingOpcode.ACCEPT: {
-            Info("CONNECTED: client socket: %d\n", cqe.res)
+            Debug("CONNECTED: client socket: %d\n", cqe.res)
             if(cqe.res == 0) {
                 break
             }
@@ -280,7 +280,6 @@ func signal_handler(signo: i32) {
     Info("Caught signal SIGPIPE for %d\n", signo)
     if(signo == SIGINT) {
         Info("Signal for shutdown received\n")
-        printf("Shutdown completed\n")
         exit(0)
     }
 }

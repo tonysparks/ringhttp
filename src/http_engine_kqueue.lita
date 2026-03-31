@@ -178,7 +178,7 @@ func (this: *HttpRingEngine) acceptConnections() {
             break
         }
 
-        Info("CONNECTED: client socket: %d\n", clientFd)
+        Debug("CONNECTED: client socket: %d\n", clientFd)
 
         // Make client socket non-blocking
         var flags = fcntl(clientFd, F_GETFL, 0)
@@ -188,7 +188,7 @@ func (this: *HttpRingEngine) acceptConnections() {
         this.distribution = (this.distribution + 1) % (this.workers.length as (u64))
         var worker = this.workers.getPtr(this.distribution as (i32))
 
-        Info("Handing off socket %d to worker thread: %d\n", clientFd, worker.thread.id())
+        Debug("Handing off socket %d to worker thread: %d\n", clientFd, worker.thread.id())
 
         // Write the client fd into the worker's pipe
         var written = write(worker.pipefd[1], &clientFd, sizeof(:i32))

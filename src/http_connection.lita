@@ -117,7 +117,7 @@ public func (this: *HttpConnection) bufferContents(
                             "Content-Length: %zu\r\n",
                             this.writeBuffer.length - bodyStartPosition
                         )
-                        Info("Compressed info: Full length: %d, Body length: %d\n",
+                        Debug("Compressed info: Full length: %d, Body length: %d\n",
                             this.writeBuffer.length,
                             bodyEndPosition - bodyStartPosition
                         )

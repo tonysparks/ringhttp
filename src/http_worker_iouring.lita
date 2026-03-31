@@ -102,7 +102,7 @@ func (this: *WorkerThread) queueCancelAndClose(
 
     var connection = &request.connection
 
-    Info("Setting connection to closed: %d\n", connection.handle())
+    Debug("Setting connection to closed: %d\n", connection.handle())
     {
         var sqe = io_uring_get_sqe(ring)
         if(!sqe) {
@@ -137,7 +137,7 @@ func (this: *WorkerThread) queueReadHttpRequest(
 
     var connection = &request.connection
 
-    Info("Reading HTTP request for socket: %d state: %s\n", connection.handle(), SessionStateAsStr(request.state))
+    Debug("Reading HTTP request for socket: %d state: %s\n", connection.handle(), SessionStateAsStr(request.state))
 
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
@@ -181,7 +181,7 @@ func (this: *WorkerThread) queueWriteHttpResponse(
 
     connection.bufferContents(request, response, this.config)
 
-    Info("Writing Http Response (socket: %d, length: %d):\n%.*s\n",
+    Debug("Writing Http Response (socket: %d, length: %d):\n%.*s\n",
         connection.handle(),
         connection.writeBuffer.length,
         connection.writeBuffer.length, connection.writeBuffer.buffer
@@ -451,7 +451,7 @@ func (this: *WorkerThread) queueWriteWebSocket(
     session.state = SessionState.WEB_SOCKET_OPERATION
 
     var connection = &session.connection
-    Info("Started Queued writing of web socket: %d\n", connection.handle())
+    Debug("Started Queued writing of web socket: %d\n", connection.handle())
 
     var writeBuffer = &connection.writeBuffer
     writeBuffer.clear()
@@ -517,7 +517,7 @@ func (this: *WorkerThread) queueWriteSseEvent(
     session.state = SessionState.SSE_OPERATION
 
     var connection = &session.connection
-    Info("Writing SSE event for socket: %d\n", connection.handle())
+    Debug("Writing SSE event for socket: %d\n", connection.handle())
 
     var writeBuffer = &connection.writeBuffer
     writeBuffer.clear()
@@ -745,14 +745,14 @@ func (this: *WorkerThread) handleCompletionRing(
                 if (!session.connection.isConnected()) {
                     break
                 }
-                Info("Unable to cancel operations for socket: %d due to already in progress or not found\n",
+                Debug("Unable to cancel operations for socket: %d due to already in progress or not found\n",
                     session.connection.handle()
                 )
                 session.finish(.forceClose = true)
                 break
             }
             case -ECANCELED: {
-                Info("Canceled request queue entries for socket: %d\n",
+                Debug("Canceled request queue entries for socket: %d\n",
                     session.connection.handle()
                 )
                 break
@@ -799,15 +799,15 @@ func (this: *WorkerThread) handleCompletionRing(
 
     switch(session.state) {
         case SessionState.CONNECTED: {
-            Info("Reading HTTP request for socket: %d\n", connection.handle())
+            Debug("Reading HTTP request for socket: %d\n", connection.handle())
             return this.queueReadHttpRequest(ring, session)
         }
         case SessionState.READ_REQUEST_LINE: {
             var bytesRead = cqe.res
-            Info("READ_REQUEST_LINE: %d for socket: %d subs: %d\n", bytesRead, connection.handle(), session.submissions)
+            Debug("READ_REQUEST_LINE: %d for socket: %d subs: %d\n", bytesRead, connection.handle(), session.submissions)
 
             if(bytesRead == 0) {
-                Info("Client Closed socket: %d\n", connection.handle())
+                Debug("Client Closed socket: %d\n", connection.handle())
                 return this.queueCancelAndClose(ring, session)
             }
 
@@ -846,13 +846,13 @@ func (this: *WorkerThread) handleCompletionRing(
             break
         }
         case SessionState.WEB_SOCKET_UPGRADED: {
-            Info("WebSocket upgraded for socket: %d\n", connection.handle())
+            Debug("WebSocket upgraded for socket: %d\n", connection.handle())
             return this.queueReadWebSocket(ring, session)
         }
         case SessionState.WEB_SOCKET_OPERATION: {
             switch(operation.opcode) {
                 case RingOpcode.SENDMSG: {
-                    Info("WebSocket write completed for socket: %d\n", connection.handle())
+                    Debug("WebSocket write completed for socket: %d\n", connection.handle())
                     session.submissions -= 1
 
                     if(!session.isWebSocket) {
@@ -862,12 +862,12 @@ func (this: *WorkerThread) handleCompletionRing(
                 }
                 case RingOpcode.READ: {
                     var bytesRead = cqe.res
-                    Info("WebSocket read completed for socket: %d bytes read: %d\n",
+                    Debug("WebSocket read completed for socket: %d bytes read: %d\n",
                         connection.handle(), bytesRead
                     )
 
                     if(bytesRead == 0) {
-                        Info("Client Closed socket: %d\n", connection.handle())
+                        Debug("Client Closed socket: %d\n", connection.handle())
                         return this.queueCancelAndClose(ring, session)
                     }
 
@@ -896,7 +896,7 @@ func (this: *WorkerThread) handleCompletionRing(
         case SessionState.SSE_OPERATION: {
             switch(operation.opcode) {
                 case RingOpcode.SENDMSG: {
-                    Info("SSE write completed for socket: %d\n", connection.handle())
+                    Debug("SSE write completed for socket: %d\n", connection.handle())
                     session.submissions -= 1
 
                     if(!session.isSse) {
@@ -919,7 +919,7 @@ func (this: *WorkerThread) handleCompletionRing(
         case SessionState.WRITTEN_HTTP_RESPONSE_MORE:
         case SessionState.WRITTEN_FILE: {
             session.submissions -= 1
-            Info("%s for socket: %d subs: %d index: %d\n",
+            Debug("%s for socket: %d subs: %d index: %d\n",
                 SessionStateAsStr(session.state),
                 connection.handle(),
                 session.submissions,
@@ -936,14 +936,14 @@ func (this: *WorkerThread) handleCompletionRing(
                     session.sseHandler.callback(&session.sseSession)
                     return Status.OK
                 }
-                Info("Preparing connection for another HTTP request for socket: %d\n", connection.handle())
+                Debug("Preparing connection for another HTTP request for socket: %d\n", connection.handle())
                 session.begin(connection.handle())
                 return this.queueReadHttpRequest(ring, session)
             }
             break
         }
         case SessionState.CLOSED: {
-            Info("Request is forcing closed for connection: %d\n", connection.handle())
+            Debug("Request is forcing closed for connection: %d\n", connection.handle())
             if (!connection.isConnected()) {
                 break
             }
@@ -951,7 +951,7 @@ func (this: *WorkerThread) handleCompletionRing(
             break
         }
         case SessionState.UNKNOWN: {
-            Info("Request caught in unknown state for connection: %d\n", connection.handle())
+            Debug("Request caught in unknown state for connection: %d\n", connection.handle())
             break
         }
         default: {

@@ -136,7 +136,7 @@ internal func (this: *SessionContext) begin(
 
 // ending of an HTTP request cycle, with optional force connection close
 internal func (this: *SessionContext) finish(forceClose: bool = false) {
-    Info("Finishing Request for socket: %d\n", this.connection.handle())
+    Debug("Finishing Request for socket: %d\n", this.connection.handle())
 
     this.isWebSocket = false
     this.isSse = false

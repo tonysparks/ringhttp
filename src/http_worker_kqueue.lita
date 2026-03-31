@@ -145,7 +145,7 @@ internal func (this: *WorkerThread) queueSend(session: *SessionContext) : Status
 
     connection.bufferContents(request, response, this.config)
 
-    Info("Writing HTTP response (socket: %d, length: %d)\n",
+    Debug("Writing HTTP response (socket: %d, length: %d)\n",
         connection.handle(), connection.writeBuffer.length
     )
 
@@ -342,7 +342,7 @@ func (this: *WorkerThread) flushWebSocketWrite(session: *SessionContext) {
 
 // resetRequest: response sent — recycle the session for the next request.
 func (this: *WorkerThread) resetRequest(session: *SessionContext) {
-    Info("Response complete for socket: %d\n", session.connection.handle())
+    Debug("Response complete for socket: %d\n", session.connection.handle())
 
     if(session.isWebSocket) {
         session.submissions = 0
@@ -552,7 +552,7 @@ func (this: *WorkerThread) handleEvent(ev: *kevent) {
     if(ev.flags & EV_ERROR) {
         if(ev.udata != null) {
             var session = ev.udata as (*SessionContext)
-            Info("kqueue error on socket: %d, force closing\n", session.connection.handle())
+            Debug("kqueue error on socket: %d, force closing\n", session.connection.handle())
             this.closeSession(session)
         }
         return;
@@ -576,7 +576,7 @@ func (this: *WorkerThread) handleEvent(ev: *kevent) {
     session.lastRequestTime = SystemTimeMSec()
 
     if(ev.flags & EV_EOF) {
-        Info("Client closed socket: %d\n", session.connection.handle())
+        Debug("Client closed socket: %d\n", session.connection.handle())
         this.closeSession(session)
         return;
     }
@@ -597,7 +597,7 @@ func (this: *WorkerThread) drainPipe() {
             break
         }
 
-        Info("Worker received new connection: %d\n", clientFd)
+        Debug("Worker received new connection: %d\n", clientFd)
 
         var session = this.handleAccept(clientFd)
         if(!session) {
@@ -631,7 +631,7 @@ func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
     )
 
     if(bytesRead == 0) {
-        Info("Client closed socket: %d\n", connection.handle())
+        Debug("Client closed socket: %d\n", connection.handle())
         this.closeSession(session)
         return;
     }
@@ -696,7 +696,7 @@ func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
         }
         case SessionState.SSE_OPERATION: {
             // SSE is server-push only; unexpected client data closes the connection
-            Info("Unexpected read on SSE socket: %d, closing\n", connection.handle())
+            Debug("Unexpected read on SSE socket: %d, closing\n", connection.handle())
             this.closeSession(session)
             break
         }
