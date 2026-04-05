@@ -8,7 +8,6 @@ import "std/mem"
 import "std/thread"
 
 import "http_ring"
-import "metrics_filter"
 import "filter_e2e_server"
 
 const BASE = "http://localhost:8081"
