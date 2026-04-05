@@ -29,9 +29,23 @@ public trait HttpHandler {
     handle: func(*RequestHandlerContext, Status) : i32;
 }
 
-@doc("Middleware interceptor - allows for injecting in custom handling of http requests")
+@doc("""
+Pre-dispatch middleware — called before the route handler.
+Return 1 to allow the request to proceed, 0 to block it.
+When blocking, the filter is responsible for setting the
+response status, type and body before returning 0.
+""")
 public trait HttpFilterHandler {
-    handleFilter: func(*RequestHandlerContext, *HttpFilterHandler) : i32;
+    handleFilter: func(*RequestHandlerContext) : i32;
+}
+
+@doc("""
+Post-dispatch hook — called after the route handler
+(or after a blocked filter). Always invoked for regular HTTP
+requests; not called for WebSocket/SSE streams.
+""")
+public trait PostHttpHandler {
+    postHandle: func(*RequestHandlerContext) : void;
 }
 
 @doc("Controller that can be bound to an http route")
@@ -109,6 +123,7 @@ public struct HttpServer {
     errorHandler: HttpHandler
     notFoundHandler: HttpHandler
     filterHandlers: Array<HttpFilterHandler>
+    postHandlers:   Array<PostHttpHandler>
 }
 
 public func (this: *HttpServer) setErrorHandler(errorHandler: HttpHandler) {
@@ -117,6 +132,14 @@ public func (this: *HttpServer) setErrorHandler(errorHandler: HttpHandler) {
 
 public func (this: *HttpServer) setNotFoundHandler(notFoundHandler: HttpHandler) {
     this.notFoundHandler = notFoundHandler
+}
+
+public func (this: *HttpServer) addFilterHandler(handler: HttpFilterHandler) {
+    this.filterHandlers.add(handler)
+}
+
+public func (this: *HttpServer) addPostHandler(handler: PostHttpHandler) {
+    this.postHandlers.add(handler)
 }
 
 public func (this: *HttpServer) addHttpController(
@@ -181,6 +204,7 @@ public func (this: *HttpServer) init(config: *HttpConfig) : Status {
 
     this.router.init(config.allocator)
     this.filterHandlers.init(32, config.allocator)
+    this.postHandlers.init(32, config.allocator)
     this.engine.init(this)
 
     this.mime.init(config.allocator)
@@ -205,6 +229,7 @@ public func (this: *HttpServer) free() {
     this.engine.close()
 
     this.filterHandlers.free()
+    this.postHandlers.free()
     this.router.free()
     this.mime.free()
 }

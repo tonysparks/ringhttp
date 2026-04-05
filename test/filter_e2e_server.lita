@@ -1,0 +1,111 @@
+import "std/assert"
+import "std/mem"
+import "std/string"
+import "std/string/builder"
+import "std/thread"
+import "std/thread/barrier"
+import "std/metrics"
+
+import "http_ring"
+import "metrics_filter"
+
+// ---------------------------------------------------------------
+// Auth filter
+//
+// Blocks any request whose path starts with "/protected" unless
+// the X-Auth-Token header equals "letmein".
+// ---------------------------------------------------------------
+
+public struct AuthFilter {}
+
+public func (this: *AuthFilter) handleFilter(ctx: *RequestHandlerContext) : i32 {
+    if(ctx.request.path.startsWith($"/protected")) {
+        var token = ctx.request.getHeaderValue($"X-Auth-Token")
+        if(!token.equals($"letmein")) {
+            ctx.response.status = 401
+            ctx.response.type   = ResponseType.BODY
+            ctx.response.body.appendStr("Unauthorized")
+            return 0
+        }
+    }
+    return 1
+}
+
+// ---------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------
+
+func HelloHandler(ctx: *RequestHandlerContext) : i32 {
+    ctx.response.status = 200
+    ctx.response.type   = ResponseType.BODY
+    ctx.response.addHeaderStr("Content-Type", "application/json")
+    ctx.response.body.appendStr("{\"msg\":\"hello\"}")
+    return 1
+}
+
+func ProtectedHandler(ctx: *RequestHandlerContext) : i32 {
+    ctx.response.status = 200
+    ctx.response.type   = ResponseType.BODY
+    ctx.response.addHeaderStr("Content-Type", "application/json")
+    ctx.response.body.appendStr("{\"msg\":\"secret data\"}")
+    return 1
+}
+
+// ---------------------------------------------------------------
+// Server state — globals so tests can inspect metrics
+// ---------------------------------------------------------------
+
+public var filterRegistry: Registry
+public var filterMetrics:  MetricsFilter
+public var authFilter:     AuthFilter
+
+// ---------------------------------------------------------------
+// Launch helpers
+// ---------------------------------------------------------------
+
+public struct FilterTestServer {
+    config:  *HttpConfig
+    barrier: Barrier
+}
+
+func filterServerThread(arg: *void) : i32 {
+    var ts = arg as (*FilterTestServer)
+
+    var server = HttpServer{}
+    server.init(ts.config)
+
+    server.addFilterHandler(&authFilter)
+    addMetricsMiddleware(&server, &filterMetrics)
+
+    server.addHttpController(HttpMethod.GET, "/hello", null, HttpController {
+        .callback = HelloHandler
+    })
+
+    server.addHttpController(HttpMethod.GET, "/protected", null, HttpController {
+        .callback = ProtectedHandler
+    })
+
+    ts.barrier.wait()
+
+    var status = server.start()
+    defer server.close()
+
+    assert(Status.OK == status)
+    return 0
+}
+
+public func launchFilterServer(ts: *FilterTestServer) {
+    if(!ts.config.allocator) {
+        ts.config.allocator = defaultAllocator
+    }
+
+    filterRegistry.init(defaultAllocator)
+    filterMetrics.init(&filterRegistry)
+
+    ts.barrier.init(2)
+
+    var thread = Thread{}
+    assert(thread.create(filterServerThread, ts) == ThreadStatus.SUCCESS)
+
+    ts.barrier.wait()
+}

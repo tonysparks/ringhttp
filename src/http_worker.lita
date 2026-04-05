@@ -8,6 +8,7 @@ import "std/atomic"
 import "std/assert"
 import "std/log"
 import "std/system"
+import "std/array"
 
 import "http_connection"
 import "http_parser"
@@ -306,60 +307,78 @@ internal func (this: *WorkerThread) handleHttpRequest(
         .response     = &request.response,
         .userData     = null,
         .match        = null,
+        .startTime    = request.lastRequestTime,
         .sessionIndex = request.index
     }
 
-    var requestMatch: RouteMatch;
-    if(!this.server.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
-        this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
+    // Pre-dispatch filters — each may block the request by returning 0.
+    // The blocking filter is responsible for writing its own response.
+    var blocked = false
+    for(var i = 0; i < this.server.filterHandlers.size(); i += 1) {
+        if(this.server.filterHandlers.get(i).handleFilter(&requestContext) == 0) {
+            blocked = true
+            break
+        }
     }
-    else {
-        var handler = requestMatch.handler
-        requestContext.userData = handler.userData
-        requestContext.match    = &requestMatch
 
-        switch(handler.type) {
-            case RequestHandlerType.HTTP_REQUEST: {
-                if(handler.controller.callback(&requestContext) != 1) {
-                    this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
-                }
-                break
-            }
-            case RequestHandlerType.SSE_STREAM: {
-                if(httpRequest.method != HttpMethod.GET) {
-                    this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
+    if(!blocked) {
+        var requestMatch: RouteMatch;
+        if(!this.server.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
+            this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
+        }
+        else {
+            var handler = requestMatch.handler
+            requestContext.userData = handler.userData
+            requestContext.match    = &requestMatch
+
+            switch(handler.type) {
+                case RequestHandlerType.HTTP_REQUEST: {
+                    if(handler.controller.callback(&requestContext) != 1) {
+                        this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
+                    }
                     break
                 }
-                return this.handleSseSetup(request, httpRequest, &requestContext)
-            }
-            case RequestHandlerType.WEB_SOCKET: {
-                if(httpRequest.method != HttpMethod.GET) {
-                    this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
-                    break
+                case RequestHandlerType.SSE_STREAM: {
+                    if(httpRequest.method != HttpMethod.GET) {
+                        this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
+                        break
+                    }
+                    return this.handleSseSetup(request, httpRequest, &requestContext)
                 }
-
-                if(httpRequest.flags & HttpFlags.UPGRADE_REQUEST) {
-                    if(!(httpRequest.flags & HttpFlags.WEB_SOCKET_PROTOCOL)) {
-                        return this.sendBadRequest(request, Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL)
+                case RequestHandlerType.WEB_SOCKET: {
+                    if(httpRequest.method != HttpMethod.GET) {
+                        this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
+                        break
                     }
 
-                    return this.handleWebSocketUpgrade(
-                        request,
-                        httpRequest,
-                        &requestContext
-                    )
-                }
+                    if(httpRequest.flags & HttpFlags.UPGRADE_REQUEST) {
+                        if(!(httpRequest.flags & HttpFlags.WEB_SOCKET_PROTOCOL)) {
+                            return this.sendBadRequest(request, Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL)
+                        }
 
-                // Non-upgrade GET to a WebSocket-only endpoint
-                requestContext.response.status = 400
-                requestContext.response.type   = ResponseType.BODY
-                requestContext.response.body.append("WebSocket upgrade required\n")
-                break
-            }
-            default: {
-                assert(false)
+                        return this.handleWebSocketUpgrade(
+                            request,
+                            httpRequest,
+                            &requestContext
+                        )
+                    }
+
+                    // Non-upgrade GET to a WebSocket-only endpoint
+                    requestContext.response.status = 400
+                    requestContext.response.type   = ResponseType.BODY
+                    requestContext.response.body.append("WebSocket upgrade required\n")
+                    break
+                }
+                default: {
+                    assert(false)
+                }
             }
         }
+    }
+
+    // Post-dispatch handlers — always called for HTTP requests (blocked or not).
+    for(var i = 0; i < this.server.postHandlers.size(); i += 1) {
+        this.server.postHandlers.get(i).postHandle(&requestContext)
     }
 
     var elapsed = SystemTimeMSec() - request.lastRequestTime
