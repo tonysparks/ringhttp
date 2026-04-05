@@ -1,0 +1,152 @@
+import "std/metrics"
+import "std/string/builder"
+import "std/system"
+import "std/mem"
+import "std/array"
+
+import "http_server"
+import "http_router"
+import "http_request"
+import "http_response"
+import "http_common"
+
+// Default histogram buckets for HTTP request duration (milliseconds)
+const NUM_LATENCY_BOUNDS = 14
+const LATENCY_BOUNDS = [NUM_LATENCY_BOUNDS]f64 {
+    0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0,
+    100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0
+}
+
+// ---------------------------------------------------------------
+// HttpMetrics — the actual metric objects, shared across threads
+// ---------------------------------------------------------------
+
+public struct HttpMetrics {
+    requests_total:     *Counter
+    requests_GET:       *Counter
+    requests_POST:      *Counter
+    requests_PUT:       *Counter
+    requests_DELETE:    *Counter
+    requests_other:     *Counter
+
+    responses_2xx:      *Counter
+    responses_3xx:      *Counter
+    responses_4xx:      *Counter
+    responses_5xx:      *Counter
+    responses_blocked:  *Counter
+
+    duration_ms:        *Histogram
+
+    registry: *Registry
+}
+
+public func (this: *HttpMetrics) init(registry: *Registry) {
+    this.registry = registry
+
+    this.requests_total  = registry.counter(
+        "http_requests_total",
+        "Total number of HTTP requests received (including blocked)"
+    )
+    this.requests_GET    = registry.counter("http_requests_GET",    "GET requests")
+    this.requests_POST   = registry.counter("http_requests_POST",   "POST requests")
+    this.requests_PUT    = registry.counter("http_requests_PUT",    "PUT requests")
+    this.requests_DELETE = registry.counter("http_requests_DELETE", "DELETE requests")
+    this.requests_other  = registry.counter("http_requests_other",  "Requests with other HTTP methods")
+
+    this.responses_2xx     = registry.counter("http_responses_2xx",     "HTTP 2xx responses")
+    this.responses_3xx     = registry.counter("http_responses_3xx",     "HTTP 3xx responses")
+    this.responses_4xx     = registry.counter("http_responses_4xx",     "HTTP 4xx responses")
+    this.responses_5xx     = registry.counter("http_responses_5xx",     "HTTP 5xx responses")
+    this.responses_blocked = registry.counter("http_responses_blocked", "Requests blocked by a filter")
+
+    this.duration_ms = registry.histogram(
+        "http_request_duration_ms",
+        LATENCY_BOUNDS,
+        NUM_LATENCY_BOUNDS,
+        "HTTP request duration in milliseconds"
+    )
+}
+
+// ---------------------------------------------------------------
+// MetricsFilter — implements PostHttpHandler
+//
+// Registered via addMetricsMiddleware; called after every regular
+// HTTP request (blocked or not) to record method, status and latency.
+// ---------------------------------------------------------------
+
+public struct MetricsFilter {
+    metrics: HttpMetrics
+}
+
+public func (this: *MetricsFilter) init(registry: *Registry) {
+    this.metrics.init(registry)
+}
+
+public func (this: *MetricsFilter) postHandle(ctx: *RequestHandlerContext) {
+    var m = &this.metrics
+
+    m.requests_total.inc()
+
+    switch(ctx.request.method) {
+        case HttpMethod.GET:    { m.requests_GET.inc();    break }
+        case HttpMethod.POST:   { m.requests_POST.inc();   break }
+        case HttpMethod.PUT:    { m.requests_PUT.inc();    break }
+        case HttpMethod.DELETE: { m.requests_DELETE.inc(); break }
+        default:                { m.requests_other.inc();  break }
+    }
+
+    var status = ctx.response.status
+    if(status >= 200 && status < 300) {
+        m.responses_2xx.inc()
+    } else if(status >= 300 && status < 400) {
+        m.responses_3xx.inc()
+    } else if(status >= 400 && status < 500) {
+        m.responses_4xx.inc()
+    } else if(status >= 500) {
+        m.responses_5xx.inc()
+    }
+
+    // A blocked request has no route match
+    if(ctx.match == null && status != 404) {
+        m.responses_blocked.inc()
+    }
+
+    var elapsed = SystemTimeMSec() - ctx.startTime
+    m.duration_ms.observe(elapsed)
+}
+
+// ---------------------------------------------------------------
+// /metrics endpoint handler
+// ---------------------------------------------------------------
+
+// userData must point to a *Registry
+func MetricsEndpointHandler(ctx: *RequestHandlerContext) : i32 {
+    var registry = ctx.userData as (*Registry)
+
+    ctx.response.status = 200
+    ctx.response.type   = ResponseType.BODY
+    ctx.response.addHeaderStr("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+
+    registry.scrapePrometheus(&ctx.response.body)
+    return 1
+}
+
+// ---------------------------------------------------------------
+// Convenience: wire up post-handler + /metrics route in one call
+// ---------------------------------------------------------------
+
+public func addMetricsMiddleware(
+    server: *HttpServer,
+    filter: *MetricsFilter,
+    path:   *const char = "/metrics"
+) {
+    server.addPostHandler(filter)
+    server.addHttpController(
+        HttpMethod.GET,
+        path,
+        filter.metrics.registry,
+        HttpController {
+            .callback = MetricsEndpointHandler
+        }
+    )
+}

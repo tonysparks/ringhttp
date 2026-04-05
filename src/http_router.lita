@@ -20,6 +20,9 @@ public struct RequestHandlerContext {
 
     match: *RouteMatch
 
+    // wall-clock time (ms) when this request started — set by the worker
+    startTime: f64
+
     // internal structure
     sessionIndex: i32
 }
