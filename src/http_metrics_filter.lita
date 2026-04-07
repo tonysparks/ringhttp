@@ -125,9 +125,15 @@ func MetricsEndpointHandler(ctx: *RequestHandlerContext) : i32 {
 
     ctx.response.status = 200
     ctx.response.type   = ResponseType.BODY
-    ctx.response.addHeaderStr("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 
-    registry.scrapePrometheus(&ctx.response.body)
+    var accept = ctx.request.getHeaderValue($"accept")
+    if(accept.contains($"application/json")) {
+        ctx.response.addHeaderStr("Content-Type", "application/json; charset=utf-8")
+        registry.scrapeJSON(&ctx.response.body)
+    } else {
+        ctx.response.addHeaderStr("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        registry.scrapePrometheus(&ctx.response.body)
+    }
     return 1
 }
 
@@ -135,13 +141,12 @@ func MetricsEndpointHandler(ctx: *RequestHandlerContext) : i32 {
 // Convenience: wire up post-handler + /metrics route in one call
 // ---------------------------------------------------------------
 
-public func addMetricsMiddleware(
-    server: *HttpServer,
+public func (this: *HttpServer) addMetricsMiddleware(
     filter: *MetricsFilter,
     path:   *const char = "/metrics"
 ) {
-    server.addPostHandler(filter)
-    server.addHttpController(
+    this.addPostHandler(filter)
+    this.addHttpController(
         HttpMethod.GET,
         path,
         filter.metrics.registry,

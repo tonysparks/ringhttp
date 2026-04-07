@@ -7,7 +7,6 @@ import "std/thread/barrier"
 import "std/metrics"
 
 import "http_ring"
-import "metrics_filter"
 
 // ---------------------------------------------------------------
 // Auth filter
@@ -75,7 +74,7 @@ func filterServerThread(arg: *void) : i32 {
     server.init(ts.config)
 
     server.addFilterHandler(&authFilter)
-    addMetricsMiddleware(&server, &filterMetrics)
+    server.addMetricsMiddleware(&filterMetrics)
 
     server.addHttpController(HttpMethod.GET, "/hello", null, HttpController {
         .callback = HelloHandler
