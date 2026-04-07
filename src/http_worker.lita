@@ -321,8 +321,8 @@ internal func (this: *WorkerThread) handleHttpRequest(
         }
     }
 
+    var requestMatch: RouteMatch;
     if(!blocked) {
-        var requestMatch: RouteMatch;
         if(!this.server.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
             this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
         }

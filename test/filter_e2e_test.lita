@@ -143,9 +143,10 @@ func test_metrics_names_present() {
     assert(resp.statusCode == 200)
 
     assert(resp.body.contains($"http_requests_total"))
-    assert(resp.body.contains($"http_requests_GET"))
-    assert(resp.body.contains($"http_responses_2xx"))
-    assert(resp.body.contains($"http_responses_4xx"))
+    assert(resp.body.contains($"method=\"GET\""))
+    assert(resp.body.contains($"http_responses_total"))
+    assert(resp.body.contains($"status=\"2xx\""))
+    assert(resp.body.contains($"status=\"4xx\""))
     assert(resp.body.contains($"http_responses_blocked"))
     assert(resp.body.contains($"http_request_duration_ms"))
 }
@@ -168,8 +169,8 @@ func test_metrics_counts_increment() {
     // Total requests must have grown by at least 3
     // (baseline already has some requests from earlier tests)
     assert(after.body.contains($"http_requests_total"))
-    assert(after.body.contains($"http_responses_2xx"))
-    assert(after.body.contains($"http_responses_4xx"))
+    assert(after.body.contains($"status=\"2xx\""))
+    assert(after.body.contains($"status=\"4xx\""))
     assert(after.body.contains($"http_responses_blocked"))
 }
 
@@ -194,7 +195,7 @@ func test_blocked_increments_blocked_not_2xx() {
 
     var final = get("/metrics")
     assert(final.body.contains($"http_responses_blocked"))
-    assert(final.body.contains($"http_responses_2xx"))
+    assert(final.body.contains($"status=\"2xx\""))
 }
 
 @test("histogram bucket lines are present in metrics output")
@@ -218,5 +219,5 @@ func test_unknown_route_counted() {
 
     // The 4xx counter must be present (accumulated across all tests)
     var m = get("/metrics")
-    assert(m.body.contains($"http_responses_4xx"))
+    assert(m.body.contains($"status=\"4xx\""))
 }

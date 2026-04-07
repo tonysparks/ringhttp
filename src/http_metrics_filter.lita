@@ -1,5 +1,6 @@
 import "std/metrics"
 import "std/string/builder"
+import "std/string"
 import "std/system"
 import "std/mem"
 import "std/array"
@@ -22,20 +23,10 @@ const LATENCY_BOUNDS = [NUM_LATENCY_BOUNDS]f64 {
 // ---------------------------------------------------------------
 
 public struct HttpMetrics {
-    requests_total:     *Counter
-    requests_GET:       *Counter
-    requests_POST:      *Counter
-    requests_PUT:       *Counter
-    requests_DELETE:    *Counter
-    requests_other:     *Counter
-
-    responses_2xx:      *Counter
-    responses_3xx:      *Counter
-    responses_4xx:      *Counter
-    responses_5xx:      *Counter
-    responses_blocked:  *Counter
-
-    duration_ms:        *Histogram
+    requestsTotal:    *Counter    // attrs: method, path
+    responsesTotal:   *Counter    // attrs: status, path
+    responsesBlocked: *Counter    // attrs: path
+    durationMs:       *Histogram  // attrs: path
 
     registry: *Registry
 }
@@ -43,23 +34,19 @@ public struct HttpMetrics {
 public func (this: *HttpMetrics) init(registry: *Registry) {
     this.registry = registry
 
-    this.requests_total  = registry.counter(
+    this.requestsTotal = registry.counter(
         "http_requests_total",
-        "Total number of HTTP requests received (including blocked)"
+        "Total number of HTTP requests received"
     )
-    this.requests_GET    = registry.counter("http_requests_GET",    "GET requests")
-    this.requests_POST   = registry.counter("http_requests_POST",   "POST requests")
-    this.requests_PUT    = registry.counter("http_requests_PUT",    "PUT requests")
-    this.requests_DELETE = registry.counter("http_requests_DELETE", "DELETE requests")
-    this.requests_other  = registry.counter("http_requests_other",  "Requests with other HTTP methods")
-
-    this.responses_2xx     = registry.counter("http_responses_2xx",     "HTTP 2xx responses")
-    this.responses_3xx     = registry.counter("http_responses_3xx",     "HTTP 3xx responses")
-    this.responses_4xx     = registry.counter("http_responses_4xx",     "HTTP 4xx responses")
-    this.responses_5xx     = registry.counter("http_responses_5xx",     "HTTP 5xx responses")
-    this.responses_blocked = registry.counter("http_responses_blocked", "Requests blocked by a filter")
-
-    this.duration_ms = registry.histogram(
+    this.responsesTotal = registry.counter(
+        "http_responses_total",
+        "Total number of HTTP responses sent"
+    )
+    this.responsesBlocked = registry.counter(
+        "http_responses_blocked",
+        "Requests blocked by a filter"
+    )
+    this.durationMs = registry.histogram(
         "http_request_duration_ms",
         LATENCY_BOUNDS,
         NUM_LATENCY_BOUNDS,
@@ -85,34 +72,46 @@ public func (this: *MetricsFilter) init(registry: *Registry) {
 public func (this: *MetricsFilter) postHandle(ctx: *RequestHandlerContext) {
     var m = &this.metrics
 
-    m.requests_total.inc()
+    var method = HttpMethodAsStr(ctx.request.method)
+    var path: *const char = ctx.match != null
+        ? ctx.match.template.template.buffer
+        : ""
 
-    switch(ctx.request.method) {
-        case HttpMethod.GET:    { m.requests_GET.inc();    break }
-        case HttpMethod.POST:   { m.requests_POST.inc();   break }
-        case HttpMethod.PUT:    { m.requests_PUT.inc();    break }
-        case HttpMethod.DELETE: { m.requests_DELETE.inc(); break }
-        default:                { m.requests_other.inc();  break }
-    }
+    m.requestsTotal.inc(
+        MetricAttr { .name = "method", .value = method },
+        MetricAttr { .name = "path",   .value = path }
+    )
 
     var status = ctx.response.status
+    var statusStr: *const char = null
     if(status >= 200 && status < 300) {
-        m.responses_2xx.inc()
+        statusStr = "2xx"
     } else if(status >= 300 && status < 400) {
-        m.responses_3xx.inc()
+        statusStr = "3xx"
     } else if(status >= 400 && status < 500) {
-        m.responses_4xx.inc()
+        statusStr = "4xx"
     } else if(status >= 500) {
-        m.responses_5xx.inc()
+        statusStr = "5xx"
+    }
+
+    if(statusStr != null) {
+        m.responsesTotal.inc(
+            MetricAttr { .name = "status", .value = statusStr },
+            MetricAttr { .name = "path",   .value = path }
+        )
     }
 
     // A blocked request has no route match
     if(ctx.match == null && status != 404) {
-        m.responses_blocked.inc()
+        m.responsesBlocked.inc(
+            MetricAttr { .name = "path", .value = path }
+        )
     }
 
     var elapsed = SystemTimeMSec() - ctx.startTime
-    m.duration_ms.observe(elapsed)
+    m.durationMs.observe(elapsed,
+        MetricAttr { .name = "path", .value = path }
+    )
 }
 
 // ---------------------------------------------------------------
