@@ -63,7 +63,7 @@ internal union RingOperation {
 }
 
 // Build a tagged u64 for io_uring_sqe_set_data64.
-func makeOp(opcode: RingOpcode, contextIndex: i32, generation: u32 = 0) : u64 {
+internal func makeOp(opcode: RingOpcode, contextIndex: i32, generation: u32 = 0) : u64 {
     return RingOperation {
         .head = (opcode as (u32)) | (generation << 8),
         .contextIndex = contextIndex,
@@ -71,12 +71,12 @@ func makeOp(opcode: RingOpcode, contextIndex: i32, generation: u32 = 0) : u64 {
 }
 
 // Extract the opcode from a decoded RingOperation.
-func (op: *RingOperation) opcode() : RingOpcode {
+internal func (op: *RingOperation) opcode() : RingOpcode {
     return (op.head & 0xFF) as (RingOpcode)
 }
 
 // Extract the generation from a decoded RingOperation.
-func (op: *RingOperation) opGeneration() : u32 {
+internal func (op: *RingOperation) opGeneration() : u32 {
     return op.head >> 8
 }
 
