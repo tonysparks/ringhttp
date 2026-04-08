@@ -32,6 +32,9 @@ import "pipe_posix"
 import "liburing"
 import "http_sse"
 
+// Cancel all in-flight operations on a given fd (IORING_ASYNC_CANCEL_ALL = 1).
+const IORING_ASYNC_CANCEL_ALL: i32 = 1
+
 @asStr
 internal enum RingOpcode {
     TIMEOUT,
@@ -44,12 +47,37 @@ internal enum RingOpcode {
     CLOSE,
 }
 
+// Layout (little-endian u64):
+//   bits  0- 7 : RingOpcode (8 bits, values 0-7)
+//   bits  8-31 : generation  (24 bits, wraps after ~16 M reuses)
+//   bits 32-63 : contextIndex (i32 — pool slot index or client socket fd)
+//
+// Using a packed head word keeps contextIndex at its full 32-bit range so
+// large socket file descriptors (MSG_RING path) are never truncated.
 internal union RingOperation {
     struct {
-        opcode: i32
+        head: u32      // low 8 = opcode, high 24 = generation
         contextIndex: i32
     }
     data: u64
+}
+
+// Build a tagged u64 for io_uring_sqe_set_data64.
+func makeOp(opcode: RingOpcode, contextIndex: i32, generation: u32 = 0) : u64 {
+    return RingOperation {
+        .head = (opcode as (u32)) | (generation << 8),
+        .contextIndex = contextIndex,
+    }.data
+}
+
+// Extract the opcode from a decoded RingOperation.
+func (op: *RingOperation) opcode() : RingOpcode {
+    return (op.head & 0xFF) as (RingOpcode)
+}
+
+// Extract the generation from a decoded RingOperation.
+func (op: *RingOperation) opGeneration() : u32 {
+    return op.head >> 8
 }
 
 internal struct WorkerThread {
@@ -110,14 +138,14 @@ func (this: *WorkerThread) queueCancelAndClose(
             goto error;
         }
 
-        io_uring_prep_cancel(sqe, request, 0)
+        // Cancel ALL in-flight operations on the socket fd so no stale CQEs
+        // arrive after the session is freed.  prep_cancel_fd matches by fd,
+        // which is correct because all our SQEs operate on this socket.
+        io_uring_prep_cancel_fd(sqe, connection.handle(), IORING_ASYNC_CANCEL_ALL)
 
         io_uring_sqe_set_data64(
             sqe,
-            RingOperation {
-                .opcode = RingOpcode.CANCEL,
-                .contextIndex = request.index,
-            }.data
+            makeOp(RingOpcode.CANCEL, request.index, request.generation)
         )
     }
 
@@ -155,13 +183,7 @@ func (this: *WorkerThread) queueReadHttpRequest(
         0
     )
 
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.READ,
-            .contextIndex = request.index,
-        }.data
-    )
+    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.READ, request.index, request.generation))
     return Status.OK
 
 error:
@@ -214,13 +236,7 @@ func (this: *WorkerThread) queueWriteHttpResponse(
         useMoreFlag ? SocketFlags.MSG_MORE : 0
     )
 
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.SENDMSG,
-            .contextIndex = session.index,
-        }.data
-    )
+    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.SENDMSG, session.index, session.generation))
 
     if(response.type == ResponseType.FILE) {
         sqe.flags |= IOSQE_IO_LINK
@@ -311,13 +327,7 @@ func (this: *WorkerThread) advanceChunkedWrite(
         moreContents ? SocketFlags.MSG_MORE : 0
     )
 
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.SENDMSG,
-            .contextIndex = session.index,
-        }.data
-    )
+    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.SENDMSG, session.index, session.generation))
 
     session.submissions += 1
 
@@ -371,13 +381,7 @@ func (this: *WorkerThread) queueWriteHttpFileResponse(
             )
             sqe.flags |= IOSQE_IO_LINK
 
-            io_uring_sqe_set_data64(
-                sqe,
-                RingOperation {
-                    .opcode = RingOpcode.SPLICE,
-                    .contextIndex = request.index,
-                }.data
-            )
+            io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.SPLICE, request.index, request.generation))
         }
 
         {
@@ -398,13 +402,7 @@ func (this: *WorkerThread) queueWriteHttpFileResponse(
             )
             sqe.flags |= IOSQE_IO_LINK
 
-            io_uring_sqe_set_data64(
-                sqe,
-                RingOperation {
-                    .opcode = RingOpcode.SPLICE,
-                    .contextIndex = request.index,
-                }.data
-            )
+            io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.SPLICE, request.index, request.generation))
         }
 
         request.submissions += 2
@@ -419,13 +417,7 @@ func (this: *WorkerThread) queueWriteHttpFileResponse(
 
         io_uring_prep_close(sqe, response.fileHandle)
 
-        io_uring_sqe_set_data64(
-            sqe,
-            RingOperation {
-                .opcode = RingOpcode.CLOSE,
-                .contextIndex = request.index,
-            }.data
-        )
+        io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.CLOSE, request.index, request.generation))
         request.submissions += 1
     }
 
@@ -479,13 +471,7 @@ func (this: *WorkerThread) queueWriteWebSocket(
 
     io_uring_prep_sendmsg(sqe, connection.handle(), &msg, 0)
 
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.SENDMSG,
-            .contextIndex = session.index,
-        }.data
-    )
+    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.SENDMSG, session.index, session.generation))
 
     session.submissions += 1
     io_uring_submit(ring)
@@ -542,13 +528,7 @@ func (this: *WorkerThread) queueWriteSseEvent(
 
     io_uring_prep_sendmsg(sqe, connection.handle(), &msg, 0)
 
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.SENDMSG,
-            .contextIndex = session.index,
-        }.data
-    )
+    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.SENDMSG, session.index, session.generation))
 
     session.submissions += 1
     io_uring_submit(ring)
@@ -583,13 +563,7 @@ func (this: *WorkerThread) queueReadWebSocket(
         0
     )
 
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.READ,
-            .contextIndex = session.index,
-        }.data
-    )
+    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.READ, session.index, session.generation))
 
     return Status.OK
 
@@ -610,13 +584,7 @@ func (this: *WorkerThread) queueTimeoutCheck(ring: *io_uring): Status {
 
     io_uring_prep_timeout(sqe, &ts, 0, 0)
 
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.TIMEOUT,
-            .contextIndex = -1,
-        }.data
-    )
+    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.TIMEOUT, -1))
 
     return Status.OK;
 
@@ -725,18 +693,23 @@ func (this: *WorkerThread) handleCompletionRing(
         return Status.ERROR_IO_ERROR;
     }
 
-    if(cqe.res < 0) {
-        var operation = RingOperation {
-            .data = io_uring_cqe_get_data64(cqe)
-        }
+    var operation = RingOperation {
+        .data = io_uring_cqe_get_data64(cqe)
+    }
 
-        if(operation.opcode == RingOpcode.TIMEOUT) {
+    if(cqe.res < 0) {
+        if(operation.opcode() == RingOpcode.TIMEOUT) {
             this.checkTimeouts()
             return Status.OK
         }
 
         var session = this.sessions.get(operation.contextIndex)
         assert(session != null)
+
+        // Discard stale CQEs that arrived after the slot was reused.
+        if(operation.opGeneration() != session.generation) {
+            return Status.OK
+        }
 
         switch(cqe.res) {
             case -ENOENT:
@@ -755,6 +728,11 @@ func (this: *WorkerThread) handleCompletionRing(
                 Debug("Canceled request queue entries for socket: %d\n",
                     session.connection.handle()
                 )
+                if (!session.connection.isConnected()) {
+                    break
+                }
+                // All ops on the socket were cancelled; close cleanly.
+                session.finish(.forceClose = true)
                 break
             }
             default: {
@@ -775,20 +753,27 @@ func (this: *WorkerThread) handleCompletionRing(
         return Status.OK
     }
 
-    var operation = RingOperation {
-        .data = io_uring_cqe_get_data64(cqe)
-    }
-
     var session: *SessionContext = null
 
-    if(operation.opcode == RingOpcode.MSG_RING) {
+    if(operation.opcode() == RingOpcode.MSG_RING) {
         session = this.handleAccept(operation.contextIndex)
+        if(session == null) {
+            // Pool exhausted — drop the connection rather than crashing.
+            close(operation.contextIndex)
+            return Status.OK
+        }
     }
     else {
         session = this.sessions.get(operation.contextIndex)
     }
 
     assert(session != null)
+
+    // Discard stale CQEs that arrived after the slot was reused.
+    if(operation.opcode() != RingOpcode.MSG_RING &&
+       operation.opGeneration() != session.generation) {
+        return Status.OK
+    }
 
     session.lastRequestTime = SystemTimeMSec()
     var connection = &session.connection
@@ -845,12 +830,8 @@ func (this: *WorkerThread) handleCompletionRing(
             }
             break
         }
-        case SessionState.WEB_SOCKET_UPGRADED: {
-            Debug("WebSocket upgraded for socket: %d\n", connection.handle())
-            return this.queueReadWebSocket(ring, session)
-        }
         case SessionState.WEB_SOCKET_OPERATION: {
-            switch(operation.opcode) {
+            switch(operation.opcode()) {
                 case RingOpcode.SENDMSG: {
                     Debug("WebSocket write completed for socket: %d\n", connection.handle())
                     session.submissions -= 1
@@ -887,14 +868,14 @@ func (this: *WorkerThread) handleCompletionRing(
                     return this.queueReadWebSocket(ring, session)
                 }
                 default: {
-                    Error("Unsupported web socket operation: %s\n", RingOpcodeAsStr(operation.opcode))
+                    Error("Unsupported web socket operation: %s\n", RingOpcodeAsStr(operation.opcode()))
                     break
                 }
             }
             break
         }
         case SessionState.SSE_OPERATION: {
-            switch(operation.opcode) {
+            switch(operation.opcode()) {
                 case RingOpcode.SENDMSG: {
                     Debug("SSE write completed for socket: %d\n", connection.handle())
                     session.submissions -= 1
@@ -905,7 +886,7 @@ func (this: *WorkerThread) handleCompletionRing(
                     break
                 }
                 default: {
-                    Error("Unsupported SSE operation: %s\n", RingOpcodeAsStr(operation.opcode))
+                    Error("Unsupported SSE operation: %s\n", RingOpcodeAsStr(operation.opcode()))
                     break
                 }
             }
