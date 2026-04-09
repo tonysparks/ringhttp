@@ -3,12 +3,12 @@ import "std/mem"
 import "std/assert"
 import "std/array"
 
-// import "http_ring"
-import "http_worker_iouring"
-
 // ---------------------------------------------------------------------------
 // Tests: RingOperation packing and stale-generation detection
 // ---------------------------------------------------------------------------
+
+#if OS == "LINUX"
+import "http_worker_iouring"
 
 // Bug fix: RingOperation packing — opcode, generation, and contextIndex must
 // survive a round-trip through the u64 encoding used in io_uring user_data.
@@ -87,3 +87,5 @@ func testStaleGenerationDetection() {
     var gen0Op = RingOperation { .data = makeOp(RingOpcode.READ, 0, 0) }
     assert(gen0Op.opGeneration() != sessionGeneration)
 }
+
+#end
