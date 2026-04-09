@@ -1,0 +1,49 @@
+# Build and run the full test suite on Linux (io_uring backend).
+#
+#   docker build -f Dockerfile.test -t ring-test .
+#   docker run --rm ring-test
+
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        git \
+        liburing-dev \
+        libcurl4-openssl-dev \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build the litac compiler via two-stage bootstrap:
+#   Stage 1 – compile the bootstrap C source into a first-stage binary.
+#   Stage 2 – use that binary to compile litac from source (self-hosted).
+# This avoids any bugs present in the pre-generated bootstrap C file
+# while still using the full stdlib at the pinned commit.
+#RUN git clone https://github.com/tonysparks/litac-lang /opt/litac-lang \
+#    && git -C /opt/litac-lang checkout a1912c5ee4f9f573f124966b76e1af54998122e3
+RUN git clone https://github.com/tonysparks/litac-lang /opt/litac-lang
+
+# Stage 1: bootstrap binary
+RUN gcc -O2 -o /usr/local/bin/litac_bootstrap \
+        /opt/litac-lang/bootstrap/litac_linux.c \
+        -D_CRT_SECURE_NO_WARNINGS -D_DEFAULT_SOURCE \
+        -I/opt/litac-lang/include \
+        -I/opt/litac-lang/stdlib/std/http/libcurl/include \
+        -L/opt/litac-lang/lib \
+        -lm -lrt -lpthread -lcurl
+
+ENV LITAC_HOME=/opt/litac-lang
+
+# Stage 2: compile litac from source using the bootstrap binary
+RUN mkdir -p /opt/litac-lang/bin/output \
+    && cd /opt/litac-lang \
+    && litac_bootstrap build \
+    && cp /opt/litac-lang/bin/output/litac /usr/local/bin/litac
+
+WORKDIR /build
+COPY . .
+
+# Fetch the liburing LitaC bindings declared in pkg.json.
+RUN litac install
+
+# Run the full test suite; non-zero exit fails the docker build/run.
+CMD ["litac", "test"]

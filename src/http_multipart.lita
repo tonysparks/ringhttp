@@ -42,8 +42,12 @@ public func ParseMultipart(
             var value = header.values
             var index = value.indexOfAt("boundary=", BOUNDARY_LENGTH, MULTIPART_HEADER_LENGTH)
             if(index > -1) {
-                result.boundary.buffer = &value.buffer[index + BOUNDARY_LENGTH]
-                result.boundary.length = value.length - (index + BOUNDARY_LENGTH)
+                var boundaryStart = index + BOUNDARY_LENGTH
+                if(boundaryStart >= value.length) {
+                    return ParseStatus.ERROR_INVALID_MULTIPART_SECTION
+                }
+                result.boundary.buffer = &value.buffer[boundaryStart]
+                result.boundary.length = value.length - boundaryStart
                 // TODO use HttpParser (parseHeaders to parse each part's header)
                 return ParseStatus.OK
             }
@@ -79,4 +83,7 @@ func testParseMultipart() {
     assertBoundaryParsing("multipart/form-data; boundary=xyz", "xyz")
     assertBoundaryParsing("multipart/form-data; boundary=xyz wxy", "xyz wxy")
     assertBoundaryParsing("boundary=xyz", "", false)
+    // Bug fix: "boundary=" with no value would produce a one-past-end buffer pointer.
+    // ParseMultipart must return an error instead of an empty-boundary result.
+    assertBoundaryParsing("multipart/form-data; boundary=", "", false)
 }

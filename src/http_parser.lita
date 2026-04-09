@@ -130,7 +130,7 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
         }
 
         // parse the chunk data
-        var chunk = input.substring(index + 2, size + 3 /* inclusive index + offset of 2 */)
+        var chunk = input.substring(index + 2, index + 2 + size)
         result.chunkData.appendStrn(chunk.buffer, chunk.length)
 
         // move to the next chunk
@@ -304,12 +304,12 @@ func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
             body.bodyType = BodyType.JSON
         }
         else if(header.values.startsWith($"multipart/form-data")) {
-            body.bodyType = BodyType.MULTIPART_FORMDATA
             var boundaryIndex = header.values.endIndexOf($"boundary=")
-            if(boundaryIndex < 0) {
+            if(boundaryIndex < 0 || boundaryIndex >= header.values.length) {
                 return;
             }
 
+            body.bodyType = BodyType.MULTIPART_FORMDATA
             body.multipart.boundary = header.values.substring(boundaryIndex)
         }
     }

@@ -11,3 +11,4 @@ bin/litac_test_file.dSYM
 *.dSYM
 .git
 Dockerfile
+run_docker_tests.sh

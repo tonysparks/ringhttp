@@ -188,13 +188,7 @@ func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): Status {
         0
     )
 
-    io_uring_sqe_set_data64(
-        sqe,
-        RingOperation {
-            .opcode = RingOpcode.ACCEPT,
-            .contextIndex = 0,
-        }.data
-    )
+    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.ACCEPT, 0))
     io_uring_submit(ring)
 
     return Status.OK;
@@ -226,10 +220,7 @@ func (this: *HttpRingEngine) queueHandleConnection(
         sqe,
         worker.ring.ring_fd,
         0,
-        RingOperation {
-            .opcode = RingOpcode.MSG_RING,
-            .contextIndex = clientSocket,
-        }.data,
+        makeOp(RingOpcode.MSG_RING, clientSocket),
         0
     )
     io_uring_sqe_set_flags(sqe, IOSQE_CQE_SKIP_SUCCESS)
@@ -256,7 +247,7 @@ func (this: *HttpRingEngine) handleCompletionRing(
         .data = io_uring_cqe_get_data64(cqe)
     }
 
-    switch(operation.opcode) {
+    switch(operation.opcode()) {
         case RingOpcode.ACCEPT: {
             Debug("CONNECTED: client socket: %d\n", cqe.res)
             if(cqe.res == 0) {
@@ -267,7 +258,7 @@ func (this: *HttpRingEngine) handleCompletionRing(
             return this.queueHandleConnection(ring, cqe.res)
         }
         default: {
-            Panic("Unhandled accept ring opcode: %d\n", RingOpcodeAsStr(operation.opcode))
+            Panic("Unhandled accept ring opcode: %d\n", RingOpcodeAsStr(operation.opcode()))
             assert(false)
             break;
         }

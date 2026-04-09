@@ -5,6 +5,7 @@ import "std/string/builder"
 import "std/thread"
 import "std/thread/barrier"
 import "std/metrics"
+import "std/libc"
 
 import "http_ring"
 
@@ -89,6 +90,19 @@ func filterServerThread(arg: *void) : i32 {
     var status = server.start()
     defer server.close()
 
+    if(status != Status.OK) {
+        printf("Status: %s\n", StatusAsStr(status))
+        if(status == Status.ERROR_SOCKET_BIND) {
+            printf(
+                """
+                ***********************************************************
+                Look like the port is already in use: '%d'
+                ***********************************************************
+                """,
+                ts.config.port
+            )
+        }
+    }
     assert(Status.OK == status)
     return 0
 }

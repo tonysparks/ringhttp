@@ -208,3 +208,47 @@ func testParseMultipartBodyTooShort() {
     // ERROR_INVALID_MULTIPART is returned.  It must never silently corrupt.
     assert(status == ParseStatus.ERROR_INVALID_MULTIPART || status == ParseStatus.OK)
 }
+
+// Bug fix: chunk end index was computed as (size + 3) instead of (index + 2 + size).
+// For single-digit hex sizes index==1 so the two expressions coincide, masking the
+// bug.  For any multi-digit hex size (index >= 2) the old formula reads one fewer
+// byte per extra digit.
+@test
+func testParseChunkMultiDigitHexSize() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // "0a" is hex for 10.  index==2, so the old formula (size+3==13) would have
+    // stopped at position 12, dropping the last byte ("9") of the payload.
+    var result: HttpRequest;
+    var input = StringInit("0a\r\n0123456789\r\n0\r\n\r\n")
+    var status = parser.parseChunk(input, &result)
+    assert(status == ParseStatus.OK)
+    assert(result.body.body.equalsString("0123456789"))
+
+    // Two chunks with multi-digit sizes.
+    var result2: HttpRequest;
+    var input2 = StringInit("05\r\nhello\r\n06\r\nworld!\r\n0\r\n\r\n")
+    var status2 = parser.parseChunk(input2, &result2)
+    assert(status2 == ParseStatus.OK)
+    assert(result2.body.body.equalsString("helloworld!"))
+}
+
+// Bug fix: checkHeaderBody set bodyType=MULTIPART_FORMDATA before validating the
+// boundary value.  A Content-Type of "multipart/form-data; boundary=" (empty value)
+// now leaves bodyType as UNKNOWN rather than creating an empty-boundary multipart.
+@test
+func testParseMultipartEmptyBoundary() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Content-Type header with "boundary=" but no actual boundary value.
+    var result: HttpRequest;
+    var input = StringInit(
+"POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=\r\nContent-Length: 10\r\n\r\nbody"
+)
+    var status = parser.parse(input, &result)
+    // Must not crash.  When bodyType is MULTIPART_FORMDATA the boundary must be
+    // non-empty; if boundary validation failed the bodyType must not be MULTIPART.
+    assert(result.multipart.boundary.length > 0 || result.bodyType != BodyType.MULTIPART_FORMDATA)
+}

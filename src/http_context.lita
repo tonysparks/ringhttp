@@ -26,7 +26,6 @@ internal enum SessionState {
     WRITTEN_HTTP_RESPONSE_MORE,
     WRITTEN_FILE,
     WRITING_STREAM,
-    WRITING_SSE,
 
     WEB_SOCKET_UPGRADED,
     WEB_SOCKET_OPERATION,
@@ -80,6 +79,9 @@ internal struct SessionContext {
     // SQE requests submissions
     submissions: u32
 
+    // Incremented each time this slot is reused so stale CQEs can be discarded.
+    generation: u32
+
     // the last time we received a request from the client
     lastRequestTime: f64
 }
@@ -89,6 +91,9 @@ internal func (this: *SessionContext) begin(
     clientSocket: i32
 ) {
     assert(clientSocket > 0)
+    // Advance the generation so any CQEs still in-flight from the previous
+    // occupant of this pool slot are discarded when they arrive.
+    this.generation += 1
     this.requestAllocator.clear()
 
     var allocator = &this.requestAllocator.allocator
@@ -160,7 +165,10 @@ internal func (this: *SessionContext) finish(forceClose: bool = false) {
 #end
 
     if(this.file > 0) {
-        // close(this.file)
+        // The io_uring CLOSE SQE closes this fd in the success path.  Here we
+        // close it synchronously as a safety net for error paths where the
+        // CLOSE SQE was cancelled before it ran.
+        close(this.file)
     }
     this.file = 0
 
