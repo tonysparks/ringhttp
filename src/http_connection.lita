@@ -120,18 +120,21 @@ public func (this: *HttpConnection) bufferContents(
         }
     }
 
+    // RFC 7230 §3.3: a response MUST NOT include a message body when the request
+    // method is HEAD, or the status code is 1xx, 204, or 304.  A single predicate
+    // covers all cases so every ResponseType branch uses the same rule.
+    var noBody = HttpStatusForbidsBody(request.method, response.status)
+
     // Body
     switch(response.type) {
         case ResponseType.NONE: break;
         case ResponseType.BODY: {
-            var isHead = request.method == HttpMethod.HEAD
-
-            if(!isHead && (request.flags & HttpFlags.ACCEPT_DEFLATE_ENCODING)) {
+            if(!noBody && (request.flags & HttpFlags.ACCEPT_DEFLATE_ENCODING) != 0) {
                 if(response.body.length > config.compressionEnabledOnBodySizeInBytes) {
                     var position = this.writeBuffer.length
 
                     this.writeBuffer.append("Content-Encoding: deflate\r\n")
-                    this.writeBuffer.append("\r\n")
+                    this.writeBuffer.append("\r\n")   // end-of-headers blank line
 
                     var bodyStartPosition = this.writeBuffer.length
                     var zipStatus = ZipCompress(
@@ -141,10 +144,13 @@ public func (this: *HttpConnection) bufferContents(
                     )
                     var bodyEndPosition = this.writeBuffer.length
                     if(zipStatus == ZipStatus.OK) {
+                        // Insert Content-Length before Content-Encoding.
+                        // bodyStartPosition already accounts for the blank line,
+                        // so the length calculation gives the compressed body size only.
                         this.writeBuffer.insert(
                             position,
                             "Content-Length: %zu\r\n",
-                            this.writeBuffer.length - bodyStartPosition
+                            bodyEndPosition - bodyStartPosition
                         )
                         Debug("Compressed info: Full length: %d, Body length: %d\n",
                             this.writeBuffer.length,
@@ -153,16 +159,14 @@ public func (this: *HttpConnection) bufferContents(
                         return;
                     }
 
-                    // reposition and try without compression
+                    // Compression failed or not beneficial — rewind and fall through.
                     this.writeBuffer.length = position
                 }
             }
 
-            // RFC 7231 §4.3.2: HEAD response MUST have identical headers to GET
-            // but MUST NOT include a body.
             this.writeBuffer.append("Content-Length: %zu\r\n", response.body.length)
             this.writeBuffer.append("\r\n")
-            if(!isHead) {
+            if(!noBody) {
                 this.writeBuffer.append("%.*s",
                     response.body.length, response.body.buffer
                 )
@@ -171,13 +175,11 @@ public func (this: *HttpConnection) bufferContents(
         }
         case ResponseType.FILE: {
             this.writeBuffer.append("Content-Length: %zu\r\n", response.fileSize)
-            // Blank Line
             this.writeBuffer.append("\r\n")
             break;
         }
         case ResponseType.STREAM: {
             this.writeBuffer.append("Transfer-Encoding: chunked\r\n")
-            // Blank Line
             this.writeBuffer.append("\r\n")
             break;
         }
@@ -185,10 +187,25 @@ public func (this: *HttpConnection) bufferContents(
             this.writeBuffer.append("Content-Type: text/event-stream\r\n")
             this.writeBuffer.append("Cache-Control: no-cache\r\n")
             this.writeBuffer.append("X-Accel-Buffering: no\r\n")
-            // Blank Line
             this.writeBuffer.append("\r\n")
             break;
         }
         default: break;
     }
+}
+
+// RFC 7230 §3.3: body MUST be suppressed for HEAD requests and for status
+// codes that prohibit a message body (1xx informational, 204 No Content,
+// 304 Not Modified).
+public func HttpStatusForbidsBody(method: HttpMethod, status: i32) : bool {
+    if(method == HttpMethod.HEAD) {
+        return true
+    }
+    if(status >= 100 && status < 200) {
+        return true   // 1xx informational
+    }
+    if(status == 204 || status == 304) {
+        return true
+    }
+    return false
 }

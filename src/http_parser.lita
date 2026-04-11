@@ -6,6 +6,7 @@ import "std/mem"
 import "std/libc"
 import "std/json"
 import "std/log"
+import "std/fmt"
 
 import "http_request"
 import "http_common"
@@ -109,15 +110,15 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
             return ParseStatus.ERROR_INVALID_CHUNK
         }
 
+        // Strip any chunk extension (";name=value") before parsing the size.
+        // parseHex() stops at the first non-hex character, so extensions are
+        // ignored automatically and we never read past the slice boundary.
         var lengthStr = input.substring(0, index)
-        // strtol returns long (64-bit); cast directly to i32
-        // truncates large hex values silently (e.g. 0x80000000 → -2147483648),
-        // bypassing the size < 1 guard. Validate the range first.
-        var rawSize = strtol(lengthStr.buffer, null, 16)
-        if(rawSize < 0 || rawSize > 0x7FFFFFFF) {
+        var parsed = lengthStr.parseHex()
+        if(parsed.len == 0 || parsed.value > 0x7FFFFFFF) {
             return ParseStatus.ERROR_INVALID_CHUNK
         }
-        var size = rawSize as (i32)
+        var size = parsed.value as (i32)
 
         // check to see if we are at the end of the stream
         if(size < 1) {
@@ -255,7 +256,7 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
         }
     }
     else if (header.name.equalsIgnoreCase($"content-length")) {
-        result.bodyLength = MAX(0, strtol(header.values.buffer, null, 10) as (i32))
+        result.bodyLength = MAX(0, header.values.parseU64().value as (i32))
         result.flags |= HttpFlags.CONTENT_LENGTH_PROVIDED
     }
     else if (header.name.equalsIgnoreCase($"transfer-encoding")) {

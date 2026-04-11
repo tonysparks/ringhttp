@@ -29,11 +29,8 @@ import "std/encoding/base64"
 import "std/net/posix_socket"
 #if (OS == "MAC")
     import using "http_worker_kqueue"
-    // import "kqueue_posix"
 #elseif (OS == "LINUX")
     import using "http_worker_iouring"
-    // import "pipe_posix"
-    // import "liburing"
 #else_error "Unsupported Operating System target"
 #end
 
