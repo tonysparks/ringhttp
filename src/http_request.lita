@@ -54,6 +54,8 @@ public enum HttpFlags {
 
     EXPECT_CONTINUE         = (1<<11),
     SENT_CONTINUE           = (1<<12),
+    KEEP_ALIVE_REQUESTED    = (1<<13),  // Connection: keep-alive was explicit (HTTP/1.0 opt-in)
+    EXPECT_UNKNOWN          = (1<<14),  // Expect header present with unrecognised value → 417
 }
 
 /**
@@ -61,6 +63,7 @@ public enum HttpFlags {
 */
 public struct HttpRequest {
     method: HttpMethod
+    scheme: String
     path: String
     query: String
     version: String

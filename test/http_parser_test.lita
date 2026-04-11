@@ -377,3 +377,159 @@ func testTransferEncodingTakesPrecedenceOverContentLength() {
     assert(result.flags & HttpFlags.CONTENT_LENGTH_PROVIDED)  // set by parser
     assert(result.bodyLength == 99)                           // will be zeroed by worker
 }
+
+// Fix B (parser): RFC 7230 §5.3.2 — request-target in absolute-form (full URI).
+// Proxies and some clients send "GET http://example.com/path HTTP/1.1".
+// The parser must strip the scheme and authority so routing sees "/path".
+@test
+func testAbsoluteFormUriStripping() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Basic case: scheme + authority + path.
+    var result: HttpRequest;
+    var input = StringInit(
+"GET http://example.com/some/path HTTP/1.1\r\nHost: example.com\r\n\r\n"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(result.path.equals($"/some/path"))
+    assert(result.scheme.equals($"http"))
+
+    // With query string: scheme+authority must be stripped, query preserved.
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"GET http://example.com/search?q=hello&page=2 HTTP/1.1\r\nHost: example.com\r\n\r\n"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(result2.path.equals($"/search"))
+    assert(result2.query.equals($"q=hello&page=2"))
+
+    // No path after authority: must default to "/".
+    var result3: HttpRequest;
+    var input3 = StringInit(
+"GET http://example.com HTTP/1.1\r\nHost: example.com\r\n\r\n"
+)
+    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert(result3.path.equals($"/"))
+
+    // Normal origin-form must still work unchanged.
+    var result4: HttpRequest;
+    var input4 = StringInit(
+"GET /origin/path HTTP/1.1\r\nHost: example.com\r\n\r\n"
+)
+    assert(parser.parse(input4, &result4) == ParseStatus.OK)
+    assert(result4.path.equals($"/origin/path"))
+}
+
+// Fix A (parser): Connection: keep-alive must set KEEP_ALIVE_REQUESTED flag.
+// HTTP/1.0 clients opt in to keep-alive by sending this header explicitly.
+@test
+func testKeepAliveRequestedFlag() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Explicit keep-alive must set the flag.
+    var result: HttpRequest;
+    var input = StringInit(
+"GET / HTTP/1.0\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert((result.flags & HttpFlags.KEEP_ALIVE_REQUESTED) != 0)
+    // Must NOT set DISABLE_KEEP_ALIVE — only "close" sets that.
+    assert((result.flags & HttpFlags.DISABLE_KEEP_ALIVE) == 0)
+
+    // "Connection: close" must NOT set KEEP_ALIVE_REQUESTED.
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert((result2.flags & HttpFlags.KEEP_ALIVE_REQUESTED) == 0)
+    assert((result2.flags & HttpFlags.DISABLE_KEEP_ALIVE) != 0)
+
+    // Combined "Connection: keep-alive, upgrade" — both flags set.
+    var result3: HttpRequest;
+    var input3 = StringInit(
+"GET /ws HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive, upgrade\r\n\r\n"
+)
+    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert((result3.flags & HttpFlags.KEEP_ALIVE_REQUESTED) != 0)
+    assert((result3.flags & HttpFlags.UPGRADE_REQUEST) != 0)
+}
+
+// Fix A (parser): Expect header with an unknown value must set EXPECT_UNKNOWN.
+// RFC 7231 §5.1.1: server MUST respond 417 for unrecognised Expect values.
+@test
+func testExpectUnknownFlag() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Unknown Expect value must set EXPECT_UNKNOWN and not EXPECT_CONTINUE.
+    var result: HttpRequest;
+    var input = StringInit(
+"POST /upload HTTP/1.1\r\nHost: example.com\r\nExpect: i-can-fly\r\nContent-Length: 5\r\n\r\n"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert((result.flags & HttpFlags.EXPECT_UNKNOWN) != 0)
+    assert((result.flags & HttpFlags.EXPECT_CONTINUE) == 0)
+
+    // "100-continue" must NOT set EXPECT_UNKNOWN.
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"POST /upload HTTP/1.1\r\nHost: example.com\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert((result2.flags & HttpFlags.EXPECT_UNKNOWN) == 0)
+    assert((result2.flags & HttpFlags.EXPECT_CONTINUE) != 0)
+}
+
+// Fix C (parser): chunk data completeness — must return CHUNK_INCOMPLETE when
+// the declared chunk size exceeds the bytes actually present in the buffer.
+@test
+func testChunkDataCompleteness() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Declare 256-byte chunk ("100" in hex) but only send the terminator sequence.
+    // The buffer ends with \r\n\r\n (passes the endsWith guard) but the data for
+    // the first chunk is nowhere near 256 bytes.
+    var result: HttpRequest;
+    var input = StringInit("100\r\n0\r\n\r\n")
+    var status = parser.parseChunk(input, &result)
+    assert(status == ParseStatus.CHUNK_INCOMPLETE)
+
+    // Sanity: a fully-buffered chunk must still parse correctly.
+    var result2: HttpRequest;
+    var input2 = StringInit("5\r\nhello\r\n0\r\n\r\n")
+    var status2 = parser.parseChunk(input2, &result2)
+    assert(status2 == ParseStatus.OK)
+    assert(result2.body.body.equalsString("hello"))
+}
+
+// Fix D (parser): multipart boundary quoted with double-quotes must be stripped.
+// RFC 2046 §5.1.1 allows boundary=<quoted-string>; the quotes are not part of
+// the delimiter.
+@test
+func testQuotedMultipartBoundary() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Quoted boundary — quotes must be stripped before storing.
+    var result: HttpRequest;
+    var input = StringInit(
+"POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=\"----MyBoundary\"\r\nContent-Length: 100\r\n\r\n"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(result.bodyType == BodyType.MULTIPART_FORMDATA)
+    // Boundary must be the unquoted value.
+    assert(result.multipart.boundary.equals($"----MyBoundary"))
+
+    // Unquoted boundary must still work unchanged.
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=----MyBoundary\r\nContent-Length: 100\r\n\r\n"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(result2.bodyType == BodyType.MULTIPART_FORMDATA)
+    assert(result2.multipart.boundary.equals($"----MyBoundary"))
+}

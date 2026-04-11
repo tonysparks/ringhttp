@@ -828,7 +828,12 @@ func (this: *WorkerThread) handleCompletionRing(
                     case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT:
-                    case Status.ERROR_PARSING_HTTP_REQUEST: {
+                    case Status.ERROR_PARSING_HTTP_REQUEST:
+                    case Status.ERROR_MISSING_HOST_HEADER:
+                    case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
+                    case Status.ERROR_EXPECT_FAILED:
+                    case Status.ERROR_CONFLICTING_BODY_HEADERS:
+                    case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION: {
                         return this.sendBadRequest(session, status)
                     }
                     default: {

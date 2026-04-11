@@ -12,9 +12,111 @@ import "std/json"
 
 import "std/array"
 import "std/map"
+import "std/net/posix_socket"
+import "std/fmt"
 
 import "http_ring"
 import "test_webserver"
+
+// connect(2) is not exposed by std/net/posix_socket — declare it here.
+@foreign
+func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
+
+/**
+ * Open a raw TCP connection to localhost:port, send `request` verbatim, read
+ * back the response, and return the HTTP status code (e.g. 200, 400, 417).
+ * Returns -1 on any socket error.
+ */
+func rawHttpStatusCode(request: *const char, port: u16 = 8080_u16) : i32 {
+    var fd = socket(AF_INET, SOCK_STREAM, 0)
+    if (fd < 0) {
+        return -1
+    }
+    defer close(fd)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(:sockaddr_in))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(port)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+    if (connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) < 0) {
+        return -1
+    }
+
+    var reqLen = strlen(request) as (usize)
+    send(fd, request as (*void), reqLen, 0)
+
+    var buf: [4096]char
+    var n = recv(fd, buf as (*void), 4095_usize, 0)
+    if (n <= 0) {
+        return -1
+    }
+    ;buf[n] = '\0' as (char)
+
+    // Parse status code from "HTTP/1.x NNN ..."
+    var response = String { .buffer = buf, .length = n as (i32) }
+    var spaceIdx = response.indexOf($" ")
+    if (spaceIdx < 0) {
+        return -1
+    }
+    var afterVersion = response.substring(spaceIdx + 1)
+    var parsed = afterVersion.parseInt(10)
+    return parsed.value as (i32)
+}
+
+/**
+ * Like rawHttpStatusCode but also returns a header value by name.
+ * Searches for "HeaderName: value\r\n" in the raw response.
+ * The returned String points into a static buffer — copy before next call.
+ */
+func rawHttpHeader(request: *const char, headerName: *const char, port: u16 = 8080_u16) : String {
+    var fd = socket(AF_INET, SOCK_STREAM, 0)
+    if (fd < 0) {
+        return String{}
+    }
+    defer close(fd)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(:sockaddr_in))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(port)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+    if (connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) < 0) {
+        return String{}
+    }
+
+    var reqLen = strlen(request) as (usize)
+    send(fd, request as (*void), reqLen, 0)
+
+    @static var buf: [8192]char
+    var n = recv(fd, buf as (*void), 8191_usize, 0)
+    if (n <= 0) {
+        return String{}
+    }
+    ;buf[n] = '\0' as (char)
+
+    var response = String { .buffer = buf, .length = n as (i32) }
+
+    // Search for the header name followed by ": "
+    var nameStr = StringInit(headerName)
+    var idx = response.indexOf(nameStr)
+    if (idx < 0) {
+        return String{}
+    }
+    var afterName = response.substring(idx + nameStr.length)
+    // skip ": "
+    if (afterName.length < 2) {
+        return String{}
+    }
+    afterName = afterName.substring(2)
+    var end = afterName.indexOf($"\r\n")
+    if (end < 0) {
+        return String{}
+    }
+    return afterName.substring(0, end)
+}
 
 var testServer = TestServer{}
 var http = http::Http{}
@@ -714,4 +816,65 @@ func test_post_multipart_file_upload() {
     assert(resp.body.contains($"file"))
     assert(resp.body.contains($"hello.txt"))
     assert(resp.body.contains($"Hello, World!"))
+}
+
+// Fix D (worker): OPTIONS with no handler registered must auto-respond 200
+// with an Allow header listing the methods registered for that path.
+// RFC 7231 §4.3.7.
+@test("test OPTIONS auto-responds with Allow header")
+func test_options_auto_response() {
+    // /echo has GET registered; OPTIONS on it must list GET (and OPTIONS itself).
+    var status = rawHttpStatusCode(
+        "OPTIONS /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    assert(status == 200)
+
+    var allow = rawHttpHeader(
+        "OPTIONS /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        "Allow"
+    )
+    assert(allow.contains($"GET"))
+    assert(allow.contains($"OPTIONS"))
+}
+
+// Fix A/C (worker): an unrecognised Expect value must produce 417 Expectation
+// Failed. RFC 7231 §5.1.1: the server MUST respond with 417 if the Expect
+// header contains a value the server does not understand.
+@test("test unknown Expect header returns 417")
+func test_expect_unknown_returns_417() {
+    var status = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nExpect: i-can-fly\r\nConnection: close\r\n\r\ntest"
+    )
+    assert(status == 417)
+}
+
+// Fix A (worker): both Transfer-Encoding and Content-Length present must
+// produce 400. RFC 7230 §3.3.3: if both are present the server MUST reject
+// the request.
+@test("test Transfer-Encoding and Content-Length conflict returns 400")
+func test_conflicting_body_headers_returns_400() {
+    var status = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 10\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+    )
+    assert(status == 400)
+}
+
+// Fix B (worker): HTTP/1.0 defaults to Connection: close unless the client
+// explicitly sends "Connection: keep-alive". RFC 7230 §6.3.
+@test("test HTTP/1.0 defaults to Connection: close")
+func test_http10_closes_by_default() {
+    // HTTP/1.0 with no Connection header — server must close after response.
+    var conn = rawHttpHeader(
+        "GET /echo?x=1 HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        "Connection"
+    )
+    assert(conn.equals($"close") || conn.empty())
+
+    // HTTP/1.0 with explicit Connection: keep-alive — server may honour it.
+    // We don't assert keep-alive here (server may still close), but the
+    // request must succeed (2xx or valid response).
+    var status = rawHttpStatusCode(
+        "GET /echo?x=1 HTTP/1.0\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n"
+    )
+    assert(status == 200)
 }

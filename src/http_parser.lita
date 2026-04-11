@@ -68,8 +68,19 @@ public func (this: *HttpParser) parse(input: String, result: *HttpRequest) :  Pa
 
     var method = requestLine.substring(0, methodIndex)
     result.method = ToHttpMethod(&method)
-    result.path = requestLine.substring(methodIndex + 1, pathIndex)
     result.version = requestLine.substring(pathIndex + 1, index)
+
+    // RFC 7230 §5.3.2: request-target may be in absolute-form (full URI).
+    // Strip the scheme and authority so routing always sees an origin-form path.
+    var rawPath = requestLine.substring(methodIndex + 1, pathIndex)
+    var schemeEnd = rawPath.indexOf($"://")
+    if(schemeEnd >= 0) {
+        result.scheme = rawPath.substring(0, schemeEnd)
+        var afterAuthority = rawPath.substring(schemeEnd + 3)
+        var slash = afterAuthority.indexOf($"/")
+        rawPath = (slash >= 0) ? afterAuthority.substring(slash) : StringInit("/")
+    }
+    result.path = rawPath
 
     var queryIndex = result.path.indexOf($"?")
     if(queryIndex >= 0) {
@@ -129,6 +140,13 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
 
             result.body.body = result.chunkData.toString()
             return ParseStatus.OK
+        }
+
+        // Verify the full chunk payload is present before consuming it.
+        // index + 2 skips the size line's CRLF; the chunk data must be followed
+        // by its own CRLF, so we need at least index+2+size+2 bytes total.
+        if(input.length < index + 2 + size + 2) {
+            return ParseStatus.CHUNK_INCOMPLETE
         }
 
         // parse the chunk data
@@ -248,11 +266,16 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : Pa
 func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) {
     // TODO: Optimize case insensitivity
     if (header.name.equalsIgnoreCase($"connection")) {
-        if (header.values.contains($"close")) {
+        if (header.values.containsIgnoreCase($"close")) {
             result.flags |= HttpFlags.DISABLE_KEEP_ALIVE
         }
-        else if (header.values.containsIgnoreCase($"Upgrade")) {
+        if (header.values.containsIgnoreCase($"upgrade")) {
+            // RFC 7230 §6.7: Connection must list "upgrade" for a valid Upgrade request.
             result.flags |= HttpFlags.UPGRADE_REQUEST
+        }
+        if (header.values.containsIgnoreCase($"keep-alive")) {
+            // RFC 7230 §6.3: HTTP/1.0 clients must opt in to persistent connections.
+            result.flags |= HttpFlags.KEEP_ALIVE_REQUESTED
         }
     }
     else if (header.name.equalsIgnoreCase($"content-length")) {
@@ -283,14 +306,24 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
             result.flags |= HttpFlags.ACCEPT_DEFLATE_ENCODING
         }
     }
-    else if (header.name.equalsIgnoreCase($"upgrade") && header.values.containsIgnoreCase($"websocket")) {
-        result.flags |= HttpFlags.WEB_SOCKET_PROTOCOL
+    else if (header.name.equalsIgnoreCase($"upgrade")) {
+        // RFC 7230 §6.7: WEB_SOCKET_PROTOCOL only set when Upgrade: websocket.
+        // Validity (Connection must also say "upgrade") is checked post-parse.
+        if(header.values.containsIgnoreCase($"websocket")) {
+            result.flags |= HttpFlags.WEB_SOCKET_PROTOCOL
+        }
     }
     else if (header.name.equalsIgnoreCase($"accept") && header.values.contains($"text/event-stream")) {
         result.flags |= HttpFlags.SSE
     }
-    else if (header.name.equalsIgnoreCase($"expect") && header.values.containsIgnoreCase($"100-continue")) {
-        result.flags |= HttpFlags.EXPECT_CONTINUE
+    else if (header.name.equalsIgnoreCase($"expect")) {
+        // RFC 7231 §5.1.1: only "100-continue" is a registered expectation token.
+        // Any other value MUST be rejected with 417.
+        if(header.values.containsIgnoreCase($"100-continue")) {
+            result.flags |= HttpFlags.EXPECT_CONTINUE
+        } else {
+            result.flags |= HttpFlags.EXPECT_UNKNOWN
+        }
     }
     else {
         this.checkHeaderBody(header, result)
@@ -312,7 +345,13 @@ func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
             }
 
             body.bodyType = BodyType.MULTIPART_FORMDATA
-            body.multipart.boundary = header.values.substring(boundaryIndex)
+            // RFC 2046 §5.1: boundary may be a quoted string — strip surrounding quotes.
+            var boundary = header.values.substring(boundaryIndex)
+            if(boundary.length >= 2 && boundary.buffer[0] == '"' &&
+               boundary.buffer[boundary.length - 1] == '"') {
+                boundary = boundary.substring(1, boundary.length - 1)
+            }
+            body.multipart.boundary = boundary
         }
     }
 }

@@ -92,6 +92,46 @@ internal func (this: *WorkerThread) server404(
     }
 }
 
+func (this: *WorkerThread) writeAllowHeader(
+    requestContext: *RequestHandlerContext,
+    allowedMethods: i32
+) {
+    var response = requestContext.response
+    var allowBuf = requestContext.allocator.alloc(128) as (*char)
+    var allowLen = 0
+    // OPTIONS is always allowed if we are here.
+    var allMethods = allowedMethods | (1 << HttpMethod.OPTIONS as (i32))
+    for(var m = 1; m < MAX_METHODS; m += 1) {
+        if(allMethods & (1 << m)) {
+            if(allowLen > 0) {
+                allowBuf[allowLen] = ','
+                allowBuf[allowLen + 1] = ' '
+                allowLen += 2
+            }
+            var methodName = HttpMethodAsStr(m as (HttpMethod))
+            var methodLen = methodName.length()
+            memcpy(allowBuf + allowLen, methodName, methodLen as (usize))
+            allowLen += methodLen
+        }
+    }
+    response.addHeader($"Allow", String{.buffer = allowBuf, .length = allowLen})
+}
+
+// RFC 7231 §4.3.7: OPTIONS auto-response — 200 with an Allow header.
+// Used when no handler is registered for OPTIONS on the given path.
+internal func (this: *WorkerThread) serverOptions(
+    requestContext: *RequestHandlerContext,
+    allowedMethods: i32
+) {
+    var response = requestContext.response
+
+    response.status = 200
+    response.type   = ResponseType.BODY
+
+    this.writeAllowHeader(requestContext, allowedMethods)
+    response.addHeader($"Content-Length", $"0")
+}
+
 // RFC 7231 §6.5.5: 405 Must Not Allowed MUST include an Allow header listing
 // the methods that are valid for the requested resource.
 internal func (this: *WorkerThread) server405(
@@ -105,23 +145,7 @@ internal func (this: *WorkerThread) server405(
     response.type   = ResponseType.BODY
     response.body.append("Method Not Allowed\n")
 
-    // Build Allow header value from the allowed bitmask.
-    var allowBuf = requestContext.allocator.alloc(128) as (*char)
-    var allowLen = 0
-    for(var m = 1; m < MAX_METHODS; m += 1) {
-        if(allowedMethods & (1 << m)) {
-            if(allowLen > 0) {
-                allowBuf[allowLen] = ','
-                allowBuf[allowLen + 1] = ' '
-                allowLen += 2
-            }
-            var methodName = HttpMethodAsStr(m as (HttpMethod))
-            var methodLen = methodName.length()
-            memcpy(allowBuf + allowLen, methodName, methodLen as (usize))
-            allowLen += methodLen
-        }
-    }
-    response.addHeader($"Allow", String{.buffer = allowBuf, .length = allowLen})
+    this.writeAllowHeader(requestContext, allowedMethods)
 }
 
 
@@ -202,6 +226,16 @@ internal func (this: *WorkerThread) sendBadRequest(
         case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
             response.status = 505
             response.body.append("HTTP Version Not Supported\n")
+            break
+        case Status.ERROR_CONFLICTING_BODY_HEADERS:
+            response.body.append("Request must not carry both Transfer-Encoding and Content-Length\n")
+            break
+        case Status.ERROR_EXPECT_FAILED:
+            response.status = 417
+            response.body.append("Expectation Failed\n")
+            break
+        case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION:
+            response.body.append("Upgrade request must include 'Connection: upgrade'\n")
             break
         default:
             response.body.append("Bad request\n")
@@ -300,9 +334,22 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
         }
     }
 
+    // RFC 7231 §5.1.1: an unrecognised Expect value MUST be rejected with 417.
+    if((httpRequest.flags & HttpFlags.EXPECT_UNKNOWN) != 0) {
+        return Status.ERROR_EXPECT_FAILED
+    }
+
+    // RFC 7230 §6.7: an Upgrade request MUST also have Connection: upgrade.
+    if((httpRequest.flags & HttpFlags.WEB_SOCKET_PROTOCOL) != 0 &&
+       (httpRequest.flags & HttpFlags.UPGRADE_REQUEST) == 0) {
+        return Status.ERROR_WEB_SOCKET_MISSING_CONNECTION
+    }
+
     if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
-        // RFC 7230 §3.3.3: Transfer-Encoding takes precedence; strip Content-Length.
-        httpRequest.flags &= ~HttpFlags.CONTENT_LENGTH_PROVIDED
+        // RFC 7230 §3.3.3: receiving both TE and Content-Length is a protocol error.
+        if((httpRequest.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) != 0) {
+            return Status.ERROR_CONFLICTING_BODY_HEADERS
+        }
         httpRequest.bodyLength = 0
 
         var status = parser.parseChunk(readBuffer.toString().substring(request.headerIndex), httpRequest)
@@ -371,7 +418,11 @@ internal func (this: *WorkerThread) handleHttpRequest(
         return Status.ERROR_PARSING_HTTP_REQUEST
     }
 
-    connection.disableKeepAlive = httpRequest.flags & HttpFlags.DISABLE_KEEP_ALIVE
+    // RFC 7230 §6.3: HTTP/1.0 is close-by-default; HTTP/1.1 is keep-alive-by-default.
+    var isHttp10 = httpRequest.version.equals($"HTTP/1.0")
+    var keepAliveOptIn = (httpRequest.flags & HttpFlags.KEEP_ALIVE_REQUESTED) != 0
+    connection.disableKeepAlive = (httpRequest.flags & HttpFlags.DISABLE_KEEP_ALIVE) != 0 ||
+                                  (isHttp10 && !keepAliveOptIn)
 
     if(httpRequest.method == HttpMethod.GET) {
         if(httpRequest.path.startsWith(this.server.config.publicServerPath)) {
@@ -403,7 +454,11 @@ internal func (this: *WorkerThread) handleHttpRequest(
     if(!blocked) {
         if(!this.server.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
             var allowed = this.server.router.allowedMethods(&httpRequest.path)
-            if(allowed != 0) {
+            // RFC 7231 §4.3.7: OPTIONS with no registered handler auto-responds with Allow.
+            // "OPTIONS *" is a server-wide capabilities query — allow on any known path.
+            if(httpRequest.method == HttpMethod.OPTIONS) {
+                this.serverOptions(&requestContext, allowed)
+            } else if(allowed != 0) {
                 this.server405(&requestContext, allowed)
             } else {
                 this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
