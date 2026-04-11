@@ -1,0 +1,260 @@
+// HTTP/2 connection-level state machine (RFC 7540 §3–6).
+//
+// Phase 1 scope:
+//   - Verify the client connection preface
+//   - Exchange SETTINGS frames (send server SETTINGS, ACK client SETTINGS)
+//   - Respond to PING with PING ACK
+//   - Handle GOAWAY from the client
+//   - Send GOAWAY and signal closure for anything we can't handle yet
+//     (HEADERS / DATA — deferred to Phase 2)
+//   - Ignore WINDOW_UPDATE and unknown connection-level frame types
+//
+// All frame I/O is buffer-based: no socket calls inside this file.
+
+import "std/string"
+import "std/string/builder"
+import "std/libc"
+import "std/log"
+
+import "http2_frame"
+import "http_common"
+
+// ---------------------------------------------------------------------------
+// Connection-level state
+// ---------------------------------------------------------------------------
+
+@asStr
+public enum Http2ConnState {
+    PREFACE_PENDING,   // waiting for 24-byte client connection preface
+    SETTINGS_PENDING,  // preface consumed, server SETTINGS sent, awaiting client SETTINGS
+    OPEN,              // settings handshake complete — ready for streams (Phase 2)
+    GOAWAY_SENT,       // we sent GOAWAY, draining then closing
+}
+
+public struct Http2Connection {
+    state:        Http2ConnState
+    lastStreamId: u32  // highest stream ID seen — used in GOAWAY
+}
+
+public func (this: *Http2Connection) init() {
+    this.state        = Http2ConnState.PREFACE_PENDING
+    this.lastStreamId = 0
+}
+
+// ---------------------------------------------------------------------------
+// Main entry point — called by the worker on each read event
+// ---------------------------------------------------------------------------
+
+// process() consumes all complete frames from readBuf, writing any response
+// frames into writeBuf.  readBuf is compacted in-place after each frame.
+//
+// Returns:
+//   OK                              — normal, continue
+//   PARTIAL_REQUEST_DISPATCHING_READ — not enough data yet, wait for more
+//   any error                       — connection should be closed
+public func (this: *Http2Connection) process(
+    readBuf:  *StringBuilder,
+    writeBuf: *StringBuilder
+) : Status {
+
+    // -----------------------------------------------------------------------
+    // Step 1: consume the client connection preface (first 24 bytes)
+    // -----------------------------------------------------------------------
+    if(this.state == Http2ConnState.PREFACE_PENDING) {
+        if(readBuf.length < HTTP2_CLIENT_PREFACE.length) {
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        }
+
+        if(memcmp(readBuf.buffer as (*const void),
+                  HTTP2_CLIENT_PREFACE.buffer as (*const void),
+                  HTTP2_CLIENT_PREFACE.length as (usize)) != 0) {
+            Debug("HTTP/2: invalid connection preface\n")
+            return Status.ERROR_PARSING_HTTP_REQUEST
+        }
+
+        // Shift remaining bytes to the front
+        var consumed  = HTTP2_CLIENT_PREFACE.length
+        var remaining = readBuf.length - consumed
+        if(remaining > 0) {
+            memmove(readBuf.buffer, readBuf.buffer + consumed, remaining as (usize))
+        }
+        readBuf.length = remaining
+
+        // Send our server connection preface (empty SETTINGS = accept all defaults)
+        http2WriteSettings(writeBuf)
+        this.state = Http2ConnState.SETTINGS_PENDING
+        Debug("HTTP/2: preface verified, server SETTINGS sent\n")
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 2: parse and dispatch frames
+    // -----------------------------------------------------------------------
+    while(readBuf.length >= 9) {
+        var hdr = Http2FrameHeader{}
+        if(!hdr.parse(readBuf.buffer as (*const u8))) {
+            return Status.ERROR_PARSING_HTTP_REQUEST
+        }
+
+        var totalLen = 9 + hdr.length as (i32)
+        if(readBuf.length < totalLen) {
+            break  // partial frame — wait for more data
+        }
+
+        // payload starts immediately after the 9-byte header
+        var payload = (readBuf.buffer + 9) as (*u8)
+
+        var status = this.processFrame(&hdr, payload, writeBuf)
+
+        // Compact the buffer: consume header + payload
+        var remaining = readBuf.length - totalLen
+        if(remaining > 0) {
+            memmove(readBuf.buffer, readBuf.buffer + totalLen, remaining as (usize))
+        }
+        readBuf.length = remaining
+
+        if(status != Status.OK) {
+            return status
+        }
+    }
+
+    return Status.OK
+}
+
+// ---------------------------------------------------------------------------
+// Per-frame dispatcher
+// ---------------------------------------------------------------------------
+
+func (this: *Http2Connection) processFrame(
+    hdr:      *Http2FrameHeader,
+    payload:  *u8,
+    writeBuf: *StringBuilder
+) : Status {
+
+    // Track highest stream ID for GOAWAY (connection-level frames have streamId = 0)
+    if(hdr.streamId > this.lastStreamId) {
+        this.lastStreamId = hdr.streamId
+    }
+
+    if(hdr.type == HTTP2_FRAME_SETTINGS) {
+        return this.handleSettings(hdr, writeBuf)
+    }
+
+    if(hdr.type == HTTP2_FRAME_PING) {
+        return this.handlePing(hdr, payload, writeBuf)
+    }
+
+    if(hdr.type == HTTP2_FRAME_GOAWAY) {
+        // Client is initiating graceful shutdown — close our side too
+        Debug("HTTP/2: received GOAWAY from client\n")
+        return Status.ERROR_IO_ERROR
+    }
+
+    if(hdr.type == HTTP2_FRAME_WINDOW_UPDATE) {
+        // Connection-level or stream-level — ignored in Phase 1
+        return Status.OK
+    }
+
+    if(hdr.type == HTTP2_FRAME_HEADERS || hdr.type == HTTP2_FRAME_DATA) {
+        // Not implemented in Phase 1 — tell the client we can't handle streams yet
+        Debug("HTTP/2: HEADERS/DATA not implemented in Phase 1, sending GOAWAY\n")
+        this.sendGoaway(writeBuf, HTTP2_ERR_INTERNAL_ERROR)
+        return Status.ERROR_IO_ERROR
+    }
+
+    if(hdr.type == HTTP2_FRAME_RST_STREAM) {
+        // No streams yet; Phase 1 can't handle this
+        Debug("HTTP/2: RST_STREAM not implemented in Phase 1\n")
+        this.sendGoaway(writeBuf, HTTP2_ERR_INTERNAL_ERROR)
+        return Status.ERROR_IO_ERROR
+    }
+
+    // Unknown or extension frame on the connection level: ignore per spec
+    // (RFC 7540 §4.1: unknown frame types MUST be ignored and discarded).
+    if(hdr.streamId == 0) {
+        Debug("HTTP/2: ignoring unknown connection-level frame type 0x%02x\n", hdr.type)
+        return Status.OK
+    }
+
+    // Unknown frame on a stream — send GOAWAY
+    this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+    return Status.ERROR_IO_ERROR
+}
+
+// ---------------------------------------------------------------------------
+// Frame handlers
+// ---------------------------------------------------------------------------
+
+func (this: *Http2Connection) handleSettings(
+    hdr:      *Http2FrameHeader,
+    writeBuf: *StringBuilder
+) : Status {
+
+    // Connection-level frames MUST have stream ID 0 (RFC 7540 §6.5)
+    if(hdr.streamId != 0) {
+        Debug("HTTP/2: SETTINGS with non-zero stream ID\n")
+        this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+        return Status.ERROR_IO_ERROR
+    }
+
+    if(hdr.flags & HTTP2_FLAG_ACK) {
+        // Client ACK'd our server SETTINGS — nothing to do
+        Debug("HTTP/2: received SETTINGS ACK from client\n")
+        return Status.OK
+    }
+
+    // Client SETTINGS — payload length must be a multiple of 6 (RFC 7540 §6.5)
+    if((hdr.length % 6) != 0) {
+        Debug("HTTP/2: SETTINGS payload length not multiple of 6\n")
+        this.sendGoaway(writeBuf, HTTP2_ERR_FRAME_SIZE_ERROR)
+        return Status.ERROR_IO_ERROR
+    }
+
+    http2WriteSettingsAck(writeBuf)
+    Debug("HTTP/2: sent SETTINGS ACK\n")
+
+    if(this.state == Http2ConnState.SETTINGS_PENDING) {
+        this.state = Http2ConnState.OPEN
+        Debug("HTTP/2: connection OPEN\n")
+    }
+
+    return Status.OK
+}
+
+func (this: *Http2Connection) handlePing(
+    hdr:      *Http2FrameHeader,
+    payload:  *u8,
+    writeBuf: *StringBuilder
+) : Status {
+
+    // PING must be on the connection (stream 0) and carry exactly 8 bytes
+    if(hdr.streamId != 0) {
+        this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+        return Status.ERROR_IO_ERROR
+    }
+
+    if(hdr.length != 8) {
+        Debug("HTTP/2: PING payload length != 8\n")
+        this.sendGoaway(writeBuf, HTTP2_ERR_FRAME_SIZE_ERROR)
+        return Status.ERROR_IO_ERROR
+    }
+
+    if(hdr.flags & HTTP2_FLAG_ACK) {
+        // PING ACK — ignore (we don't send PINGs ourselves in Phase 1)
+        return Status.OK
+    }
+
+    http2WritePingAck(writeBuf, payload as (*const u8))
+    Debug("HTTP/2: sent PING ACK\n")
+    return Status.OK
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+func (this: *Http2Connection) sendGoaway(writeBuf: *StringBuilder, errorCode: i32) {
+    http2WriteGoaway(writeBuf, this.lastStreamId, errorCode)
+    this.state = Http2ConnState.GOAWAY_SENT
+    Debug("HTTP/2: sent GOAWAY (lastStreamId=%u, errorCode=0x%x)\n",
+        this.lastStreamId, errorCode)
+}

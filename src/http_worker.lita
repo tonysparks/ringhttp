@@ -21,6 +21,7 @@ import "http_router"
 import "http_context"
 import "http_websocket"
 import "http_sse"
+import "http2_connection"
 import "mime"
 
 import "std/crypto/sha1"
@@ -36,7 +37,8 @@ import "std/net/posix_socket"
 
 // ---------------------------------------------------------------
 // Shared HTTP methods
-// Backend provides: queueSend, closeSession, rearmTimeout, sendWebSocketFrame
+// Backend provides: queueSend, closeSession, rearmTimeout, sendWebSocketFrame,
+//                   handleHttp2Data
 // ---------------------------------------------------------------
 
 internal func (this: *WorkerThread) handleAccept(clientSocket: i32) : *SessionContext {
@@ -733,6 +735,57 @@ internal func (this: *WorkerThread) handleWebSocketFrame(
     }
 
     return Status.OK
+}
+
+// ---------------------------------------------------------------
+// Shared HTTP/2 helpers
+// These are protocol-level; the backend provides handleHttp2Data which
+// calls processHttp2Data and then does the backend-specific I/O flush.
+// ---------------------------------------------------------------
+
+// Detect the wire protocol from the first bytes of a new connection.
+// Must be called before readBuffer.length is updated for the current recv.
+//
+// If fewer than 3 bytes have arrived in total the bytes are buffered and
+// false is returned (caller should wait for the next read event).
+// On true the session.protocolVersion and session.state are set.
+internal func (this: *WorkerThread) tryDetectProtocol(
+    session:   *SessionContext,
+    bytesRead: i32
+) : bool {
+    var readBuffer = &session.connection.readBuffer
+    var totalSoFar = readBuffer.length + bytesRead
+    if(totalSoFar < 3) {
+        // Too few bytes — buffer them (recv already wrote them to readBuffer.buffer)
+        readBuffer.length = totalSoFar
+        return false
+    }
+    if(readBuffer.buffer[0] == 'P' &&
+       readBuffer.buffer[1] == 'R' &&
+       readBuffer.buffer[2] == 'I') {
+        session.protocolVersion = ProtocolVersion.HTTP2
+        session.state = SessionState.HTTP2_OPEN
+        session.http2.init()
+        Debug("HTTP/2 connection detected on socket: %d\n", session.connection.handle())
+    } else {
+        session.protocolVersion = ProtocolVersion.HTTP1
+    }
+    return true
+}
+
+// Run the HTTP/2 frame state machine on freshly received bytes.
+// Increments readBuffer.length by bytesRead, clears writeBuffer, then calls
+// Http2Connection.process().  The caller (backend-specific handleHttp2Data)
+// is responsible for flushing writeBuffer and closing on error.
+internal func (this: *WorkerThread) processHttp2Data(
+    session:   *SessionContext,
+    bytesRead: i32
+) : Status {
+    var connection = &session.connection
+    connection.readBuffer.length += bytesRead
+    connection.writeBuffer.clear()
+    session.submissions = 0
+    return session.http2.process(&connection.readBuffer, &connection.writeBuffer)
 }
 
 internal func (this: *WorkerThread) checkTimeouts() {

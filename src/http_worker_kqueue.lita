@@ -25,6 +25,7 @@ import "http_sse"
 import "http_worker"
 import "mime"
 import "kqueue_posix"
+import "http2_connection"
 
 import "std/crypto/sha1"
 import "std/encoding/base64"
@@ -629,6 +630,33 @@ func (this: *WorkerThread) drainPipe() {
     }
 }
 
+// Handle an HTTP/2 read event: run the frame state machine and flush
+// any response frames.  This is the kqueue-specific flush; the io_uring
+// backend will provide its own version using SQEs.
+func (this: *WorkerThread) handleHttp2Data(session: *SessionContext, bytesRead: i32) {
+    var connection = &session.connection
+    var status = this.processHttp2Data(session, bytesRead)
+    if(status == Status.PARTIAL_REQUEST_DISPATCHING_READ) {
+        return;
+    }
+    if(status != Status.OK) {
+        // processHttp2Data may have written a GOAWAY — flush it before closing
+        if(connection.writeBuffer.length > 0) {
+            this.doSend(session)
+        }
+        this.closeSession(session)
+        return;
+    }
+    if(connection.writeBuffer.length > 0) {
+        var result = this.doSend(session)
+        if(result < 0) {
+            this.closeSession(session)
+        } else if(result > 0) {
+            this.registerWrite(session)
+        }
+    }
+}
+
 func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
     var connection = &session.connection
     var readBuffer = &connection.readBuffer
@@ -650,7 +678,20 @@ func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
         return;
     }
 
+    // Protocol detection: peek at the first bytes once per connection.
+    // NOTE: recv appended bytes at readBuffer.buffer[readBuffer.length];
+    // readBuffer.length is not yet updated — tryDetectProtocol handles that.
+    if(session.protocolVersion == ProtocolVersion.UNKNOWN) {
+        if(!this.tryDetectProtocol(session, bytesRead as (i32))) {
+            return;  // too few bytes to decide — buffered, wait for next read
+        }
+    }
+
     switch(session.state) {
+        case SessionState.HTTP2_OPEN: {
+            this.handleHttp2Data(session, bytesRead as (i32))
+            return;
+        }
         case SessionState.READ_REQUEST_LINE: {
             var status = this.handlePartialHttpRequest(session, bytesRead as (i32))
 
@@ -742,6 +783,20 @@ func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
 
 func (this: *WorkerThread) handleWriteReady(session: *SessionContext) {
     switch(session.state) {
+        case SessionState.HTTP2_OPEN: {
+            // Continue flushing a partially-sent HTTP/2 frame batch.
+            var result = this.doSend(session)
+            if(result < 0) {
+                this.closeSession(session)
+                break
+            }
+            if(result > 0) {
+                this.registerWrite(session)
+                break
+            }
+            // Write complete — session stays open, waiting for more frames.
+            break
+        }
         case SessionState.WRITTEN_HTTP_RESPONSE:
         case SessionState.WRITTEN_HTTP_RESPONSE_MORE: {
             this.flushResponse(session)

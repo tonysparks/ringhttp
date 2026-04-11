@@ -16,6 +16,7 @@ import "http_response"
 import "http_websocket"
 import "http_sse"
 import "http_server"
+import "http2_connection"
 
 @asStr
 internal enum SessionState {
@@ -32,6 +33,8 @@ internal enum SessionState {
 
     SSE_UPGRADED,
     SSE_OPERATION,
+
+    HTTP2_OPEN,   // HTTP/2 connection: framing layer active
 
     PREP_CLOSE,
     CLOSED,
@@ -64,6 +67,12 @@ internal struct SessionContext {
     headerIndex: i32
     bodyIndex: i32
     workerIndex: i32
+
+    // Protocol version detected on this connection
+    protocolVersion: ProtocolVersion
+
+    // HTTP/2 connection state — valid only when protocolVersion == HTTP2
+    http2: Http2Connection
 
     // Allocator for each request on this thread
     requestAllocator: LinearAllocator
@@ -113,6 +122,9 @@ internal func (this: *SessionContext) begin(
     this.requestLineIndex = 0
     this.headerIndex = 0
     this.bodyIndex = 0
+
+    this.protocolVersion = ProtocolVersion.UNKNOWN
+    this.http2 = Http2Connection{}
 
     this.state = SessionState.CONNECTED
 
