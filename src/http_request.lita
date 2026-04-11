@@ -51,6 +51,9 @@ public enum HttpFlags {
     ACCEPT_DEFLATE_ENCODING = (1<<9),
 
     SSE                     = (1<<10),
+
+    EXPECT_CONTINUE         = (1<<11),
+    SENT_CONTINUE           = (1<<12),
 }
 
 /**

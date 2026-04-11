@@ -12,6 +12,7 @@ import "http_common"
 import "http_encoding"
 
 
+
 @asStr
 public enum ParseStatus {
     OK,
@@ -225,18 +226,15 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : Pa
 
         var currentHeader = HttpHeader{}
 
-        var pair = header.split($":")
-        if(!pair.hasNext()) {
+        // Split only on the first ':' — header values may contain colons
+        // (e.g. Date, Authorization, WWW-Authenticate).
+        var colonIndex = header.indexOf($":")
+        if(colonIndex < 0) {
             return ParseStatus.ERROR_INVALID_HEADER_PARAM
         }
 
-        currentHeader.name = pair.next().trim()
-
-        if(!pair.hasNext()) {
-            return ParseStatus.ERROR_INVALID_HEADER_PARAM
-        }
-
-        currentHeader.values = pair.next().trim()
+        currentHeader.name = header.substring(0, colonIndex).trim()
+        currentHeader.values = header.substring(colonIndex + 1).trim()
 
         this.checkHeader(&currentHeader, result)
         result.headers.add(currentHeader)
@@ -252,7 +250,7 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
         if (header.values.contains($"close")) {
             result.flags |= HttpFlags.DISABLE_KEEP_ALIVE
         }
-        else if (header.values.contains($"Upgrade")) {
+        else if (header.values.containsIgnoreCase($"Upgrade")) {
             result.flags |= HttpFlags.UPGRADE_REQUEST
         }
     }
@@ -261,34 +259,37 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
         result.flags |= HttpFlags.CONTENT_LENGTH_PROVIDED
     }
     else if (header.name.equalsIgnoreCase($"transfer-encoding")) {
-        if(header.values.startsWith($"chunked")) {
+        if(header.values.containsIgnoreCase($"chunked")) {
             result.flags |= HttpFlags.CHUNKED_ENCODING
         }
     }
     else if (header.name.equalsIgnoreCase($"content-encoding")) {
-        if(header.values.startsWith($"gzip")) {
+        if(header.values.containsIgnoreCase($"gzip")) {
             result.flags |= HttpFlags.GZIP_ENCODING
         }
-        else if(header.values.startsWith($"deflate")) {
+        else if(header.values.containsIgnoreCase($"deflate")) {
             result.flags |= HttpFlags.DEFLATE_ENCODING
         }
-        else if(header.values.startsWith($"compressed")) {
+        else if(header.values.containsIgnoreCase($"compressed")) {
             result.flags |= HttpFlags.COMPRESSED_ENCODING
         }
     }
     else if (header.name.equalsIgnoreCase($"accept-encoding")) {
-        if(header.values.contains($"gzip")) {
+        if(header.values.containsIgnoreCase($"gzip")) {
             result.flags |= HttpFlags.ACCEPT_GZIP_ENCODING
         }
-        if(header.values.contains($"deflate")) {
+        if(header.values.containsIgnoreCase($"deflate")) {
             result.flags |= HttpFlags.ACCEPT_DEFLATE_ENCODING
         }
     }
-    else if (header.name.equalsIgnoreCase($"upgrade") && header.values.contains($"websocket")) {
+    else if (header.name.equalsIgnoreCase($"upgrade") && header.values.containsIgnoreCase($"websocket")) {
         result.flags |= HttpFlags.WEB_SOCKET_PROTOCOL
     }
     else if (header.name.equalsIgnoreCase($"accept") && header.values.contains($"text/event-stream")) {
         result.flags |= HttpFlags.SSE
+    }
+    else if (header.name.equalsIgnoreCase($"expect") && header.values.containsIgnoreCase($"100-continue")) {
+        result.flags |= HttpFlags.EXPECT_CONTINUE
     }
     else {
         this.checkHeaderBody(header, result)

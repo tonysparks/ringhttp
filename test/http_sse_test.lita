@@ -237,22 +237,22 @@ func test_sse_multiline_data() {
 // Error-path tests
 // ---------------------------------------------------------------
 
-@test("test SSE POST to SSE route returns 404 (route is GET-only)")
+@test("test SSE POST to SSE route returns 405 (route is GET-only)")
 func test_sse_post_returns_404() {
     var status = sendMethodRaw("POST", "/sse/single")
-    assert(status == 404)
+    assert(status == 405)
 }
 
-@test("test SSE PUT to SSE route returns 404 (route is GET-only)")
+@test("test SSE PUT to SSE route returns 405 (route is GET-only)")
 func test_sse_put_returns_404() {
     var status = sendMethodRaw("PUT", "/sse/single")
-    assert(status == 404)
+    assert(status == 405)
 }
 
-@test("test SSE DELETE to SSE route returns 404 (route is GET-only)")
+@test("test SSE DELETE to SSE route returns 405 (route is GET-only)")
 func test_sse_delete_returns_404() {
     var status = sendMethodRaw("DELETE", "/sse/single")
-    assert(status == 404)
+    assert(status == 405)
 }
 
 @test("test SSE GET to unknown path returns 404")

@@ -252,3 +252,128 @@ func testParseMultipartEmptyBoundary() {
     // non-empty; if boundary validation failed the bodyType must not be MULTIPART.
     assert(result.multipart.boundary.length > 0 || result.bodyType != BodyType.MULTIPART_FORMDATA)
 }
+
+// Fix 1: header value was truncated at the second colon.
+// Any header whose value contains a colon (Date, Authorization, WWW-Authenticate,
+// custom headers with URLs, etc.) previously lost everything after the second colon.
+@test
+func testHeaderValueWithColon() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    var result: HttpRequest;
+    var input = StringInit(
+"GET / HTTP/1.1\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nAuthorization: Bearer tok:en\r\nX-Custom: http://example.com/path\r\n\r\n"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(result.headers.size() == 3)
+    assert(result.headers.getPtr(0).name.equals($"Date"))
+    assert(result.headers.getPtr(0).values.equals($"Thu, 01 Jan 1970 00:00:00 GMT"))
+    assert(result.headers.getPtr(1).name.equals($"Authorization"))
+    assert(result.headers.getPtr(1).values.equals($"Bearer tok:en"))
+    assert(result.headers.getPtr(2).name.equals($"X-Custom"))
+    assert(result.headers.getPtr(2).values.equals($"http://example.com/path"))
+}
+
+// Fix 2 & 3: Transfer-Encoding and Connection token matching must be case-insensitive.
+// RFC 7230 §3.2: header field values that are tokens are case-insensitive.
+@test
+func testTransferEncodingCaseInsensitive() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // "Chunked" (capital C) must set CHUNKED_ENCODING just like "chunked".
+    var result: HttpRequest;
+    var input = StringInit(
+"POST /upload HTTP/1.1\r\nTransfer-Encoding: Chunked\r\n\r\n"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(result.flags & HttpFlags.CHUNKED_ENCODING)
+
+    // "CHUNKED" (all caps).
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"POST /upload HTTP/1.1\r\nTransfer-Encoding: CHUNKED\r\n\r\n"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(result2.flags & HttpFlags.CHUNKED_ENCODING)
+}
+
+@test
+func testConnectionUpgradeCaseInsensitive() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Lowercase "upgrade" must still set UPGRADE_REQUEST.
+    var result: HttpRequest;
+    var input = StringInit(
+"GET /ws HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(result.flags & HttpFlags.UPGRADE_REQUEST)
+
+    // Mixed case.
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"GET /ws HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(result2.flags & HttpFlags.UPGRADE_REQUEST)
+}
+
+// Feature: Expect: 100-continue flag is parsed from request headers.
+@test
+func testParseExpectContinue() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Standard lowercase "100-continue" value.
+    var result: HttpRequest;
+    var input = StringInit(
+"POST /upload HTTP/1.1\r\nHost: example.com\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert((result.flags & HttpFlags.EXPECT_CONTINUE) != 0)
+
+    // Case-insensitive variant.
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"POST /upload HTTP/1.1\r\nHost: example.com\r\nExpect: 100-Continue\r\nContent-Length: 5\r\n\r\n"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert((result2.flags & HttpFlags.EXPECT_CONTINUE) != 0)
+
+    // No Expect header → flag must NOT be set.
+    var result3: HttpRequest;
+    memset(&result3, 0, sizeof(:HttpRequest))   // zero flags before parse
+    var input3 = StringInit(
+"POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\n"
+)
+    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert((result3.flags & HttpFlags.EXPECT_CONTINUE) == 0)
+}
+
+// Fix 4: When both Transfer-Encoding and Content-Length are present,
+// Transfer-Encoding wins and Content-Length must be cleared (RFC 7230 §3.3.3).
+@test
+func testTransferEncodingTakesPrecedenceOverContentLength() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Request carries both headers; after parsing the TE flag must be set
+    // and bodyLength must be 0 (CL cleared by the worker before chunk parsing).
+    // We can only verify the flag state here — the CL-clearing happens in the
+    // worker when chunked is detected.  So assert both flags are set by the parser
+    // and that the bodyLength reflects the Content-Length value before clearing.
+    var result: HttpRequest;
+    var input = StringInit(
+"POST /data HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 99\r\n\r\n"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(result.flags & HttpFlags.CHUNKED_ENCODING)
+    // The worker strips CONTENT_LENGTH_PROVIDED when CHUNKED_ENCODING is set.
+    // At parse time both flags may be present; the important invariant is that
+    // CHUNKED_ENCODING is recognized regardless of CL being present.
+    assert(result.flags & HttpFlags.CONTENT_LENGTH_PROVIDED)  // set by parser
+    assert(result.bodyLength == 99)                           // will be zeroed by worker
+}

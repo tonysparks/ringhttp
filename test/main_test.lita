@@ -469,11 +469,12 @@ func test_malformed_form_body_put() {
     assert(resp.body.contains($"Unprocessable request body"))
 }
 
-@test("test wrong method on GET-only route returns 404")
+@test("test wrong method on GET-only route returns 405")
 func test_wrong_method_on_get_route() {
-    // /echo is registered for GET only; POST should find no route
+    // /echo is registered for GET only; POST should get 405 with Allow: GET
     var resp = http::HttpResponse {
-        .body = StringBuilderInit(256)
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
     }
     var req = http::HttpRequest {
         .url = "http://localhost:8080/echo?x=1",
@@ -484,34 +485,40 @@ func test_wrong_method_on_get_route() {
         }
     }
     assert(http.makeRequest(&req, &resp) == true)
-    assert(resp.statusCode == 404)
+    assert(resp.statusCode == 405)
+    assert(resp.headers.get($"Allow").contains($"GET"))
 }
 
-@test("test wrong method on POST-only route returns 404")
+@test("test wrong method on POST-only route returns 405")
 func test_wrong_method_on_post_route() {
-    // /submit is registered for POST only; GET should find no route
+    // /submit is registered for POST only; GET should get 405 with Allow: POST
     var resp = http::HttpResponse {
-        .body = StringBuilderInit(256)
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
     }
     http.get("http://localhost:8080/submit", &resp)
-    assert(resp.statusCode == 404)
+    assert(resp.statusCode == 405)
+    assert(resp.headers.get($"Allow").contains($"POST"))
 }
 
-@test("test wrong method on PUT-only route returns 404")
+@test("test wrong method on PUT-only route returns 405")
 func test_wrong_method_on_put_route() {
-    // /put is registered for PUT only; DELETE should find no route
+    // /put is registered for PUT only; DELETE should get 405 with Allow: PUT
     var resp = http::HttpResponse {
-        .body = StringBuilderInit(256)
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
     }
     assert(http.delete("http://localhost:8080/put", &resp) == true)
-    assert(resp.statusCode == 404)
+    assert(resp.statusCode == 405)
+    assert(resp.headers.get($"Allow").contains($"PUT"))
 }
 
-@test("test wrong method on DELETE-only route returns 404")
+@test("test wrong method on DELETE-only route returns 405")
 func test_wrong_method_on_delete_route() {
-    // /delete is registered for DELETE only; POST should find no route
+    // /delete is registered for DELETE only; POST should get 405 with Allow: DELETE
     var resp = http::HttpResponse {
-        .body = StringBuilderInit(256)
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
     }
     var req = http::HttpRequest {
         .url = "http://localhost:8080/delete",
@@ -522,7 +529,58 @@ func test_wrong_method_on_delete_route() {
         }
     }
     assert(http.makeRequest(&req, &resp) == true)
-    assert(resp.statusCode == 404)
+    assert(resp.statusCode == 405)
+    assert(resp.headers.get($"Allow").contains($"DELETE"))
+}
+
+@test("test HEAD request returns no body but correct headers")
+func test_head_request() {
+    // HEAD must return the same status and headers as GET but zero body bytes.
+    var resp = http::HttpResponse {
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
+    }
+    var req = http::HttpRequest {
+        .url  = "http://localhost:8080/echo?hello=world",
+        .type = http::HttpRequestType.HEAD,
+        .body = http::HttpBody {}
+    }
+    assert(http.makeRequest(&req, &resp) == true)
+    assert(resp.statusCode == 200)
+    // RFC 7231 §4.3.2: body MUST be empty for HEAD responses.
+    assert(resp.body.length == 0)
+    // Content-Length must still be present and positive (the GET body is non-empty).
+    var cl = resp.headers.get($"Content-Length")
+    assert(!cl.empty())
+}
+
+@test("test Date header present in response")
+func test_date_header_in_response() {
+    // RFC 7231 §7.1.1.2: servers SHOULD send Date in all responses.
+    var resp = http::HttpResponse {
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
+    }
+    http.get("http://localhost:8080/echo?x=1", &resp)
+    assert(resp.statusCode == 200)
+    var date = resp.headers.get($"Date")
+    assert(!date.empty())
+    // Spot-check the RFC 7231 date format contains a year (4 digits).
+    assert(date.contains($"202") || date.contains($"203"))
+}
+
+@test("test Connection header present in response")
+func test_connection_header_in_response() {
+    // RFC 7230 §6.3: server SHOULD send Connection header.
+    var resp = http::HttpResponse {
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
+    }
+    http.get("http://localhost:8080/echo?x=1", &resp)
+    assert(resp.statusCode == 200)
+    var conn = resp.headers.get($"Connection")
+    assert(!conn.empty())
+    assert(conn.equals($"keep-alive") || conn.equals($"close"))
 }
 
 struct ConcurrentState {

@@ -100,6 +100,63 @@ internal func (this: *WorkerThread) server404(
     }
 }
 
+// RFC 7231 §6.5.5: 405 Must Not Allowed MUST include an Allow header listing
+// the methods that are valid for the requested resource.
+internal func (this: *WorkerThread) server405(
+    requestContext: *RequestHandlerContext,
+    allowedMethods: i32
+) {
+    var request  = requestContext.request
+    var response = requestContext.response
+
+    Error("Method not allowed: %s %.*s\n",
+        HttpMethodAsStr(request.method),
+        request.path.length, request.path.buffer
+    )
+
+    response.status = 405
+    response.type   = ResponseType.BODY
+    response.body.append("Method Not Allowed\n")
+
+    // Build Allow header value from the allowed bitmask.
+    var allowBuf = requestContext.allocator.alloc(128) as (*char)
+    var allowLen = 0
+    for(var m = 1; m < MAX_METHODS; m += 1) {
+        if(allowedMethods & (1 << m)) {
+            if(allowLen > 0) {
+                allowBuf[allowLen] = ','
+                allowBuf[allowLen + 1] = ' '
+                allowLen += 2
+            }
+            var methodName = HttpMethodAsStr(m as (HttpMethod))
+            var methodLen = strlen(methodName) as (i32)
+            memcpy(allowBuf + allowLen, methodName, methodLen as (usize))
+            allowLen += methodLen
+        }
+    }
+    response.addHeader($"Allow", String{.buffer = allowBuf, .length = allowLen})
+}
+
+
+internal func (this: *WorkerThread) send100Continue(
+    context: *SessionContext
+): Status {
+    var httpRequest = HttpRequest{}
+    var requestContext = RequestHandlerContext {
+        .allocator = &context.requestAllocator.allocator,
+        .request   = &httpRequest,
+        .response  = &context.response,
+        .userData  = null,
+        .match     = null
+    }
+
+    var response = requestContext.response
+    response.status = 100
+    response.type   = ResponseType.BODY
+
+    return this.queueSend(context)
+}
+
 internal func (this: *WorkerThread) sendBadRequest(
     context: *SessionContext,
     status:  Status
@@ -138,6 +195,7 @@ internal func (this: *WorkerThread) sendBadRequest(
             )
             break
         case Status.ERROR_UNKNOWN_BODY_LENGTH:
+            response.status = 411
             response.body.append("Missing Content-Length or Transfer-Encoding\n")
             break
         case Status.ERROR_PARSING_HTTP_REQUEST:
@@ -150,6 +208,13 @@ internal func (this: *WorkerThread) sendBadRequest(
         case Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL:
             response.status = 426
             response.body.append("The requested protocol upgrade is not supported\n")
+            break
+        case Status.ERROR_MISSING_HOST_HEADER:
+            response.body.append("HTTP/1.1 requests must include a Host header\n")
+            break
+        case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
+            response.status = 505
+            response.body.append("HTTP Version Not Supported\n")
             break
         default:
             response.body.append("Bad request\n")
@@ -235,7 +300,24 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
         return Status.ERROR_PARSING_HTTP_REQUEST
     }
 
+    // RFC 7230 §2.6: reject unsupported HTTP versions.
+    if(!httpRequest.version.equals($"HTTP/1.1") && !httpRequest.version.equals($"HTTP/1.0")) {
+        return Status.ERROR_HTTP_VERSION_NOT_SUPPORTED
+    }
+
+    // RFC 7230 §5.4: HTTP/1.1 requests MUST carry a Host header.
+    if(httpRequest.version.equals($"HTTP/1.1")) {
+        var host = httpRequest.getHeaderValue($"Host")
+        if(host.empty()) {
+            return Status.ERROR_MISSING_HOST_HEADER
+        }
+    }
+
     if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
+        // RFC 7230 §3.3.3: Transfer-Encoding takes precedence; strip Content-Length.
+        httpRequest.flags &= ~HttpFlags.CONTENT_LENGTH_PROVIDED
+        httpRequest.bodyLength = 0
+
         var status = parser.parseChunk(readBuffer.toString().substring(request.headerIndex), httpRequest)
         if(status == ParseStatus.CHUNK_INCOMPLETE) {
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
@@ -253,6 +335,15 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
         if(readBuffer.length - request.headerIndex < bodyLength) {
             if(readBuffer.remaining() < 1 * MiB) {
                 readBuffer.reserve(readBuffer.capacity + 1 * MiB as (i32))
+            }
+
+            // RFC 7231 §5.1.1: send 100 Continue so the client will send the body.
+            // Guard with SENT_CONTINUE to avoid re-sending on each partial read.
+            if((httpRequest.flags & HttpFlags.EXPECT_CONTINUE) &&
+               !(httpRequest.flags & HttpFlags.SENT_CONTINUE)) {
+
+                httpRequest.flags |= HttpFlags.SENT_CONTINUE
+                return Status.CONTINUE_SEND
             }
 
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
@@ -324,7 +415,12 @@ internal func (this: *WorkerThread) handleHttpRequest(
     var requestMatch: RouteMatch;
     if(!blocked) {
         if(!this.server.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
-            this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
+            var allowed = this.server.router.allowedMethods(&httpRequest.path)
+            if(allowed != 0) {
+                this.server405(&requestContext, allowed)
+            } else {
+                this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
+            }
         }
         else {
             var handler = requestMatch.handler

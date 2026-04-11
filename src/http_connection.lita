@@ -9,6 +9,7 @@ import "std/io"
 import "std/libc"
 import "std/zip"
 import "std/log"
+import "std/time"
 
 import "http_request"
 import "http_response"
@@ -81,23 +82,51 @@ public func (this: *HttpConnection) bufferContents(
     )
 
     // Headers
+    var hasConnectionHeader = false
     for(var i = 0; i < response.numberOfHeaders; i += 1) {
         var header = response.headers[i]
         this.writeBuffer.append("%.*s: %.*s\r\n",
             header.name.length, header.name.buffer,
             header.values.length, header.values.buffer
         )
+        if(header.name.equalsIgnoreCase($"Connection")) {
+            hasConnectionHeader = true
+        }
     }
 
-    // TODO: Default headers
-    this.writeBuffer.append("Server: Ring/0.0.1 (Linux)\r\n")
+    // Default headers (RFC 7231 §7.1.1.2, RFC 7230 §6.3)
+    #if (OS == "MAC")
+        this.writeBuffer.append("Server: Ring/0.0.1 (Darwin)\r\n")
+    #elseif (OS == "LINUX")
+        this.writeBuffer.append("Server: Ring/0.0.1 (Linux)\r\n")
+    #else
+        this.writeBuffer.append("Server: Ring/0.0.1\r\n")
+    #end
+
+    // Date header — RFC 7231 §7.1.1.2: servers SHOULD include Date in all responses.
+    var dateBuf = [64]char{}
+    var dateBufStr = StringBufferInit(dateBuf, 64, 0)
+    var now = DateTimeNow()
+    now.format($"%a, %d %b %Y %H:%M:%S GMT", &dateBufStr)
+    this.writeBuffer.append("Date: %.*s\r\n", dateBufStr.length, dateBufStr.buffer)
+
+    // Connection header — RFC 7230 §6.3: signal keep-alive or close unless
+    // the handler already set a Connection header (e.g. WebSocket 101 Upgrade).
+    if(!hasConnectionHeader) {
+        if(this.disableKeepAlive) {
+            this.writeBuffer.append("Connection: close\r\n")
+        } else {
+            this.writeBuffer.append("Connection: keep-alive\r\n")
+        }
+    }
 
     // Body
     switch(response.type) {
         case ResponseType.NONE: break;
         case ResponseType.BODY: {
+            var isHead = request.method == HttpMethod.HEAD
 
-            if(request.flags & HttpFlags.ACCEPT_DEFLATE_ENCODING) {
+            if(!isHead && (request.flags & HttpFlags.ACCEPT_DEFLATE_ENCODING)) {
                 if(response.body.length > config.compressionEnabledOnBodySizeInBytes) {
                     var position = this.writeBuffer.length
 
@@ -129,12 +158,15 @@ public func (this: *HttpConnection) bufferContents(
                 }
             }
 
-            // Blank Line
+            // RFC 7231 §4.3.2: HEAD response MUST have identical headers to GET
+            // but MUST NOT include a body.
             this.writeBuffer.append("Content-Length: %zu\r\n", response.body.length)
             this.writeBuffer.append("\r\n")
-            this.writeBuffer.append("%.*s",
-                response.body.length, response.body.buffer
-            )
+            if(!isHead) {
+                this.writeBuffer.append("%.*s",
+                    response.body.length, response.body.buffer
+                )
+            }
             break;
         }
         case ResponseType.FILE: {
@@ -152,7 +184,6 @@ public func (this: *HttpConnection) bufferContents(
         case ResponseType.SSE: {
             this.writeBuffer.append("Content-Type: text/event-stream\r\n")
             this.writeBuffer.append("Cache-Control: no-cache\r\n")
-            this.writeBuffer.append("Connection: keep-alive\r\n")
             this.writeBuffer.append("X-Accel-Buffering: no\r\n")
             // Blank Line
             this.writeBuffer.append("\r\n")

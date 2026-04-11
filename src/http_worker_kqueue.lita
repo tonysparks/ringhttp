@@ -197,9 +197,19 @@ func (this: *WorkerThread) flushResponse(session: *SessionContext) {
     }
 
     if(response.type == ResponseType.FILE) {
-        session.state      = SessionState.WRITTEN_FILE
-        session.fileOffset = 0
-        this.flushFileResponse(session)
+        // RFC 7231 §4.3.2: HEAD must not include a body — skip file send.
+        if(session.request.method == HttpMethod.HEAD) {
+            if(response.fileHandle > 0) {
+                close(response.fileHandle)
+                response.fileHandle = 0
+                session.file        = 0
+            }
+            this.resetRequest(session)
+        } else {
+            session.state      = SessionState.WRITTEN_FILE
+            session.fileOffset = 0
+            this.flushFileResponse(session)
+        }
     }
     else if(response.type == ResponseType.STREAM) {
         session.state = SessionState.WRITING_STREAM
