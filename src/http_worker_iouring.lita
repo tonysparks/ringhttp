@@ -944,6 +944,13 @@ func (this: *WorkerThread) handleCompletionRing(
                     session.sseHandler.callback(&session.sseSession)
                     return Status.OK
                 }
+                // RFC 7231 §5.1.1: after a 100 Continue the session must NOT be
+                // reset — the read buffer still holds the request headers and the
+                // next read will append the body so handlePartialHttpRequest can
+                // complete the request without re-parsing from scratch.
+                if(session.response.status == 100) {
+                    return this.queueReadHttpRequest(ring, session)
+                }
                 Debug("Preparing connection for another HTTP request for socket: %d\n", connection.handle())
                 session.begin(connection.handle())
                 return this.queueReadHttpRequest(ring, session)

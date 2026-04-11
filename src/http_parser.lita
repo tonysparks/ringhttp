@@ -345,13 +345,22 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
 
 func (this: *HttpParser) checkHeaderBody(header: *HttpHeader, body: *Body) {
     if (header.name.equalsIgnoreCase($"content-type")) {
-        if(header.values.equals($"application/x-www-form-urlencoded")) {
+        // RFC 7231 §3.1.1.1: media-type names are case-insensitive and
+        // parameters (e.g. "; charset=utf-8") must be stripped before
+        // comparing the type/subtype token.
+        var mediaType = header.values
+        var semiIdx = mediaType.indexOf($";")
+        if(semiIdx >= 0) {
+            mediaType = mediaType.substring(0, semiIdx).trim()
+        }
+
+        if(mediaType.equalsIgnoreCase($"application/x-www-form-urlencoded")) {
             body.bodyType = BodyType.FORM_URLENCODED
         }
-        else if(header.values.equals($"application/json")) {
+        else if(mediaType.equalsIgnoreCase($"application/json")) {
             body.bodyType = BodyType.JSON
         }
-        else if(header.values.startsWith($"multipart/form-data")) {
+        else if(mediaType.equalsIgnoreCase($"multipart/form-data")) {
             var boundaryIndex = header.values.endIndexOf($"boundary=")
             if(boundaryIndex < 0 || boundaryIndex >= header.values.length) {
                 return;

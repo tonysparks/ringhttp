@@ -935,3 +935,104 @@ func test_uri_too_long_returns_414() {
     var status = rawHttpStatusCode(pathBuilder.cStr())
     assert(status == 414)
 }
+
+// Bug 1 (kqueue+iouring): Expect: 100-continue — server must send 100 before
+// the client sends the body, then process the body and return 200.
+// RFC 7231 §5.1.1.
+@test("test Expect: 100-continue sends 100 then final response")
+func test_expect_100_continue() {
+    var fd = socket(AF_INET, SOCK_STREAM, 0)
+    assert(fd >= 0)
+    defer close(fd)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(:sockaddr_in))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(8080_u16)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+    assert(connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) == 0)
+
+    // Phase 1: send headers only — body withheld so server issues 100 Continue.
+    var headers = "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n"
+    send(fd, headers as (*void), strlen(headers) as (usize), 0)
+
+    var buf: [4096]char
+    var n = recv(fd, buf as (*void), 4095_usize, 0)
+    assert(n > 0)
+    ;buf[n] = '\0' as (char)
+
+    var interim = String { .buffer = buf, .length = n as (i32) }
+    assert(interim.startsWith($"HTTP/1.1 100"))
+
+    // Phase 2: send the body; server must now process and return 200.
+    var body = "hello"
+    send(fd, body as (*void), 5_usize, 0)
+
+    n = recv(fd, buf as (*void), 4095_usize, 0)
+    assert(n > 0)
+    ;buf[n] = '\0' as (char)
+
+    var finalResp = String { .buffer = buf, .length = n as (i32) }
+    var spaceIdx = finalResp.indexOf($" ")
+    assert(spaceIdx >= 0)
+    var parsed = finalResp.substring(spaceIdx + 1).parseInt(10)
+    assert(parsed.value == 200)
+}
+
+// Bug 2 (connection): 100 Continue response MUST NOT include Content-Length.
+// RFC 7230 §3.3.1.
+@test("test 100 Continue response has no Content-Length header")
+func test_100_continue_no_content_length() {
+    var fd = socket(AF_INET, SOCK_STREAM, 0)
+    assert(fd >= 0)
+    defer close(fd)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(:sockaddr_in))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(8080_u16)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+    assert(connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) == 0)
+
+    var headers = "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n"
+    send(fd, headers as (*void), strlen(headers) as (usize), 0)
+
+    @static var buf2: [4096]char
+    var n2 = recv(fd, buf2 as (*void), 4095_usize, 0)
+    assert(n2 > 0)
+    ;buf2[n2] = '\0' as (char)
+
+    var interim2 = String { .buffer = buf2, .length = n2 as (i32) }
+    assert(interim2.startsWith($"HTTP/1.1 100"))
+    // The 100 Continue response must NOT include Content-Length.
+    assert(!interim2.contains($"Content-Length"))
+
+    // Complete the exchange so the server can close cleanly.
+    var body2 = "hello"
+    send(fd, body2 as (*void), 5_usize, 0)
+    recv(fd, buf2 as (*void), 4095_usize, 0)
+}
+
+// Bug 3+4 (parser): Content-Type with parameters must be recognised.
+// RFC 7231 §3.1.1.1: media-type names are case-insensitive; parameters optional.
+@test("test Content-Type with parameters is parsed correctly")
+func test_content_type_with_parameters() {
+    // "application/json; charset=utf-8" must be treated as JSON — the
+    // SubmitRequestHandler echoes the body under "body"; for JSON bodies it
+    // prints the parsed object directly (not wrapped in a "body" string key).
+    var resp = rawHttpHeader(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 7\r\nConnection: close\r\n\r\n{\"k\":1}",
+        "Content-Type"
+    )
+    // The server responded — status 200 means the request was accepted.
+    var status = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 7\r\nConnection: close\r\n\r\n{\"k\":1}"
+    )
+    assert(status == 200)
+
+    // Upper-case media type must also be accepted.
+    var status2 = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: APPLICATION/JSON\r\nContent-Length: 7\r\nConnection: close\r\n\r\n{\"k\":1}"
+    )
+    assert(status2 == 200)
+}

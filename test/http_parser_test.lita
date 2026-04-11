@@ -597,3 +597,67 @@ func testChunkWithTrailers() {
     assert(status3 == ParseStatus.OK)
     assert(result3.body.body.equalsString("world"))
 }
+
+// Bug 3+4 (parser): Content-Type matching must be case-insensitive and must
+// ignore parameters such as "; charset=utf-8".
+// RFC 7231 §3.1.1.1: media-type names are case-insensitive.
+@test
+func testContentTypeCaseInsensitive() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Upper-case type must still detect JSON.
+    var result: HttpRequest;
+    var input = StringInit(
+"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: APPLICATION/JSON\r\nContent-Length: 2\r\n\r\n{}"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(result.bodyType == BodyType.JSON)
+
+    // Mixed-case form-urlencoded must be detected.
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: Application/X-WWW-Form-Urlencoded\r\nContent-Length: 5\r\n\r\na=b&c"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(result2.bodyType == BodyType.FORM_URLENCODED)
+
+    // Mixed-case multipart must be detected and boundary extracted.
+    var result3: HttpRequest;
+    var input3 = StringInit(
+"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: Multipart/Form-Data; boundary=----Bound\r\nContent-Length: 10\r\n\r\n"
+)
+    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert(result3.bodyType == BodyType.MULTIPART_FORMDATA)
+    assert(result3.multipart.boundary.equals($"----Bound"))
+}
+
+@test
+func testContentTypeWithParameters() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // "application/json; charset=utf-8" must be recognised as JSON.
+    var result: HttpRequest;
+    var input = StringInit(
+"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 2\r\n\r\n{}"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(result.bodyType == BodyType.JSON)
+
+    // "application/x-www-form-urlencoded; charset=UTF-8" must be recognised.
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/x-www-form-urlencoded; charset=UTF-8\r\nContent-Length: 3\r\n\r\na=b"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(result2.bodyType == BodyType.FORM_URLENCODED)
+
+    // Combined: upper-case type with a parameter.
+    var result3: HttpRequest;
+    var input3 = StringInit(
+"POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: APPLICATION/JSON;charset=utf-8\r\nContent-Length: 2\r\n\r\n{}"
+)
+    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert(result3.bodyType == BodyType.JSON)
+}

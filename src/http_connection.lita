@@ -163,7 +163,14 @@ public func (this: *HttpConnection) bufferContents(
                 }
             }
 
-            this.writeBuffer.append("Content-Length: %zu\r\n", response.body.length)
+            // RFC 7230 §3.3.1: MUST NOT send Content-Length for 1xx or 204 responses.
+            // HEAD responses SHOULD still include Content-Length (RFC 7231 §4.3.2):
+            // it tells the client the size the body would have been.
+            var noContentLength = (response.status >= 100 && response.status < 200) ||
+                                   response.status == 204
+            if(!noContentLength) {
+                this.writeBuffer.append("Content-Length: %zu\r\n", response.body.length)
+            }
             this.writeBuffer.append("\r\n")
             if(!noBody) {
                 this.writeBuffer.append("%.*s",
