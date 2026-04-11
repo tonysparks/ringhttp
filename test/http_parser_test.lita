@@ -533,3 +533,67 @@ func testQuotedMultipartBoundary() {
     assert(result2.bodyType == BodyType.MULTIPART_FORMDATA)
     assert(result2.multipart.boundary.equals($"----MyBoundary"))
 }
+
+// Fix 2: duplicate Content-Length headers with different values must set the
+// CONFLICTING_CONTENT_LENGTH flag so the worker can reject with 400.
+// RFC 7230 §3.3.2.
+@test
+func testDuplicateContentLengthConflict() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Differing values — must set the conflict flag.
+    var result: HttpRequest;
+    var input = StringInit(
+"POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nContent-Length: 10\r\n\r\nhello"
+)
+    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert((result.flags & HttpFlags.CONFLICTING_CONTENT_LENGTH) != 0)
+
+    // Identical duplicates are benign — no conflict flag.
+    var result2: HttpRequest;
+    var input2 = StringInit(
+"POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello"
+)
+    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert((result2.flags & HttpFlags.CONFLICTING_CONTENT_LENGTH) == 0)
+    assert(result2.bodyLength == 5)
+
+    // Single Content-Length — baseline, no conflict flag.
+    var result3: HttpRequest;
+    var input3 = StringInit(
+"POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 7\r\n\r\nabcdefg"
+)
+    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert((result3.flags & HttpFlags.CONFLICTING_CONTENT_LENGTH) == 0)
+    assert(result3.bodyLength == 7)
+}
+
+// Fix 3: chunked requests with RFC 7230 §4.1.2 trailer headers must be
+// accepted — trailers must be skipped rather than causing ERROR_INVALID_CHUNK.
+@test
+func testChunkWithTrailers() {
+    var parser = HttpParser{}
+    parser.init(defaultAllocator)
+
+    // Single chunk followed by a trailer header and terminating CRLF.
+    var result: HttpRequest;
+    var input = StringInit("5\r\nhello\r\n0\r\nX-Checksum: abc123\r\n\r\n")
+    var status = parser.parseChunk(input, &result)
+    assert(status == ParseStatus.OK)
+    assert(result.body.body.equalsString("hello"))
+
+    // Multiple trailers.
+    var result2: HttpRequest;
+    var input2 = StringInit("3\r\nfoo\r\n0\r\nX-A: 1\r\nX-B: 2\r\n\r\n")
+    var status2 = parser.parseChunk(input2, &result2)
+    assert(status2 == ParseStatus.OK)
+    assert(result2.body.body.equalsString("foo"))
+
+    // No trailers — still OK.
+    var result3: HttpRequest;
+    var input3 = StringInit("5\r\nworld\r\n0\r\n\r\n")
+    var status3 = parser.parseChunk(input3, &result3)
+    assert(status3 == ParseStatus.OK)
+    assert(result3.body.body.equalsString("world"))
+}

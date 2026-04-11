@@ -50,8 +50,10 @@ public enum Status {
     // HTTP/1.1 protocol requirements
     ERROR_MISSING_HOST_HEADER,
     ERROR_HTTP_VERSION_NOT_SUPPORTED,
-    ERROR_CONFLICTING_BODY_HEADERS,   // both Transfer-Encoding and Content-Length → 400
-    ERROR_EXPECT_FAILED,              // unrecognised Expect value → 417
+    ERROR_CONFLICTING_BODY_HEADERS,       // both Transfer-Encoding and Content-Length → 400
+    ERROR_CONFLICTING_CONTENT_LENGTH,     // duplicate Content-Length with different values → 400
+    ERROR_EXPECT_FAILED,                  // unrecognised Expect value → 417
+    ERROR_UNSUPPORTED_REQUEST_METHOD,     // method token not recognised → 501
 
     // Upgrade/WebSocket errors
     ERROR_UNSUPPORTED_UPGRADE_PROTOCOL,

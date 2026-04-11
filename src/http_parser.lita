@@ -133,8 +133,12 @@ public func (this: *HttpParser) parseChunk(input: String, result: *HttpRequest) 
 
         // check to see if we are at the end of the stream
         if(size < 1) {
+            // RFC 7230 §4.1.2: after the zero-size chunk comes an optional trailer
+            // section followed by a blank line (CRLF).  Skip any trailer headers
+            // rather than rejecting them as invalid.
             input = input.substring(index + 2)
-            if(!input.startsWith($"\r\n")) {
+            var trailerEnd = input.indexOf($"\r\n\r\n")
+            if(trailerEnd < 0 && !input.startsWith($"\r\n")) {
                 return ParseStatus.ERROR_INVALID_CHUNK
             }
 
@@ -279,8 +283,17 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
         }
     }
     else if (header.name.equalsIgnoreCase($"content-length")) {
-        result.bodyLength = MAX(0, header.values.parseU64().value as (i32))
-        result.flags |= HttpFlags.CONTENT_LENGTH_PROVIDED
+        var newLen = MAX(0, header.values.parseU64().value as (i32))
+        if((result.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) != 0) {
+            // RFC 7230 §3.3.2: duplicate Content-Length with a different value is an error.
+            if(result.bodyLength != newLen) {
+                result.flags |= HttpFlags.CONFLICTING_CONTENT_LENGTH
+            }
+            // identical duplicates are tolerated — keep the existing value
+        } else {
+            result.bodyLength = newLen
+            result.flags |= HttpFlags.CONTENT_LENGTH_PROVIDED
+        }
     }
     else if (header.name.equalsIgnoreCase($"transfer-encoding")) {
         if(header.values.containsIgnoreCase($"chunked")) {

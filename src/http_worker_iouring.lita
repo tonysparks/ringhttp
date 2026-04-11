@@ -833,6 +833,8 @@ func (this: *WorkerThread) handleCompletionRing(
                     case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
                     case Status.ERROR_EXPECT_FAILED:
                     case Status.ERROR_CONFLICTING_BODY_HEADERS:
+                    case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
+                    case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
                     case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION: {
                         return this.sendBadRequest(session, status)
                     }

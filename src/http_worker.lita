@@ -187,8 +187,9 @@ internal func (this: *WorkerThread) sendBadRequest(
 
     switch(status) {
         case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
+            response.status = 414
             response.body.append(
-                "Request exceeded the max request limit of %d bytes for request line\n",
+                "Request URI exceeds the maximum of %d bytes\n",
                 this.config.maxHttpRequestLineSizeInBytes
             )
             break
@@ -229,6 +230,13 @@ internal func (this: *WorkerThread) sendBadRequest(
             break
         case Status.ERROR_CONFLICTING_BODY_HEADERS:
             response.body.append("Request must not carry both Transfer-Encoding and Content-Length\n")
+            break
+        case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
+            response.body.append("Duplicate Content-Length headers with differing values\n")
+            break
+        case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
+            response.status = 501
+            response.body.append("Method not implemented\n")
             break
         case Status.ERROR_EXPECT_FAILED:
             response.status = 417
@@ -319,6 +327,16 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
     var ok = parser.parse(input, httpRequest)
     if(ok != ParseStatus.OK) {
         return Status.ERROR_PARSING_HTTP_REQUEST
+    }
+
+    // RFC 7231 §4.1: unrecognised request method → 501 Not Implemented.
+    if(httpRequest.method == HttpMethod.INVALID) {
+        return Status.ERROR_UNSUPPORTED_REQUEST_METHOD
+    }
+
+    // RFC 7230 §3.3.2: duplicate Content-Length with differing values → 400.
+    if((httpRequest.flags & HttpFlags.CONFLICTING_CONTENT_LENGTH) != 0) {
+        return Status.ERROR_CONFLICTING_CONTENT_LENGTH
     }
 
     // RFC 7230 §2.6: reject unsupported HTTP versions.
