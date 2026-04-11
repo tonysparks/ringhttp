@@ -51,6 +51,12 @@ public enum HttpFlags {
     ACCEPT_DEFLATE_ENCODING = (1<<9),
 
     SSE                     = (1<<10),
+
+    EXPECT_CONTINUE         = (1<<11),
+    SENT_CONTINUE           = (1<<12),
+    KEEP_ALIVE_REQUESTED         = (1<<13),  // Connection: keep-alive was explicit (HTTP/1.0 opt-in)
+    EXPECT_UNKNOWN               = (1<<14),  // Expect header present with unrecognised value → 417
+    CONFLICTING_CONTENT_LENGTH   = (1<<15),  // duplicate Content-Length with differing values → 400
 }
 
 /**
@@ -58,6 +64,7 @@ public enum HttpFlags {
 */
 public struct HttpRequest {
     method: HttpMethod
+    scheme: String
     path: String
     query: String
     version: String

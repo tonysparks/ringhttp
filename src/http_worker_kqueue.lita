@@ -197,9 +197,19 @@ func (this: *WorkerThread) flushResponse(session: *SessionContext) {
     }
 
     if(response.type == ResponseType.FILE) {
-        session.state      = SessionState.WRITTEN_FILE
-        session.fileOffset = 0
-        this.flushFileResponse(session)
+        // RFC 7231 §4.3.2: HEAD must not include a body — skip file send.
+        if(session.request.method == HttpMethod.HEAD) {
+            if(response.fileHandle > 0) {
+                close(response.fileHandle)
+                response.fileHandle = 0
+                session.file        = 0
+            }
+            this.resetRequest(session)
+        } else {
+            session.state      = SessionState.WRITTEN_FILE
+            session.fileOffset = 0
+            this.flushFileResponse(session)
+        }
     }
     else if(response.type == ResponseType.STREAM) {
         session.state = SessionState.WRITING_STREAM
@@ -644,17 +654,39 @@ func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
         case SessionState.READ_REQUEST_LINE: {
             var status = this.handlePartialHttpRequest(session, bytesRead as (i32))
 
-            if(status == Status.PARTIAL_REQUEST_DISPATCHING_READ) {
-                return;
-            }
-
             if(status != Status.OK) {
                 switch(status) {
+                    case Status.PARTIAL_REQUEST_DISPATCHING_READ: {
+                        return;
+                    }
+                    case Status.CONTINUE_SEND: {
+                        // this.send100Continue(session)
+
+                        // RFC 7231 §5.1.1: send 100 Continue without disturbing the session.
+                        // The read buffer still holds the request headers; when the client
+                        // sends the body the EV_CLEAR read event re-fires and the body is
+                        // appended to the same buffer so handlePartialHttpRequest succeeds.
+                        const reply = "HTTP/1.1 100 Continue\r\n\r\n"
+                        send(
+                            session.connection.handle(),
+                            reply as (*void),
+                            strlen(reply) as (usize),
+                            0
+                        )
+                        return;
+                    }
                     case Status.ERROR_UNKNOWN_BODY_LENGTH:
                     case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT:
-                    case Status.ERROR_PARSING_HTTP_REQUEST: {
+                    case Status.ERROR_PARSING_HTTP_REQUEST:
+                    case Status.ERROR_MISSING_HOST_HEADER:
+                    case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
+                    case Status.ERROR_EXPECT_FAILED:
+                    case Status.ERROR_CONFLICTING_BODY_HEADERS:
+                    case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
+                    case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
+                    case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION: {
                         this.sendBadRequest(session, status)
                         break
                     }

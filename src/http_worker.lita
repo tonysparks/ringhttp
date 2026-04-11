@@ -29,11 +29,8 @@ import "std/encoding/base64"
 import "std/net/posix_socket"
 #if (OS == "MAC")
     import using "http_worker_kqueue"
-    // import "kqueue_posix"
 #elseif (OS == "LINUX")
     import using "http_worker_iouring"
-    // import "pipe_posix"
-    // import "liburing"
 #else_error "Unsupported Operating System target"
 #end
 
@@ -85,11 +82,6 @@ internal func (this: *WorkerThread) server404(
     var request  = requestContext.request
     var response = requestContext.response
 
-    Error("No route for: %s %.*s\n",
-        HttpMethodAsStr(request.method),
-        request.path.length, request.path.buffer
-    )
-
     response.status = 404
     if(this.server.notFoundHandler.__this) {
         this.server.notFoundHandler.handle(requestContext, status)
@@ -98,6 +90,82 @@ internal func (this: *WorkerThread) server404(
         response.type = ResponseType.BODY
         response.body.append("No route bound.")
     }
+}
+
+func (this: *WorkerThread) writeAllowHeader(
+    requestContext: *RequestHandlerContext,
+    allowedMethods: i32
+) {
+    var response = requestContext.response
+    var allowBuf = requestContext.allocator.alloc(128) as (*char)
+    var allowLen = 0
+    // OPTIONS is always allowed if we are here.
+    var allMethods = allowedMethods | (1 << HttpMethod.OPTIONS as (i32))
+    for(var m = 1; m < MAX_METHODS; m += 1) {
+        if(allMethods & (1 << m)) {
+            if(allowLen > 0) {
+                allowBuf[allowLen] = ','
+                allowBuf[allowLen + 1] = ' '
+                allowLen += 2
+            }
+            var methodName = HttpMethodAsStr(m as (HttpMethod))
+            var methodLen = methodName.length()
+            memcpy(allowBuf + allowLen, methodName, methodLen as (usize))
+            allowLen += methodLen
+        }
+    }
+    response.addHeader($"Allow", String{.buffer = allowBuf, .length = allowLen})
+}
+
+// RFC 7231 §4.3.7: OPTIONS auto-response — 200 with an Allow header.
+// Used when no handler is registered for OPTIONS on the given path.
+internal func (this: *WorkerThread) serverOptions(
+    requestContext: *RequestHandlerContext,
+    allowedMethods: i32
+) {
+    var response = requestContext.response
+
+    response.status = 200
+    response.type   = ResponseType.BODY
+
+    this.writeAllowHeader(requestContext, allowedMethods)
+    response.addHeader($"Content-Length", $"0")
+}
+
+// RFC 7231 §6.5.5: 405 Must Not Allowed MUST include an Allow header listing
+// the methods that are valid for the requested resource.
+internal func (this: *WorkerThread) server405(
+    requestContext: *RequestHandlerContext,
+    allowedMethods: i32
+) {
+    var request  = requestContext.request
+    var response = requestContext.response
+
+    response.status = 405
+    response.type   = ResponseType.BODY
+    response.body.append("Method Not Allowed\n")
+
+    this.writeAllowHeader(requestContext, allowedMethods)
+}
+
+
+internal func (this: *WorkerThread) send100Continue(
+    context: *SessionContext
+): Status {
+    var httpRequest = HttpRequest{}
+    var requestContext = RequestHandlerContext {
+        .allocator = &context.requestAllocator.allocator,
+        .request   = &httpRequest,
+        .response  = &context.response,
+        .userData  = null,
+        .match     = null
+    }
+
+    var response = requestContext.response
+    response.status = 100
+    response.type   = ResponseType.BODY
+
+    return this.queueSend(context)
 }
 
 internal func (this: *WorkerThread) sendBadRequest(
@@ -119,8 +187,9 @@ internal func (this: *WorkerThread) sendBadRequest(
 
     switch(status) {
         case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
+            response.status = 414
             response.body.append(
-                "Request exceeded the max request limit of %d bytes for request line\n",
+                "Request URI exceeds the maximum of %d bytes\n",
                 this.config.maxHttpRequestLineSizeInBytes
             )
             break
@@ -138,6 +207,7 @@ internal func (this: *WorkerThread) sendBadRequest(
             )
             break
         case Status.ERROR_UNKNOWN_BODY_LENGTH:
+            response.status = 411
             response.body.append("Missing Content-Length or Transfer-Encoding\n")
             break
         case Status.ERROR_PARSING_HTTP_REQUEST:
@@ -150,6 +220,30 @@ internal func (this: *WorkerThread) sendBadRequest(
         case Status.ERROR_UNSUPPORTED_UPGRADE_PROTOCOL:
             response.status = 426
             response.body.append("The requested protocol upgrade is not supported\n")
+            break
+        case Status.ERROR_MISSING_HOST_HEADER:
+            response.body.append("HTTP/1.1 requests must include a Host header\n")
+            break
+        case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
+            response.status = 505
+            response.body.append("HTTP Version Not Supported\n")
+            break
+        case Status.ERROR_CONFLICTING_BODY_HEADERS:
+            response.body.append("Request must not carry both Transfer-Encoding and Content-Length\n")
+            break
+        case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
+            response.body.append("Duplicate Content-Length headers with differing values\n")
+            break
+        case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
+            response.status = 501
+            response.body.append("Method not implemented\n")
+            break
+        case Status.ERROR_EXPECT_FAILED:
+            response.status = 417
+            response.body.append("Expectation Failed\n")
+            break
+        case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION:
+            response.body.append("Upgrade request must include 'Connection: upgrade'\n")
             break
         default:
             response.body.append("Bad request\n")
@@ -235,7 +329,47 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
         return Status.ERROR_PARSING_HTTP_REQUEST
     }
 
+    // RFC 7231 §4.1: unrecognised request method → 501 Not Implemented.
+    if(httpRequest.method == HttpMethod.INVALID) {
+        return Status.ERROR_UNSUPPORTED_REQUEST_METHOD
+    }
+
+    // RFC 7230 §3.3.2: duplicate Content-Length with differing values → 400.
+    if((httpRequest.flags & HttpFlags.CONFLICTING_CONTENT_LENGTH) != 0) {
+        return Status.ERROR_CONFLICTING_CONTENT_LENGTH
+    }
+
+    // RFC 7230 §2.6: reject unsupported HTTP versions.
+    if(!httpRequest.version.equals($"HTTP/1.1") && !httpRequest.version.equals($"HTTP/1.0")) {
+        return Status.ERROR_HTTP_VERSION_NOT_SUPPORTED
+    }
+
+    // RFC 7230 §5.4: HTTP/1.1 requests MUST carry a Host header.
+    if(httpRequest.version.equals($"HTTP/1.1")) {
+        var host = httpRequest.getHeaderValue($"Host")
+        if(host.empty()) {
+            return Status.ERROR_MISSING_HOST_HEADER
+        }
+    }
+
+    // RFC 7231 §5.1.1: an unrecognised Expect value MUST be rejected with 417.
+    if((httpRequest.flags & HttpFlags.EXPECT_UNKNOWN) != 0) {
+        return Status.ERROR_EXPECT_FAILED
+    }
+
+    // RFC 7230 §6.7: an Upgrade request MUST also have Connection: upgrade.
+    if((httpRequest.flags & HttpFlags.WEB_SOCKET_PROTOCOL) != 0 &&
+       (httpRequest.flags & HttpFlags.UPGRADE_REQUEST) == 0) {
+        return Status.ERROR_WEB_SOCKET_MISSING_CONNECTION
+    }
+
     if(httpRequest.flags & HttpFlags.CHUNKED_ENCODING) {
+        // RFC 7230 §3.3.3: receiving both TE and Content-Length is a protocol error.
+        if((httpRequest.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) != 0) {
+            return Status.ERROR_CONFLICTING_BODY_HEADERS
+        }
+        httpRequest.bodyLength = 0
+
         var status = parser.parseChunk(readBuffer.toString().substring(request.headerIndex), httpRequest)
         if(status == ParseStatus.CHUNK_INCOMPLETE) {
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
@@ -253,6 +387,15 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
         if(readBuffer.length - request.headerIndex < bodyLength) {
             if(readBuffer.remaining() < 1 * MiB) {
                 readBuffer.reserve(readBuffer.capacity + 1 * MiB as (i32))
+            }
+
+            // RFC 7231 §5.1.1: send 100 Continue so the client will send the body.
+            // Guard with SENT_CONTINUE to avoid re-sending on each partial read.
+            if((httpRequest.flags & HttpFlags.EXPECT_CONTINUE) &&
+               !(httpRequest.flags & HttpFlags.SENT_CONTINUE)) {
+
+                httpRequest.flags |= HttpFlags.SENT_CONTINUE
+                return Status.CONTINUE_SEND
             }
 
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
@@ -293,7 +436,11 @@ internal func (this: *WorkerThread) handleHttpRequest(
         return Status.ERROR_PARSING_HTTP_REQUEST
     }
 
-    connection.disableKeepAlive = httpRequest.flags & HttpFlags.DISABLE_KEEP_ALIVE
+    // RFC 7230 §6.3: HTTP/1.0 is close-by-default; HTTP/1.1 is keep-alive-by-default.
+    var isHttp10 = httpRequest.version.equals($"HTTP/1.0")
+    var keepAliveOptIn = (httpRequest.flags & HttpFlags.KEEP_ALIVE_REQUESTED) != 0
+    connection.disableKeepAlive = (httpRequest.flags & HttpFlags.DISABLE_KEEP_ALIVE) != 0 ||
+                                  (isHttp10 && !keepAliveOptIn)
 
     if(httpRequest.method == HttpMethod.GET) {
         if(httpRequest.path.startsWith(this.server.config.publicServerPath)) {
@@ -324,7 +471,16 @@ internal func (this: *WorkerThread) handleHttpRequest(
     var requestMatch: RouteMatch;
     if(!blocked) {
         if(!this.server.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
-            this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
+            var allowed = this.server.router.allowedMethods(&httpRequest.path)
+            // RFC 7231 §4.3.7: OPTIONS with no registered handler auto-responds with Allow.
+            // "OPTIONS *" is a server-wide capabilities query — allow on any known path.
+            if(httpRequest.method == HttpMethod.OPTIONS) {
+                this.serverOptions(&requestContext, allowed)
+            } else if(allowed != 0) {
+                this.server405(&requestContext, allowed)
+            } else {
+                this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
+            }
         }
         else {
             var handler = requestMatch.handler

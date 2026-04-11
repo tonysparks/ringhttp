@@ -228,7 +228,9 @@ func (this: *WorkerThread) queueWriteHttpResponse(
     // SSE headers must be flushed immediately (no MSG_MORE) so the browser sees
     // the event-stream content-type right away.  FILE and STREAM still use MSG_MORE
     // to hint the kernel to batch headers with the first data write.
-    var useMoreFlag = (response.type == ResponseType.FILE || response.type == ResponseType.STREAM)
+    // RFC 7231 §4.3.2: HEAD must not include a body — treat like a plain response.
+    var isHeadFile = (response.type == ResponseType.FILE && session.request.method == HttpMethod.HEAD)
+    var useMoreFlag = !isHeadFile && (response.type == ResponseType.FILE || response.type == ResponseType.STREAM)
     io_uring_prep_sendmsg(
         sqe,
         connection.handle(),
@@ -238,13 +240,30 @@ func (this: *WorkerThread) queueWriteHttpResponse(
 
     io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.SENDMSG, session.index, session.generation))
 
-    if(response.type == ResponseType.FILE) {
+    if(response.type == ResponseType.FILE && !isHeadFile) {
         sqe.flags |= IOSQE_IO_LINK
     }
 
     session.submissions += 1
 
-    if(response.type == ResponseType.FILE) {
+    if(isHeadFile) {
+        // No body for HEAD: async-close the file handle, then wait for both
+        // the SENDMSG and CLOSE CQEs before resetting (submissions tracks both).
+        if(response.fileHandle > 0) {
+            var closeSqe = io_uring_get_sqe(ring)
+            if(closeSqe) {
+                io_uring_prep_close(closeSqe, response.fileHandle)
+                io_uring_sqe_set_data64(closeSqe, makeOp(RingOpcode.CLOSE, session.index, session.generation))
+                session.submissions += 1
+            } else {
+                close(response.fileHandle)
+            }
+            response.fileHandle = 0
+            session.file        = 0
+        }
+        session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
+    }
+    else if(response.type == ResponseType.FILE) {
         session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
         return this.queueWriteHttpFileResponse(ring, session)
     }
@@ -797,18 +816,26 @@ func (this: *WorkerThread) handleCompletionRing(
             }
 
             var status = this.handlePartialHttpRequest(session, bytesRead)
-
-            if(status == Status.PARTIAL_REQUEST_DISPATCHING_READ) {
-                return this.queueReadHttpRequest(ring, session)
-            }
-
             if(status != Status.OK) {
                 switch(status) {
+                    case Status.PARTIAL_REQUEST_DISPATCHING_READ: {
+                        return this.queueReadHttpRequest(ring, session)
+                    }
+                    case Status.CONTINUE_SEND: {
+                        return this.send100Continue(session)
+                    }
                     case Status.ERROR_UNKNOWN_BODY_LENGTH:
                     case Status.ERROR_INVALID_REQUEST_PATH_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_HEADER_EXCEEDED_LIMIT:
                     case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT:
-                    case Status.ERROR_PARSING_HTTP_REQUEST: {
+                    case Status.ERROR_PARSING_HTTP_REQUEST:
+                    case Status.ERROR_MISSING_HOST_HEADER:
+                    case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
+                    case Status.ERROR_EXPECT_FAILED:
+                    case Status.ERROR_CONFLICTING_BODY_HEADERS:
+                    case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
+                    case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
+                    case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION: {
                         return this.sendBadRequest(session, status)
                     }
                     default: {
@@ -916,6 +943,13 @@ func (this: *WorkerThread) handleCompletionRing(
                     session.state = SessionState.SSE_OPERATION
                     session.sseHandler.callback(&session.sseSession)
                     return Status.OK
+                }
+                // RFC 7231 §5.1.1: after a 100 Continue the session must NOT be
+                // reset — the read buffer still holds the request headers and the
+                // next read will append the body so handlePartialHttpRequest can
+                // complete the request without re-parsing from scratch.
+                if(session.response.status == 100) {
+                    return this.queueReadHttpRequest(ring, session)
                 }
                 Debug("Preparing connection for another HTTP request for socket: %d\n", connection.handle())
                 session.begin(connection.handle())

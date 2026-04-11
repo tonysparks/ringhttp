@@ -93,6 +93,23 @@ internal func (this: *Router) register(
     return true
 }
 
+// Returns a bitmask of HttpMethod values that have a route matching this path.
+// Used to distinguish 404 (path unknown) from 405 (path known, wrong method).
+internal func (this: *Router) allowedMethods(path: *String) : i32 {
+    var allowed = 0
+    for(var m = 1; m < MAX_METHODS; m += 1) {
+        var routes = &this.methods[m]
+        for(var i = 0; i < routes.size(); i += 1) {
+            var route = routes.getPtr(i)
+            if(CheckMatch(&route.template, path)) {
+                allowed |= (1 << m)
+                break
+            }
+        }
+    }
+    return allowed
+}
+
 internal func (this: *Router) match(
     method: HttpMethod,
     path: *String,
@@ -111,6 +128,19 @@ internal func (this: *Router) match(
             result.handler = route.handler
 
             return ParsePathValues(&route.template, path, &result.values) == ParseStatus.OK
+        }
+    }
+
+    // RFC 7231 §4.3.2: HEAD is identical to GET — fall back to GET routes.
+    if(method == HttpMethod.HEAD) {
+        routes = &this.methods[HttpMethod.GET]
+        for(var i = 0; i < routes.size(); i+=1) {
+            var route = routes.getPtr(i)
+            if(CheckMatch(&route.template, path)) {
+                result.template = &route.template
+                result.handler = route.handler
+                return ParsePathValues(&route.template, path, &result.values) == ParseStatus.OK
+            }
         }
     }
 

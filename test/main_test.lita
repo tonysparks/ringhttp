@@ -12,9 +12,112 @@ import "std/json"
 
 import "std/array"
 import "std/map"
+import "std/net/posix_socket"
+import "std/fmt"
+import "std/time"
 
 import "http_ring"
 import "test_webserver"
+
+// connect(2) is not exposed by std/net/posix_socket — declare it here.
+@foreign
+func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
+
+/**
+ * Open a raw TCP connection to localhost:port, send `request` verbatim, read
+ * back the response, and return the HTTP status code (e.g. 200, 400, 417).
+ * Returns -1 on any socket error.
+ */
+func rawHttpStatusCode(request: *const char, port: u16 = 8080_u16) : i32 {
+    var fd = socket(AF_INET, SOCK_STREAM, 0)
+    if (fd < 0) {
+        return -1
+    }
+    defer close(fd)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(:sockaddr_in))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(port)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+    if (connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) < 0) {
+        return -1
+    }
+
+    var reqLen = strlen(request) as (usize)
+    send(fd, request as (*void), reqLen, 0)
+
+    var buf: [4096]char
+    var n = recv(fd, buf as (*void), 4095_usize, 0)
+    if (n <= 0) {
+        return -1
+    }
+    ;buf[n] = '\0' as (char)
+
+    // Parse status code from "HTTP/1.x NNN ..."
+    var response = String { .buffer = buf, .length = n as (i32) }
+    var spaceIdx = response.indexOf($" ")
+    if (spaceIdx < 0) {
+        return -1
+    }
+    var afterVersion = response.substring(spaceIdx + 1)
+    var parsed = afterVersion.parseInt(10)
+    return parsed.value as (i32)
+}
+
+/**
+ * Like rawHttpStatusCode but also returns a header value by name.
+ * Searches for "HeaderName: value\r\n" in the raw response.
+ * The returned String points into a static buffer — copy before next call.
+ */
+func rawHttpHeader(request: *const char, headerName: *const char, port: u16 = 8080_u16) : String {
+    var fd = socket(AF_INET, SOCK_STREAM, 0)
+    if (fd < 0) {
+        return String{}
+    }
+    defer close(fd)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(:sockaddr_in))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(port)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+    if (connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) < 0) {
+        return String{}
+    }
+
+    var reqLen = strlen(request) as (usize)
+    send(fd, request as (*void), reqLen, 0)
+
+    @static var buf: [8192]char
+    var n = recv(fd, buf as (*void), 8191_usize, 0)
+    if (n <= 0) {
+        return String{}
+    }
+    ;buf[n] = '\0' as (char)
+
+    var response = String { .buffer = buf, .length = n as (i32) }
+
+    // Search for the header name followed by ": "
+    var nameStr = StringInit(headerName)
+    var idx = response.indexOf(nameStr)
+    if (idx < 0) {
+        return String{}
+    }
+    var afterName = response.substring(idx + nameStr.length)
+    // skip ": "
+    if (afterName.length < 2) {
+        return String{}
+    }
+    afterName = afterName.substring(2)
+    var end = afterName.indexOf($"\r\n")
+    if (end < 0) {
+        return String{}
+    }
+    return afterName.substring(0, end)
+}
 
 var testServer = TestServer{}
 var http = http::Http{}
@@ -145,8 +248,8 @@ func test_path_parameters_retrieval_hit_limit() {
     http.get(urlBuilder.cStr(), &resp)
     var x = resp.body.trim().cStr()
     //printf("Resp: %d Body: '%s'\n", resp.statusCode, x)
-    assert(resp.statusCode == 400)
-    assert("Request exceeded the max request limit of 8192 bytes for request line".equals(x))
+    assert(resp.statusCode == 414)
+    assert("Request URI exceeds the maximum of 8192 bytes".equals(x))
 }
 
 @test("test path parameters retrieval hit limit for header")
@@ -469,11 +572,12 @@ func test_malformed_form_body_put() {
     assert(resp.body.contains($"Unprocessable request body"))
 }
 
-@test("test wrong method on GET-only route returns 404")
+@test("test wrong method on GET-only route returns 405")
 func test_wrong_method_on_get_route() {
-    // /echo is registered for GET only; POST should find no route
+    // /echo is registered for GET only; POST should get 405 with Allow: GET
     var resp = http::HttpResponse {
-        .body = StringBuilderInit(256)
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
     }
     var req = http::HttpRequest {
         .url = "http://localhost:8080/echo?x=1",
@@ -484,34 +588,40 @@ func test_wrong_method_on_get_route() {
         }
     }
     assert(http.makeRequest(&req, &resp) == true)
-    assert(resp.statusCode == 404)
+    assert(resp.statusCode == 405)
+    assert(resp.headers.get($"Allow").contains($"GET"))
 }
 
-@test("test wrong method on POST-only route returns 404")
+@test("test wrong method on POST-only route returns 405")
 func test_wrong_method_on_post_route() {
-    // /submit is registered for POST only; GET should find no route
+    // /submit is registered for POST only; GET should get 405 with Allow: POST
     var resp = http::HttpResponse {
-        .body = StringBuilderInit(256)
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
     }
     http.get("http://localhost:8080/submit", &resp)
-    assert(resp.statusCode == 404)
+    assert(resp.statusCode == 405)
+    assert(resp.headers.get($"Allow").contains($"POST"))
 }
 
-@test("test wrong method on PUT-only route returns 404")
+@test("test wrong method on PUT-only route returns 405")
 func test_wrong_method_on_put_route() {
-    // /put is registered for PUT only; DELETE should find no route
+    // /put is registered for PUT only; DELETE should get 405 with Allow: PUT
     var resp = http::HttpResponse {
-        .body = StringBuilderInit(256)
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
     }
     assert(http.delete("http://localhost:8080/put", &resp) == true)
-    assert(resp.statusCode == 404)
+    assert(resp.statusCode == 405)
+    assert(resp.headers.get($"Allow").contains($"PUT"))
 }
 
-@test("test wrong method on DELETE-only route returns 404")
+@test("test wrong method on DELETE-only route returns 405")
 func test_wrong_method_on_delete_route() {
-    // /delete is registered for DELETE only; POST should find no route
+    // /delete is registered for DELETE only; POST should get 405 with Allow: DELETE
     var resp = http::HttpResponse {
-        .body = StringBuilderInit(256)
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
     }
     var req = http::HttpRequest {
         .url = "http://localhost:8080/delete",
@@ -522,7 +632,65 @@ func test_wrong_method_on_delete_route() {
         }
     }
     assert(http.makeRequest(&req, &resp) == true)
-    assert(resp.statusCode == 404)
+    assert(resp.statusCode == 405)
+    assert(resp.headers.get($"Allow").contains($"DELETE"))
+}
+
+@test("test HEAD request returns no body but correct headers")
+func test_head_request() {
+    // HEAD must return the same status and headers as GET but zero body bytes.
+    var resp = http::HttpResponse {
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
+    }
+    var req = http::HttpRequest {
+        .url  = "http://localhost:8080/echo?hello=world",
+        .type = http::HttpRequestType.HEAD,
+        .body = http::HttpBody {}
+    }
+    assert(http.makeRequest(&req, &resp) == true)
+    assert(resp.statusCode == 200)
+    // RFC 7231 §4.3.2: body MUST be empty for HEAD responses.
+    assert(resp.body.length == 0)
+    // Content-Length must still be present and positive (the GET body is non-empty).
+    var cl = resp.headers.get($"Content-Length")
+    assert(!cl.empty())
+}
+
+@test("test Date header present in response")
+func test_date_header_in_response() {
+    // RFC 7231 §7.1.1.2: servers SHOULD send Date in all responses.
+    var resp = http::HttpResponse {
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
+    }
+    http.get("http://localhost:8080/echo?x=1", &resp)
+    assert(resp.statusCode == 200)
+    var date = resp.headers.get($"Date")
+    assert(!date.empty())
+
+    var now = DateTimeNow()
+    var sb = StringBuilderInit(256)
+    defer sb.free()
+
+    now.format($"%a, %d %b %Y %H:%M:%S GMT", sb)
+    var headerDate = DateTimeFrom($"%a, %d %b %Y %H:%M:%S GMT", date)
+    assert(headerDate.toEpochTime() <= now.toEpochTime())
+    //printf("M: %s vs %.*s\n", sb.cStr(), date.length, date.buffer)
+}
+
+@test("test Connection header present in response")
+func test_connection_header_in_response() {
+    // RFC 7230 §6.3: server SHOULD send Connection header.
+    var resp = http::HttpResponse {
+        .body    = StringBuilderInit(256),
+        .headers = http::HeadersInit(16)
+    }
+    http.get("http://localhost:8080/echo?x=1", &resp)
+    assert(resp.statusCode == 200)
+    var conn = resp.headers.get($"Connection")
+    assert(!conn.empty())
+    assert(conn.equals($"keep-alive") || conn.equals($"close"))
 }
 
 struct ConcurrentState {
@@ -656,4 +824,215 @@ func test_post_multipart_file_upload() {
     assert(resp.body.contains($"file"))
     assert(resp.body.contains($"hello.txt"))
     assert(resp.body.contains($"Hello, World!"))
+}
+
+// Fix D (worker): OPTIONS with no handler registered must auto-respond 200
+// with an Allow header listing the methods registered for that path.
+// RFC 7231 §4.3.7.
+@test("test OPTIONS auto-responds with Allow header")
+func test_options_auto_response() {
+    // /echo has GET registered; OPTIONS on it must list GET (and OPTIONS itself).
+    var status = rawHttpStatusCode(
+        "OPTIONS /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    assert(status == 200)
+
+    var allow = rawHttpHeader(
+        "OPTIONS /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        "Allow"
+    )
+    assert(allow.contains($"GET"))
+    assert(allow.contains($"OPTIONS"))
+}
+
+// Fix A/C (worker): an unrecognised Expect value must produce 417 Expectation
+// Failed. RFC 7231 §5.1.1: the server MUST respond with 417 if the Expect
+// header contains a value the server does not understand.
+@test("test unknown Expect header returns 417")
+func test_expect_unknown_returns_417() {
+    var status = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nExpect: i-can-fly\r\nConnection: close\r\n\r\ntest"
+    )
+    assert(status == 417)
+}
+
+// Fix A (worker): both Transfer-Encoding and Content-Length present must
+// produce 400. RFC 7230 §3.3.3: if both are present the server MUST reject
+// the request.
+@test("test Transfer-Encoding and Content-Length conflict returns 400")
+func test_conflicting_body_headers_returns_400() {
+    var status = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 10\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+    )
+    assert(status == 400)
+}
+
+// Fix B (worker): HTTP/1.0 defaults to Connection: close unless the client
+// explicitly sends "Connection: keep-alive". RFC 7230 §6.3.
+@test("test HTTP/1.0 defaults to Connection: close")
+func test_http10_closes_by_default() {
+    // HTTP/1.0 with no Connection header — server must close after response.
+    var conn = rawHttpHeader(
+        "GET /echo?x=1 HTTP/1.0\r\nHost: localhost\r\n\r\n",
+        "Connection"
+    )
+    assert(conn.equals($"close") || conn.empty())
+
+    // HTTP/1.0 with explicit Connection: keep-alive — server may honour it.
+    // We don't assert keep-alive here (server may still close), but the
+    // request must succeed (2xx or valid response).
+    var status = rawHttpStatusCode(
+        "GET /echo?x=1 HTTP/1.0\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n"
+    )
+    assert(status == 200)
+}
+
+// Fix 1: unrecognised request method must return 501 Not Implemented.
+// RFC 7231 §4.1.
+@test("test unknown HTTP method returns 501")
+func test_unknown_method_returns_501() {
+    var status = rawHttpStatusCode(
+        "FOOBAR /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    assert(status == 501)
+}
+
+// Fix 2: duplicate Content-Length headers with differing values must return 400.
+// RFC 7230 §3.3.2.
+@test("test duplicate Content-Length with different values returns 400")
+func test_conflicting_content_length_returns_400() {
+    var status = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nContent-Length: 99\r\nConnection: close\r\n\r\nhello"
+    )
+    assert(status == 400)
+}
+
+// Fix 3: chunked requests that include RFC 7230 §4.1.2 trailer headers must
+// be accepted. Previously the server rejected them with 400.
+@test("test chunked request with trailers is accepted")
+func test_chunked_with_trailers_accepted() {
+    var status = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\nX-Checksum: abc\r\n\r\n"
+    )
+    assert(status == 200)
+}
+
+// Fix 4: a request-target longer than the server limit must return 414 URI Too Long.
+// RFC 7231 §6.5.12.
+@test("test URI too long returns 414")
+func test_uri_too_long_returns_414() {
+    // Build a path longer than maxHttpRequestLineSizeInBytes (8192).
+    var pathBuilder = StringBuilderInit(8300)
+    defer pathBuilder.free()
+    pathBuilder.append("GET /echo?")
+    var i = 0
+    while(pathBuilder.length < 8200) {
+        pathBuilder.append("x%d=y%d&", i, i)
+        i += 1
+    }
+    pathBuilder.append(" HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+
+    var status = rawHttpStatusCode(pathBuilder.cStr())
+    assert(status == 414)
+}
+
+// Bug 1 (kqueue+iouring): Expect: 100-continue — server must send 100 before
+// the client sends the body, then process the body and return 200.
+// RFC 7231 §5.1.1.
+@test("test Expect: 100-continue sends 100 then final response")
+func test_expect_100_continue() {
+    var fd = socket(AF_INET, SOCK_STREAM, 0)
+    assert(fd >= 0)
+    defer close(fd)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(:sockaddr_in))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(8080_u16)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+    assert(connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) == 0)
+
+    // Phase 1: send headers only — body withheld so server issues 100 Continue.
+    var headers = "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n"
+    send(fd, headers as (*void), strlen(headers) as (usize), 0)
+
+    var buf: [4096]char
+    var n = recv(fd, buf as (*void), 4095_usize, 0)
+    assert(n > 0)
+    ;buf[n] = '\0' as (char)
+
+    var interim = String { .buffer = buf, .length = n as (i32) }
+    assert(interim.startsWith($"HTTP/1.1 100"))
+
+    // Phase 2: send the body; server must now process and return 200.
+    var body = "hello"
+    send(fd, body as (*void), 5_usize, 0)
+
+    n = recv(fd, buf as (*void), 4095_usize, 0)
+    assert(n > 0)
+    ;buf[n] = '\0' as (char)
+
+    var finalResp = String { .buffer = buf, .length = n as (i32) }
+    var spaceIdx = finalResp.indexOf($" ")
+    assert(spaceIdx >= 0)
+    var parsed = finalResp.substring(spaceIdx + 1).parseInt(10)
+    assert(parsed.value == 200)
+}
+
+// Bug 2 (connection): 100 Continue response MUST NOT include Content-Length.
+// RFC 7230 §3.3.1.
+@test("test 100 Continue response has no Content-Length header")
+func test_100_continue_no_content_length() {
+    var fd = socket(AF_INET, SOCK_STREAM, 0)
+    assert(fd >= 0)
+    defer close(fd)
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(:sockaddr_in))
+    addr.sin_family = AF_INET
+    addr.sin_port = htons(8080_u16)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+    assert(connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) == 0)
+
+    var headers = "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n"
+    send(fd, headers as (*void), strlen(headers) as (usize), 0)
+
+    @static var buf2: [4096]char
+    var n2 = recv(fd, buf2 as (*void), 4095_usize, 0)
+    assert(n2 > 0)
+    ;buf2[n2] = '\0' as (char)
+
+    var interim2 = String { .buffer = buf2, .length = n2 as (i32) }
+    assert(interim2.startsWith($"HTTP/1.1 100"))
+    // The 100 Continue response must NOT include Content-Length.
+    assert(!interim2.contains($"Content-Length"))
+
+    // Complete the exchange so the server can close cleanly.
+    var body2 = "hello"
+    send(fd, body2 as (*void), 5_usize, 0)
+    recv(fd, buf2 as (*void), 4095_usize, 0)
+}
+
+// Bug 3+4 (parser): Content-Type with parameters must be recognised.
+// RFC 7231 §3.1.1.1: media-type names are case-insensitive; parameters optional.
+@test("test Content-Type with parameters is parsed correctly")
+func test_content_type_with_parameters() {
+    // "application/json; charset=utf-8" must be treated as JSON — the
+    // SubmitRequestHandler echoes the body under "body"; for JSON bodies it
+    // prints the parsed object directly (not wrapped in a "body" string key).
+    var resp = rawHttpHeader(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 7\r\nConnection: close\r\n\r\n{\"k\":1}",
+        "Content-Type"
+    )
+    // The server responded — status 200 means the request was accepted.
+    var status = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 7\r\nConnection: close\r\n\r\n{\"k\":1}"
+    )
+    assert(status == 200)
+
+    // Upper-case media type must also be accepted.
+    var status2 = rawHttpStatusCode(
+        "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: APPLICATION/JSON\r\nContent-Length: 7\r\nConnection: close\r\n\r\n{\"k\":1}"
+    )
+    assert(status2 == 200)
 }
