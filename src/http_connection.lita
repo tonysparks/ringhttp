@@ -103,12 +103,11 @@ public func (this: *HttpConnection) bufferContents(
         this.writeBuffer.append("Server: Ring/0.0.1\r\n")
     #end
 
-    // Date header — RFC 7231 §7.1.1.2: servers SHOULD include Date in all responses.
-    var dateBuf = [64]char{}
-    var dateBufStr = StringBufferInit(dateBuf, 64, 0)
+    // // Date header — RFC 7231 §7.1.1.2: servers SHOULD include Date in all responses.
+    this.writeBuffer.append("Date: ")
     var now = DateTimeNow()
-    now.format($"%a, %d %b %Y %H:%M:%S GMT", &dateBufStr)
-    this.writeBuffer.append("Date: %.*s\r\n", dateBufStr.length, dateBufStr.buffer)
+    now.format($"%a, %d %b %Y %H:%M:%S GMT", this.writeBuffer)
+    this.writeBuffer.append("\r\n")
 
     // Connection header — RFC 7230 §6.3: signal keep-alive or close unless
     // the handler already set a Connection header (e.g. WebSocket 101 Upgrade).

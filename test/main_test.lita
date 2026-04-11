@@ -14,6 +14,7 @@ import "std/array"
 import "std/map"
 import "std/net/posix_socket"
 import "std/fmt"
+import "std/time"
 
 import "http_ring"
 import "test_webserver"
@@ -667,8 +668,15 @@ func test_date_header_in_response() {
     assert(resp.statusCode == 200)
     var date = resp.headers.get($"Date")
     assert(!date.empty())
-    // Spot-check the RFC 7231 date format contains a year (4 digits).
-    assert(date.contains($"202") || date.contains($"203"))
+
+    var now = DateTimeNow()
+    var sb = StringBuilderInit(256)
+    defer sb.free()
+
+    now.format($"%a, %d %b %Y %H:%M:%S GMT", sb)
+    var headerDate = DateTimeFrom($"%a, %d %b %Y %H:%M:%S GMT", date)
+    assert(headerDate.toEpochTime() <= now.toEpochTime())
+    //printf("M: %s vs %.*s\n", sb.cStr(), date.length, date.buffer)
 }
 
 @test("test Connection header present in response")
