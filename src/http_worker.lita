@@ -22,6 +22,9 @@ import "http_context"
 import "http_websocket"
 import "http_sse"
 import "http2_connection"
+import "http2_frame"
+import "http2_hpack"
+import "http2_stream"
 import "mime"
 
 import "std/crypto/sha1"
@@ -765,7 +768,7 @@ internal func (this: *WorkerThread) tryDetectProtocol(
        readBuffer.buffer[2] == 'I') {
         session.protocolVersion = ProtocolVersion.HTTP2
         session.state = SessionState.HTTP2_OPEN
-        session.http2.init()
+        session.http2.init(&session.requestAllocator.allocator)
         Debug("HTTP/2 connection detected on socket: %d\n", session.connection.handle())
     } else {
         session.protocolVersion = ProtocolVersion.HTTP1
@@ -785,7 +788,222 @@ internal func (this: *WorkerThread) processHttp2Data(
     connection.readBuffer.length += bytesRead
     connection.writeBuffer.clear()
     session.submissions = 0
-    return session.http2.process(&connection.readBuffer, &connection.writeBuffer)
+
+    var status = session.http2.process(&connection.readBuffer, &connection.writeBuffer)
+    if(status != Status.OK) {
+        return status
+    }
+
+    // Dispatch any stream that became ready
+    if(session.http2.readyStreamIdx >= 0) {
+        var streamIdx = session.http2.readyStreamIdx
+        session.http2.readyStreamIdx = -1
+        status = this.http2DispatchStream(session, streamIdx)
+    }
+
+    return status
+}
+
+// Dispatch one fully-received HTTP/2 stream as a normal request.
+// Decodes HPACK headers into session.request, runs the router, then
+// serialises the response back as HEADERS + DATA frames into writeBuffer.
+internal func (this: *WorkerThread) http2DispatchStream(
+    session:   *SessionContext,
+    streamIdx: i32
+) : Status {
+    var h2 = &session.http2
+    assert(streamIdx >= 0 && streamIdx < h2.streamCount)
+
+    var stream = &h2.streams[streamIdx]
+    var allocator = &session.requestAllocator.allocator
+
+    // ---- Build HttpRequest from the stream --------------------------------
+    session.request.reset()
+    session.request.headers.init(16, allocator)
+    session.request.version = $"HTTP/2.0"
+
+    var hpackPayload = stream.headerBlock.buffer as (*const u8)
+    var hpackLen     = stream.headerBlock.length
+
+    var decodeStatus = h2.hpack.decode(hpackPayload, hpackLen, &session.request, allocator)
+    if(decodeStatus != Status.OK) {
+        h2.closeStream(streamIdx)
+        http2WriteRstStream(
+            &session.connection.writeBuffer,
+            stream.streamId,
+            HTTP2_ERR_COMPRESSION_ERROR
+        )
+        return Status.OK
+    }
+
+    // Attach body
+    if(stream.bodyBuf.length > 0) {
+        session.request.buffer = stream.bodyBuf.buffer as (*const char)
+        session.request.length = stream.bodyBuf.length
+    }
+
+    var streamId = stream.streamId
+
+    // ---- Reset response for this request ----------------------------------
+    session.response.reset()
+
+    // ---- Router dispatch (mirrors handleHttpRequest sans HTTP/1.1 parsing) -
+    var httpRequest    = &session.request
+    var requestContext = RequestHandlerContext {
+        .allocator    = allocator,
+        .request      = httpRequest,
+        .response     = &session.response,
+        .userData     = null,
+        .match        = null,
+        .startTime    = session.lastRequestTime,
+        .sessionIndex = session.index
+    }
+
+    // File request shortcut
+    if(httpRequest.method == HttpMethod.GET &&
+       httpRequest.path.startsWith(this.server.config.publicServerPath)
+    ) {
+        this.handleFileRequest(session, httpRequest)
+    } else {
+        var blocked = false
+        for(var i = 0; i < this.server.filterHandlers.size(); i += 1) {
+            if(this.server.filterHandlers.get(i).handleFilter(&requestContext) == 0) {
+                blocked = true
+                break
+            }
+        }
+
+        var requestMatch: RouteMatch;
+        if(!blocked) {
+            if(!this.server.router.match(httpRequest.method, httpRequest.path, &requestMatch)) {
+                var allowed = this.server.router.allowedMethods(&httpRequest.path)
+                if(httpRequest.method == HttpMethod.OPTIONS) {
+                    this.serverOptions(&requestContext, allowed)
+                } else if(allowed != 0) {
+                    this.server405(&requestContext, allowed)
+                } else {
+                    this.server404(&requestContext, Status.ERROR_NO_ROUTE_FOUND)
+                }
+            } else {
+                var handler = requestMatch.handler
+                requestContext.userData = handler.userData
+                requestContext.match    = &requestMatch
+
+                if(handler.type == RequestHandlerType.HTTP_REQUEST) {
+                    if(handler.controller.callback(&requestContext) != 1) {
+                        this.serverError(&requestContext, Status.ERROR_CONTROLLER_CALLBACK_ERROR)
+                    }
+                } else {
+                    // SSE/WebSocket over H2 not yet implemented
+                    session.response.status = 501
+                    session.response.type   = ResponseType.BODY
+                    session.response.body.append("Not implemented over HTTP/2\n")
+                }
+            }
+        }
+
+        for(var i = 0; i < this.server.postHandlers.size(); i += 1) {
+            this.server.postHandlers.get(i).postHandle(&requestContext)
+        }
+    }
+
+    var elapsed = SystemTimeMSec() - session.lastRequestTime
+    Info("%s %.*s %d %.0fms (h2 stream %u)\n",
+        HttpMethodAsStr(httpRequest.method),
+        httpRequest.path.length, httpRequest.path.buffer,
+        session.response.status,
+        elapsed,
+        streamId
+    )
+
+    // ---- Serialise response as H2 frames ----------------------------------
+    this.http2SerializeResponse(session, streamId)
+
+    // Close the stream slot
+    h2.closeStream(streamIdx)
+
+    return Status.OK
+}
+
+// Serialise session.response into HEADERS + DATA frame(s) on the given streamId.
+internal func (this: *WorkerThread) http2SerializeResponse(
+    session:  *SessionContext,
+    streamId: u32
+) {
+    var allocator = &session.requestAllocator.allocator
+    var writeBuf  = &session.connection.writeBuffer
+    var response  = &session.response
+
+    // Encode HPACK response headers into a temporary buffer
+    var hpackBuf = StringBuilderInit(256, allocator)
+
+    session.http2.hpack.encodeResponse(response, &hpackBuf)
+
+    var noBody = HttpStatusForbidsBody(session.request.method, response.status)
+
+    if(response.type == ResponseType.BODY || response.type == ResponseType.NONE) {
+        var hasBody = !noBody && response.body.length > 0
+        var headersFlags = HTTP2_FLAG_END_HEADERS
+        if(!hasBody) {
+            headersFlags |= HTTP2_FLAG_END_STREAM
+        }
+
+        http2WriteHeadersFrame(
+            writeBuf,
+            streamId,
+            hpackBuf.buffer,
+            hpackBuf.length,
+            headersFlags
+        )
+
+        if(hasBody) {
+            http2WriteDataFrame(
+                writeBuf,
+                streamId,
+                response.body.buffer,
+                response.body.length,
+                true
+            )
+        }
+    } else if(response.type == ResponseType.FILE) {
+        // For file responses over H2, send headers only — full file send
+        // requires a separate async path (Phase 3+). For now, fall back to
+        // a 501 if the file path is taken. Typically static files are served
+        // via the HTTP/1.1 path; leave this as a future enhancement.
+        session.response.status = 501
+        session.response.type   = ResponseType.BODY
+        session.response.body.clear()
+        session.response.body.append("File responses not yet supported over HTTP/2\n")
+        session.response.numberOfHeaders = 0
+        hpackBuf.clear()
+
+        session.http2.hpack.encodeResponse(response, &hpackBuf)
+
+        http2WriteHeadersFrame(
+            writeBuf,
+            streamId,
+            hpackBuf.buffer,
+            hpackBuf.length,
+            HTTP2_FLAG_END_HEADERS
+        )
+
+        http2WriteDataFrame(
+            writeBuf,
+            streamId,
+            response.body.buffer,
+            response.body.length,
+            true
+        )
+    } else {
+        // STREAM / SSE — send headers only with END_STREAM (not supported yet)
+        http2WriteHeadersFrame(
+            writeBuf,
+            streamId,
+            hpackBuf.buffer,
+            hpackBuf.length,
+            HTTP2_FLAG_END_HEADERS | HTTP2_FLAG_END_STREAM
+        )
+    }
 }
 
 internal func (this: *WorkerThread) checkTimeouts() {

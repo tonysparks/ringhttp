@@ -1,0 +1,550 @@
+// HTTP/2 end-to-end tests for ringhttp.
+//
+// Tests the full request/response cycle over h2c (cleartext HTTP/2) using
+// raw sockets and hand-encoded HPACK.  The server is started once for all
+// tests in this file.
+//
+// Run with:  litac test -file test/http2_e2e_test.lita
+
+import "std/libc"
+import "std/assert"
+import "std/mem"
+import "std/thread"
+import "std/thread/barrier"
+import "std/string"
+import "std/string/builder"
+import "std/net/posix_socket"
+import "http_ring"
+
+@foreign
+func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
+
+// ---------------------------------------------------------------------------
+// Test server port (separate from main_test.lita to avoid conflicts)
+// ---------------------------------------------------------------------------
+
+const H2E2E_PORT: u16 = 9393_u16
+
+// ---------------------------------------------------------------------------
+// Route handlers
+// ---------------------------------------------------------------------------
+
+func H2HelloHandler(ctx: *RequestHandlerContext) : i32 {
+    ctx.response.status = 200
+    ctx.response.type   = ResponseType.BODY
+    ctx.response.body.append("hello")
+    return 1
+}
+
+func H2EchoBodyHandler(ctx: *RequestHandlerContext) : i32 {
+    var req = ctx.request
+    ctx.response.status = 200
+    ctx.response.type   = ResponseType.BODY
+    ctx.response.body.appendStrn(req.body.buffer, req.body.length)
+    return 1
+}
+
+func H2JsonHandler(ctx: *RequestHandlerContext) : i32 {
+    ctx.response.status = 200
+    ctx.response.type   = ResponseType.BODY
+    ctx.response.addHeaderStr("content-type", "application/json")
+    ctx.response.body.append("{\"ok\":true}")
+    return 1
+}
+
+// ---------------------------------------------------------------------------
+// Server — started once for all tests
+// ---------------------------------------------------------------------------
+
+struct H2E2ETestServer {
+    config:  HttpConfig
+    barrier: Barrier
+}
+
+// Module-level globals so their addresses are stable for the server thread.
+var gServer: H2E2ETestServer
+var gServerReady = false
+
+func H2E2EServerThread(arg: *void) : i32 {
+    var ts = arg as (*H2E2ETestServer)
+    var server = HttpServer{}
+    server.init(&ts.config)
+    server.addHttpController(HttpMethod.GET,  "/hello", null,
+        HttpController{.callback = H2HelloHandler})
+    server.addHttpController(HttpMethod.POST, "/echo",  null,
+        HttpController{.callback = H2EchoBodyHandler})
+    server.addHttpController(HttpMethod.GET,  "/json",  null,
+        HttpController{.callback = H2JsonHandler})
+    ts.barrier.wait()
+    server.start()
+    defer server.close()
+    return 0
+}
+
+func ensureServer() {
+    if(gServerReady) {
+        return;
+    }
+
+    gServer.config = HttpConfig{
+        .allocator             = defaultAllocator,
+        .port                  = H2E2E_PORT,
+        .numThreads            = 2,
+        .maxPoolSize           = 32,
+        .keepAliveTimeoutInSec = 10,
+        .isLogEnabled          = false,
+    }
+    gServer.barrier.init(2)
+
+    var thread = Thread{}
+    assert(thread.create(H2E2EServerThread, &gServer) == ThreadStatus.SUCCESS)
+    gServer.barrier.wait()
+    ThreadSleepMSec(50)  // let the listen socket bind
+    gServerReady = true
+}
+
+// ---------------------------------------------------------------------------
+// Raw socket helpers
+// ---------------------------------------------------------------------------
+
+func h2Connect() : i32 {
+    var fd = socket(AF_INET, SOCK_STREAM, 0)
+    if(fd < 0) { return -1 }
+
+    var addr: sockaddr_in
+    memset(&addr, 0, sizeof(:sockaddr_in))
+    addr.sin_family = AF_INET
+    addr.sin_port   = htons(H2E2E_PORT)
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+    if(connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) < 0) {
+        close(fd)
+        return -1
+    }
+    return fd
+}
+
+func h2WriteAll(fd: i32, buf: *const char, n: i32) : bool {
+    var sent = 0
+    while(sent < n) {
+        var r = send(fd, (buf + sent) as (*void), (n - sent) as (usize), 0)
+        if(r <= 0) { return false }
+        sent += r as (i32)
+    }
+    return true
+}
+
+func h2ReadAtLeast(fd: i32, buf: *char, minBytes: i32, bufSize: i32) : i32 {
+    var total = 0
+    while(total < minBytes && total < bufSize) {
+        var r = recv(fd, (buf + total) as (*void), (bufSize - total) as (usize), 0)
+        if(r <= 0) { break }
+        total += r as (i32)
+    }
+    return total
+}
+
+// ---------------------------------------------------------------------------
+// Frame encoding helpers
+// ---------------------------------------------------------------------------
+
+func h2WriteFrameHdr(buf: *char, length: i32, frameType: i32, flags: i32, streamId: u32) {
+    buf[0] = ((length   >> 16) & 0xFF) as (char)
+    buf[1] = ((length   >>  8) & 0xFF) as (char)
+    buf[2] =  (length          & 0xFF) as (char)
+    buf[3] = (frameType        & 0xFF) as (char)
+    buf[4] = (flags            & 0xFF) as (char)
+    buf[5] = ((streamId >> 24) & 0x7F) as (char)
+    buf[6] = ((streamId >> 16) & 0xFF) as (char)
+    buf[7] = ((streamId >>  8) & 0xFF) as (char)
+    buf[8] =  (streamId        & 0xFF) as (char)
+}
+
+// HPACK integer with a given prefix-bit width and first-byte mask.
+func hpackWriteInt(val: i32, prefixBits: i32, firstBytePrefix: i32, out: *StringBuilder) {
+    var maxFirst = (1 << prefixBits) - 1
+    if(val < maxFirst) {
+        var b = (firstBytePrefix | val) as (char)
+        out.appendStrn(&b, 1)
+        return;
+    }
+    var b = (firstBytePrefix | maxFirst) as (char)
+    out.appendStrn(&b, 1)
+    val -= maxFirst
+    while(val > 127) {
+        var nb = ((val & 0x7f) | 0x80) as (char)
+        out.appendStrn(&nb, 1)
+        val >>= 7
+    }
+    var last = val as (char)
+    out.appendStrn(&last, 1)
+}
+
+// HPACK string literal — length-prefixed, no Huffman.
+func hpackWriteStr(s: String, out: *StringBuilder) {
+    hpackWriteInt(s.length, 7, 0x00, out)
+    if(s.length > 0) {
+        out.appendStrn(s.buffer, s.length)
+    }
+}
+
+// Indexed header field (RFC 7541 §6.1).
+func hpackIndexed(idx: i32, out: *StringBuilder) {
+    hpackWriteInt(idx, 7, 0x80, out)
+}
+
+// Literal without indexing, indexed name (RFC 7541 §6.2.2).
+func hpackLiteralName(nameIdx: i32, value: String, out: *StringBuilder) {
+    hpackWriteInt(nameIdx, 4, 0x00, out)
+    hpackWriteStr(value, out)
+}
+
+// Build minimal HPACK block for a GET request.
+// Static indices: 2=:method GET, 4=:path /, 6=:scheme http
+func buildGetHpack(path: String, out: *StringBuilder) {
+    hpackIndexed(2, out)             // :method: GET
+    hpackLiteralName(4, path, out)   // :path: <path>  (name index 4)
+    hpackIndexed(6, out)             // :scheme: http
+}
+
+// Build minimal HPACK block for a POST request.
+func buildPostHpack(path: String, out: *StringBuilder) {
+    hpackIndexed(3, out)             // :method: POST
+    hpackLiteralName(4, path, out)   // :path: <path>
+    hpackIndexed(6, out)             // :scheme: http
+}
+
+// Send a HEADERS frame.
+func sendHeadersFrame(fd: i32, streamId: u32, hpack: *StringBuilder, endStream: bool) : bool {
+    var flags = 0x04  // END_HEADERS
+    if(endStream) { flags |= 0x01 }
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, hpack.length, 0x01, flags, streamId)
+    return h2WriteAll(fd, hdr, 9) && h2WriteAll(fd, hpack.buffer, hpack.length)
+}
+
+// Send a DATA frame.
+func sendDataFrame(fd: i32, streamId: u32, data: *const char, dataLen: i32, endStream: bool) : bool {
+    var flags = 0
+    if(endStream) { flags = 0x01 }
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, dataLen, 0x00, flags, streamId)
+    if(!h2WriteAll(fd, hdr, 9)) { return false }
+    if(dataLen > 0) { return h2WriteAll(fd, data, dataLen) }
+    return true
+}
+
+// Send an empty SETTINGS frame.
+func sendSettingsFrame(fd: i32) : bool {
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, 0, 0x04, 0x00, 0_u32)
+    return h2WriteAll(fd, hdr, 9)
+}
+
+// Send a SETTINGS ACK.
+func sendSettingsAck(fd: i32) : bool {
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, 0, 0x04, 0x01, 0_u32)
+    return h2WriteAll(fd, hdr, 9)
+}
+
+// Send a PING frame (8-byte payload).
+func sendPingFrame(fd: i32, payload: *const char) : bool {
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, 8, 0x06, 0x00, 0_u32)
+    return h2WriteAll(fd, hdr, 9) && h2WriteAll(fd, payload, 8)
+}
+
+// ---------------------------------------------------------------------------
+// Frame decoding helpers
+// ---------------------------------------------------------------------------
+
+struct H2Frame {
+    frameType: i32
+    flags:     i32
+    streamId:  u32
+    length:    i32
+    payload:   [8192]char
+}
+
+func readFrame(fd: i32, out: *H2Frame) : bool {
+    var hdr: [9]char
+    var n = h2ReadAtLeast(fd, hdr, 9, 9)
+    if(n < 9) { return false }
+
+    out.length    = ((hdr[0] as (i32) & 0xFF) << 16) |
+                    ((hdr[1] as (i32) & 0xFF) <<  8) |
+                     (hdr[2] as (i32) & 0xFF)
+    out.frameType =   hdr[3] as (i32) & 0xFF
+    out.flags     =   hdr[4] as (i32) & 0xFF
+    out.streamId  = (((hdr[5] as (u32)) << 24) |
+                     ((hdr[6] as (u32)) << 16) |
+                     ((hdr[7] as (u32)) <<  8) |
+                      (hdr[8] as (u32))) & 0x7FFFFFFF_u32
+
+    if(out.length > 0) {
+        if(out.length > 8192) { return false }
+        var got = h2ReadAtLeast(fd, out.payload, out.length, out.length)
+        if(got < out.length) { return false }
+    }
+    return true
+}
+
+// Read frames, skipping WINDOW_UPDATE (0x8) and SETTINGS (0x4),
+// until a frame of wantType arrives or we exhaust retries.
+func readNextFrame(fd: i32, wantType: i32, out: *H2Frame) : bool {
+    for(var tries = 0; tries < 16; tries += 1) {
+        if(!readFrame(fd, out)) { return false }
+        if(out.frameType == 0x04) {       // SETTINGS
+            if((out.flags & 0x01) == 0) {
+                sendSettingsAck(fd)       // ACK server SETTINGS
+            }
+            continue
+        }
+        if(out.frameType == 0x08) {       // WINDOW_UPDATE — flow-control noise
+            continue
+        }
+        return out.frameType == wantType
+    }
+    return false
+}
+
+// ---------------------------------------------------------------------------
+// HPACK response status decoder
+// ---------------------------------------------------------------------------
+//
+// The server uses indexed representations for known status codes
+// (0x80|idx where idx 8-14 = 200,204,206,304,400,404,500), and
+// literal-without-indexing (first byte 0x08) for everything else.
+
+func decodeResponseStatus(hpack: *const char, hpackLen: i32) : i32 {
+    if(hpackLen < 1) { return -1 }
+    var first = hpack[0] as (i32) & 0xFF
+
+    // Indexed representation: bit 7 set
+    if(first & 0x80) {
+        var idx = first & 0x7F
+        if(idx == 8)  { return 200 }
+        if(idx == 9)  { return 204 }
+        if(idx == 10) { return 206 }
+        if(idx == 11) { return 304 }
+        if(idx == 12) { return 400 }
+        if(idx == 13) { return 404 }
+        if(idx == 14) { return 500 }
+        return -1
+    }
+
+    // Literal without indexing, name index 8 (:status)
+    if(first == 0x08 && hpackLen >= 3) {
+        var strLen = hpack[1] as (i32) & 0x7F   // no Huffman, 7-bit prefix
+        if(2 + strLen > hpackLen || strLen < 1) { return -1 }
+        var status = 0
+        for(var i = 0; i < strLen; i += 1) {
+            var c = hpack[2 + i] as (i32) & 0xFF
+            if(c < 0x30 || c > 0x39) { return -1 }
+            status = status * 10 + (c - 0x30)
+        }
+        return status
+    }
+
+    return -1
+}
+
+// ---------------------------------------------------------------------------
+// Handshake — send preface + SETTINGS, absorb server SETTINGS + ACK,
+//             respond with SETTINGS ACK.
+// ---------------------------------------------------------------------------
+
+func doHandshake(fd: i32) : bool {
+    const preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    if(!h2WriteAll(fd, preface, 24)) { return false }
+    if(!sendSettingsFrame(fd))        { return false }
+
+    // Read at least 18 bytes: server SETTINGS (9) + SETTINGS ACK (9)
+    var buf: [512]char
+    var n = h2ReadAtLeast(fd, buf, 18, 512)
+    if(n < 18) { return false }
+
+    // Validate server SETTINGS at offset 0
+    if((buf[3] as (i32) & 0xFF) != 0x04) { return false }
+    if((buf[4] as (i32) & 0xFF) != 0x00) { return false }
+
+    // Validate SETTINGS ACK at offset 9
+    if((buf[12] as (i32) & 0xFF) != 0x04) { return false }
+    if((buf[13] as (i32) & 0xFF) != 0x01) { return false }
+
+    return sendSettingsAck(fd)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+@test("http2_e2e_get_hello")
+func testH2GetHello() {
+    ensureServer()
+
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    assert(doHandshake(fd))
+
+    // GET /hello — END_HEADERS | END_STREAM in one HEADERS frame
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    buildGetHpack($"/hello", &hpack)
+    assert(sendHeadersFrame(fd, 1_u32, &hpack, true))
+
+    var frame = H2Frame{}
+    assert(readNextFrame(fd, 0x01, &frame))   // HEADERS
+    assert(frame.streamId == 1_u32)
+    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+
+    assert(readNextFrame(fd, 0x00, &frame))   // DATA
+    assert(frame.streamId == 1_u32)
+    assert(frame.length == 5)
+    assert(memcmp(frame.payload, "hello" as (*const void), 5_usize) == 0)
+    assert(frame.flags & 0x01)                // END_STREAM
+
+    printf("http2 GET /hello: PASS\n")
+}
+
+@test("http2_e2e_not_found")
+func testH2NotFound() {
+    ensureServer()
+
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    assert(doHandshake(fd))
+
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    buildGetHpack($"/no-such-route", &hpack)
+    assert(sendHeadersFrame(fd, 1_u32, &hpack, true))
+
+    var frame = H2Frame{}
+    assert(readNextFrame(fd, 0x01, &frame))
+    assert(frame.streamId == 1_u32)
+    assert(decodeResponseStatus(frame.payload, frame.length) == 404)
+
+    printf("http2 GET /no-such-route: PASS (404)\n")
+}
+
+@test("http2_e2e_post_with_body")
+func testH2PostWithBody() {
+    ensureServer()
+
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    assert(doHandshake(fd))
+
+    // HEADERS without END_STREAM — body follows
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    buildPostHpack($"/echo", &hpack)
+    assert(sendHeadersFrame(fd, 1_u32, &hpack, false))
+
+    // DATA with END_STREAM
+    const body = "ping"
+    assert(sendDataFrame(fd, 1_u32, body, 4, true))
+
+    var frame = H2Frame{}
+    assert(readNextFrame(fd, 0x01, &frame))
+    assert(frame.streamId == 1_u32)
+    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+
+    assert(readNextFrame(fd, 0x00, &frame))
+    assert(frame.streamId == 1_u32)
+    assert(frame.length == 4)
+    assert(memcmp(frame.payload, "ping" as (*const void), 4_usize) == 0)
+
+    printf("http2 POST /echo: PASS (body echoed)\n")
+}
+
+@test("http2_e2e_ping_ack")
+func testH2PingAck() {
+    ensureServer()
+
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    assert(doHandshake(fd))
+
+    const pingData = "TESTPING"
+    assert(sendPingFrame(fd, pingData))
+
+    var frame = H2Frame{}
+    assert(readNextFrame(fd, 0x06, &frame))   // PING
+    assert(frame.flags & 0x01)                // ACK flag
+    assert(frame.length == 8)
+    assert(memcmp(frame.payload, pingData as (*const void), 8_usize) == 0)
+
+    printf("http2 PING ACK: PASS\n")
+}
+
+@test("http2_e2e_multiple_streams")
+func testH2MultipleStreams() {
+    ensureServer()
+
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    assert(doHandshake(fd))
+
+    // Stream 1: GET /hello
+    var hpack1 = StringBuilderInit(64, defaultAllocator)
+    buildGetHpack($"/hello", &hpack1)
+    assert(sendHeadersFrame(fd, 1_u32, &hpack1, true))
+
+    var frame = H2Frame{}
+    assert(readNextFrame(fd, 0x01, &frame))
+    assert(frame.streamId == 1_u32)
+    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+    assert(readNextFrame(fd, 0x00, &frame))
+    assert(frame.streamId == 1_u32)
+
+    // Stream 3: GET /json  (client streams are odd and strictly increasing)
+    var hpack2 = StringBuilderInit(64, defaultAllocator)
+    buildGetHpack($"/json", &hpack2)
+    assert(sendHeadersFrame(fd, 3_u32, &hpack2, true))
+
+    assert(readNextFrame(fd, 0x01, &frame))
+    assert(frame.streamId == 3_u32)
+    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+    assert(readNextFrame(fd, 0x00, &frame))
+    assert(frame.streamId == 3_u32)
+
+    printf("http2 multiple streams (1 and 3): PASS\n")
+}
+
+@test("http2_e2e_headers_flags")
+func testH2HeadersFlags() {
+    ensureServer()
+
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    assert(doHandshake(fd))
+
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    buildGetHpack($"/json", &hpack)
+    assert(sendHeadersFrame(fd, 1_u32, &hpack, true))
+
+    var frame = H2Frame{}
+
+    // HEADERS must have END_HEADERS (0x4)
+    assert(readNextFrame(fd, 0x01, &frame))
+    assert(frame.flags & 0x04)
+    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+
+    // DATA must have END_STREAM (0x1)
+    assert(readNextFrame(fd, 0x00, &frame))
+    assert(frame.flags & 0x01)
+
+    printf("http2 frame flags: PASS\n")
+}

@@ -124,7 +124,7 @@ internal func (this: *SessionContext) begin(
     this.bodyIndex = 0
 
     this.protocolVersion = ProtocolVersion.UNKNOWN
-    this.http2 = Http2Connection{}
+    memset(&this.http2, 0, sizeof(:Http2Connection))
 
     this.state = SessionState.CONNECTED
 

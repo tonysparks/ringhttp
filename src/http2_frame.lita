@@ -153,3 +153,64 @@ public func http2WriteGoaway(buf: *StringBuilder, lastStreamId: u32, errorCode: 
     buf.appendStrn(hdr as (*const char), 9)
     buf.appendStrn(payload as (*const char), 8)
 }
+
+// Append a HEADERS frame with a pre-encoded HPACK payload.
+// flags should include HTTP2_FLAG_END_HEADERS and optionally HTTP2_FLAG_END_STREAM.
+public func http2WriteHeadersFrame(
+    buf:        *StringBuilder,
+    streamId:   u32,
+    hpackData:  *const char,
+    hpackLen:   i32,
+    flags:      i32
+) {
+    var hdr: [9]u8;
+    serializeHeader(hdr, hpackLen as (u32), HTTP2_FRAME_HEADERS, flags, streamId)
+    buf.appendStrn(hdr as (*const char), 9)
+    if(hpackLen > 0) {
+        buf.appendStrn(hpackData, hpackLen)
+    }
+}
+
+// Append a DATA frame.  Set endStream=true to include END_STREAM flag.
+public func http2WriteDataFrame(
+    buf:       *StringBuilder,
+    streamId:  u32,
+    data:      *const char,
+    dataLen:   i32,
+    endStream: bool
+) {
+    var flags = endStream ? HTTP2_FLAG_END_STREAM : 0
+    var hdr: [9]u8;
+    serializeHeader(hdr, dataLen as (u32), HTTP2_FRAME_DATA, flags, streamId)
+    buf.appendStrn(hdr as (*const char), 9)
+    if(dataLen > 0) {
+        buf.appendStrn(data, dataLen)
+    }
+}
+
+// Append a RST_STREAM frame.
+public func http2WriteRstStream(buf: *StringBuilder, streamId: u32, errorCode: i32) {
+    var payload: [4]u8;
+    var ec = errorCode as (u32)
+    payload[0] = ((ec >> 24) & 0xFF) as (u8)
+    payload[1] = ((ec >> 16) & 0xFF) as (u8)
+    payload[2] = ((ec >>  8) & 0xFF) as (u8)
+    payload[3] =  (ec        & 0xFF) as (u8)
+    var hdr: [9]u8;
+    serializeHeader(hdr, 4_u32, HTTP2_FRAME_RST_STREAM, 0, streamId)
+    buf.appendStrn(hdr as (*const char), 9)
+    buf.appendStrn(payload as (*const char), 4)
+}
+
+// Append a WINDOW_UPDATE frame (connection-level if streamId==0).
+public func http2WriteWindowUpdate(buf: *StringBuilder, streamId: u32, increment: u32) {
+    var payload: [4]u8;
+    payload[0] = ((increment >> 24) & 0x7F) as (u8)
+    payload[1] = ((increment >> 16) & 0xFF) as (u8)
+    payload[2] = ((increment >>  8) & 0xFF) as (u8)
+    payload[3] =  (increment        & 0xFF) as (u8)
+    var hdr: [9]u8;
+    serializeHeader(hdr, 4_u32, HTTP2_FRAME_WINDOW_UPDATE, 0, streamId)
+    buf.appendStrn(hdr as (*const char), 9)
+    buf.appendStrn(payload as (*const char), 4)
+}
