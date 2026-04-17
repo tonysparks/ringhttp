@@ -22,6 +22,7 @@ public enum Http2StreamState {
     IDLE,               // slot available
     OPEN,               // HEADERS received, waiting for DATA or END_STREAM
     HALF_CLOSED_REMOTE, // END_STREAM received from client, ready to dispatch
+    SEND_BLOCKED,       // response partially sent; waiting for WINDOW_UPDATE
     CLOSED,             // response sent, slot can be reused
 }
 
@@ -38,23 +39,32 @@ public struct Http2Stream {
 
     // Accumulates DATA payload bytes.
     bodyBuf:     StringBuilder
+
+    // Unsent response body when blocked by flow control.
+    // pendingOffset tracks how many bytes have already been sent.
+    pendingResponse: StringBuilder
+    pendingOffset:   i32
 }
 
 public func (this: *Http2Stream) open(streamId: u32, allocator: *Allocator, initWindow: i32) {
-    this.streamId   = streamId
-    this.state      = Http2StreamState.OPEN
-    this.sendWindow = initWindow
-    this.endHeaders = false
+    this.streamId      = streamId
+    this.state         = Http2StreamState.OPEN
+    this.sendWindow    = initWindow
+    this.endHeaders    = false
+    this.pendingOffset = 0
 
     this.headerBlock.init(512, allocator)
     this.bodyBuf.init(1024, allocator)
+    this.pendingResponse.init(0, allocator)
 }
 
 public func (this: *Http2Stream) reset() {
-    this.streamId   = 0
-    this.state      = Http2StreamState.IDLE
-    this.sendWindow = 0
-    this.endHeaders = false
+    this.streamId      = 0
+    this.state         = Http2StreamState.IDLE
+    this.sendWindow    = 0
+    this.endHeaders    = false
+    this.pendingOffset = 0
     this.headerBlock.clear()
     this.bodyBuf.clear()
+    this.pendingResponse.clear()
 }

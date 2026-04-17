@@ -5,7 +5,7 @@
 //   - HEADERS / CONTINUATION frame accumulation
 //   - DATA frame accumulation
 //   - RST_STREAM and WINDOW_UPDATE handling
-//   - Signals readyStreamIdx when a stream has END_HEADERS + END_STREAM
+//   - Enqueues ready streams for concurrent dispatch
 //
 // All frame I/O is buffer-based: no socket calls inside this file.
 // Route dispatch is done by the worker after process() returns.
@@ -73,9 +73,11 @@ public struct Http2Connection {
     remoteMaxFrameSize:         i32
     remoteMaxConcurrentStreams: i32
 
-    // Stream index ready for dispatch after process() returns (-1 = none).
-    // The worker drains this after each process() call.
-    readyStreamIdx: i32
+    // Queue of stream indices ready for dispatch after process() returns.
+    // Circular buffer; empty when readyHead == readyTail.
+    readyQueue: [MAX_H2_STREAMS]i32
+    readyHead:  i32
+    readyTail:  i32
 
     // When a HEADERS frame arrives we track the stream index here until
     // END_HEADERS is seen (CONTINUATION frames may follow).
@@ -90,7 +92,8 @@ public func (this: *Http2Connection) init(allocator: *Allocator) {
     this.remoteInitialWindowSize = H2_INITIAL_WINDOW_SIZE
     this.remoteMaxFrameSize      = H2_DEFAULT_MAX_FRAME_SIZE
     this.remoteMaxConcurrentStreams = 100
-    this.readyStreamIdx          = -1
+    this.readyHead               = 0
+    this.readyTail               = 0
     this.pendingHeadersIdx       = -1
 
     for(var i = 0; i < MAX_H2_STREAMS; i += 1) {
@@ -124,6 +127,25 @@ func (this: *Http2Connection) allocStream(streamId: u32) : i32 {
         }
     }
     return -1  // no free slot
+}
+
+public func (this: *Http2Connection) readyQueueEmpty() : bool {
+    return this.readyHead == this.readyTail
+}
+
+func (this: *Http2Connection) enqueueReady(idx: i32) {
+    var next = (this.readyTail + 1) % MAX_H2_STREAMS
+    if(next != this.readyHead) {
+        this.readyQueue[this.readyTail] = idx
+        this.readyTail = next
+    }
+}
+
+public func (this: *Http2Connection) dequeueReady() : i32 {
+    if(this.readyQueueEmpty()) { return -1 }
+    var idx = this.readyQueue[this.readyHead]
+    this.readyHead = (this.readyHead + 1) % MAX_H2_STREAMS
+    return idx
 }
 
 public func (this: *Http2Connection) closeStream(idx: i32) {
@@ -198,12 +220,6 @@ public func (this: *Http2Connection) process(
 
         if(status != Status.OK) {
             return status
-        }
-
-        // If a stream is ready, stop processing frames and let the worker dispatch.
-        // The worker will call process() again after dispatch to drain remaining data.
-        if(this.readyStreamIdx >= 0) {
-            break
         }
     }
 
@@ -435,9 +451,9 @@ func (this: *Http2Connection) handleHeaders(
     if(hdr.flags & HTTP2_FLAG_END_HEADERS) {
         stream.endHeaders = true
         if(hdr.flags & HTTP2_FLAG_END_STREAM) {
-            // Request is complete — signal ready for dispatch
+            // Request is complete — enqueue for dispatch
             stream.state = Http2StreamState.HALF_CLOSED_REMOTE
-            this.readyStreamIdx = idx
+            this.enqueueReady(idx)
         }
         // else: waiting for DATA frames
     } else {
@@ -543,8 +559,8 @@ func (this: *Http2Connection) handleData(
     }
 
     if(hdr.flags & HTTP2_FLAG_END_STREAM) {
-        stream.state        = Http2StreamState.HALF_CLOSED_REMOTE
-        this.readyStreamIdx = idx
+        stream.state = Http2StreamState.HALF_CLOSED_REMOTE
+        this.enqueueReady(idx)
     }
 
     return Status.OK
@@ -569,9 +585,8 @@ func (this: *Http2Connection) handleRstStream(
     var idx = this.findStream(hdr.streamId)
     if(idx >= 0) {
         this.closeStream(idx)
-        if(this.readyStreamIdx == idx) {
-            this.readyStreamIdx = -1
-        }
+        // Any queued entry for this index will be skipped by the worker
+        // because closeStream sets state to IDLE.
     }
     return Status.OK
 }
@@ -610,14 +625,63 @@ func (this: *Http2Connection) handleWindowUpdate(
 
     if(hdr.streamId == 0) {
         this.sendWindow += increment as (i32)
+        this.flushBlockedStreams(writeBuf)
     } else {
         var idx = this.findStream(hdr.streamId)
         if(idx >= 0) {
             this.streams[idx].sendWindow += increment as (i32)
+            if(this.streams[idx].state == Http2StreamState.SEND_BLOCKED) {
+                if(this.flushPendingStream(&this.streams[idx], writeBuf)) {
+                    this.closeStream(idx)
+                }
+            }
         }
     }
 
     return Status.OK
+}
+
+// ---------------------------------------------------------------------------
+// Flow-control flush helpers
+// ---------------------------------------------------------------------------
+
+// Flush as much of stream.pendingResponse as both send windows allow.
+// Returns true when the stream is fully drained and END_STREAM has been sent.
+public func (this: *Http2Connection) flushPendingStream(
+    stream:   *Http2Stream,
+    writeBuf: *StringBuilder
+) : bool {
+    var remaining = stream.pendingResponse.length - stream.pendingOffset
+    var data = (stream.pendingResponse.buffer + stream.pendingOffset) as (*const char)
+
+    var canSend = stream.sendWindow
+    if(this.sendWindow < canSend) { canSend = this.sendWindow }
+    if(canSend <= 0) { return false }
+    if(canSend > remaining) { canSend = remaining }
+
+    var fullyDone = canSend >= remaining
+    http2WriteDataChunked(writeBuf, stream.streamId, data, canSend,
+        this.remoteMaxFrameSize, fullyDone)
+
+    stream.sendWindow  -= canSend
+    this.sendWindow    -= canSend
+    stream.pendingOffset += canSend
+
+    return fullyDone
+}
+
+// Scan all SEND_BLOCKED streams and flush whatever the windows now allow.
+// Called after any WINDOW_UPDATE is processed.
+public func (this: *Http2Connection) flushBlockedStreams(writeBuf: *StringBuilder) {
+    for(var i = 0; i < MAX_H2_STREAMS; i += 1) {
+        if(this.streams[i].state == Http2StreamState.SEND_BLOCKED) {
+            if(this.flushPendingStream(&this.streams[i], writeBuf)) {
+                this.closeStream(i)
+            }
+        }
+        // Stop if the connection window is exhausted
+        if(this.sendWindow <= 0) { break }
+    }
 }
 
 // ---------------------------------------------------------------------------

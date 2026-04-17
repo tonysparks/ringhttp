@@ -621,6 +621,17 @@ func writeStringLit(s: String, out: *StringBuilder) {
     }
 }
 
+// Like writeStringLit but lowercases ASCII letters in-place (RFC 7540 §8.1.2).
+func writeStringLitLower(s: String, out: *StringBuilder) {
+    writeIntEnc(s.length, 7, 0, out)
+    for(var i = 0; i < s.length; i += 1) {
+        var c = s.buffer[i] as (i32)
+        if(c >= 0x41 && c <= 0x5A) { c |= 0x20 }
+        var b = c as (char)
+        out.appendStrn(&b, 1)
+    }
+}
+
 public func (this: *Hpack) encodeStatus(statusCode: i32, out: *StringBuilder) {
     // Static entries 8-14: :status 200, 204, 206, 304, 400, 404, 500
     if(statusCode == 200) { var b = (0x80 | 8) as (char);  out.appendStrn(&b, 1); return; }
@@ -660,7 +671,7 @@ public func (this: *Hpack) encodeResponse(response: *HttpResponse, out: *StringB
         } else {
             var zero = 0x00 as (char)
             out.appendStrn(&zero, 1)
-            writeStringLit(h.name, out)
+            writeStringLitLower(h.name, out)
         }
         writeStringLit(h.values, out)
     }

@@ -110,6 +110,11 @@ public struct HttpConfig {
 
     // command line handling
     disableSignal: bool = false
+
+    // TLS — leave null to run plain-text (h1/h2c).
+    // Set both to enable TLS; ALPN will negotiate h2 or http/1.1.
+    tlsCertFile: *const char = null
+    tlsKeyFile:  *const char = null
 }
 
 

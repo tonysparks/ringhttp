@@ -52,6 +52,18 @@ func H2JsonHandler(ctx: *RequestHandlerContext) : i32 {
     return 1
 }
 
+// Returns 20 KB of 'A' — forces at least two DATA frames with the default 16 KB max frame size.
+const H2_LARGE_BODY_SIZE: i32 = 20480
+
+func H2LargeHandler(ctx: *RequestHandlerContext) : i32 {
+    ctx.response.status = 200
+    ctx.response.type   = ResponseType.BODY
+    for(var i = 0; i < H2_LARGE_BODY_SIZE; i += 1) {
+        ctx.response.body.appendChar('A')
+    }
+    return 1
+}
+
 // ---------------------------------------------------------------------------
 // Server — started once for all tests
 // ---------------------------------------------------------------------------
@@ -75,6 +87,8 @@ func H2E2EServerThread(arg: *void) : i32 {
         HttpController{.callback = H2EchoBodyHandler})
     server.addHttpController(HttpMethod.GET,  "/json",  null,
         HttpController{.callback = H2JsonHandler})
+    server.addHttpController(HttpMethod.GET,  "/large", null,
+        HttpController{.callback = H2LargeHandler})
     ts.barrier.wait()
     server.start()
     defer server.close()
@@ -241,6 +255,33 @@ func sendSettingsFrame(fd: i32) : bool {
     return h2WriteAll(fd, hdr, 9)
 }
 
+// Send a SETTINGS frame with a single INITIAL_WINDOW_SIZE parameter.
+func sendSettingsWindowSize(fd: i32, windowSize: i32) : bool {
+    // 6-byte parameter: id (2 bytes) + value (4 bytes)
+    var payload: [6]char
+    payload[0] = 0_i8          // SETTINGS_INITIAL_WINDOW_SIZE id high byte
+    payload[1] = 4_i8          // SETTINGS_INITIAL_WINDOW_SIZE id low byte (0x0004)
+    payload[2] = ((windowSize >> 24) & 0xFF) as (i8)
+    payload[3] = ((windowSize >> 16) & 0xFF) as (i8)
+    payload[4] = ((windowSize >>  8) & 0xFF) as (i8)
+    payload[5] =  (windowSize        & 0xFF) as (i8)
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, 6, 0x04, 0x00, 0_u32)
+    return h2WriteAll(fd, hdr, 9) && h2WriteAll(fd, payload, 6)
+}
+
+// Send a WINDOW_UPDATE frame.
+func sendWindowUpdate(fd: i32, streamId: u32, increment: i32) : bool {
+    var payload: [4]char
+    payload[0] = ((increment >> 24) & 0x7F) as (i8)
+    payload[1] = ((increment >> 16) & 0xFF) as (i8)
+    payload[2] = ((increment >>  8) & 0xFF) as (i8)
+    payload[3] =  (increment        & 0xFF) as (i8)
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, 4, 0x08, 0x00, streamId)
+    return h2WriteAll(fd, hdr, 9) && h2WriteAll(fd, payload, 4)
+}
+
 // Send a SETTINGS ACK.
 func sendSettingsAck(fd: i32) : bool {
     var hdr: [9]char
@@ -264,7 +305,7 @@ struct H2Frame {
     flags:     i32
     streamId:  u32
     length:    i32
-    payload:   [8192]char
+    payload:   [16384]char
 }
 
 func readFrame(fd: i32, out: *H2Frame) : bool {
@@ -283,7 +324,7 @@ func readFrame(fd: i32, out: *H2Frame) : bool {
                       (hdr[8] as (u32))) & 0x7FFFFFFF_u32
 
     if(out.length > 0) {
-        if(out.length > 8192) { return false }
+        if(out.length > 16384) { return false }
         var got = h2ReadAtLeast(fd, out.payload, out.length, out.length)
         if(got < out.length) { return false }
     }
@@ -405,8 +446,6 @@ func testH2GetHello() {
     assert(frame.length == 5)
     assert(memcmp(frame.payload, "hello" as (*const void), 5_usize) == 0)
     assert(frame.flags & 0x01)                // END_STREAM
-
-    printf("http2 GET /hello: PASS\n")
 }
 
 @test("http2_e2e_not_found")
@@ -427,8 +466,6 @@ func testH2NotFound() {
     assert(readNextFrame(fd, 0x01, &frame))
     assert(frame.streamId == 1_u32)
     assert(decodeResponseStatus(frame.payload, frame.length) == 404)
-
-    printf("http2 GET /no-such-route: PASS (404)\n")
 }
 
 @test("http2_e2e_post_with_body")
@@ -459,8 +496,6 @@ func testH2PostWithBody() {
     assert(frame.streamId == 1_u32)
     assert(frame.length == 4)
     assert(memcmp(frame.payload, "ping" as (*const void), 4_usize) == 0)
-
-    printf("http2 POST /echo: PASS (body echoed)\n")
 }
 
 @test("http2_e2e_ping_ack")
@@ -481,8 +516,6 @@ func testH2PingAck() {
     assert(frame.flags & 0x01)                // ACK flag
     assert(frame.length == 8)
     assert(memcmp(frame.payload, pingData as (*const void), 8_usize) == 0)
-
-    printf("http2 PING ACK: PASS\n")
 }
 
 @test("http2_e2e_multiple_streams")
@@ -517,8 +550,6 @@ func testH2MultipleStreams() {
     assert(decodeResponseStatus(frame.payload, frame.length) == 200)
     assert(readNextFrame(fd, 0x00, &frame))
     assert(frame.streamId == 3_u32)
-
-    printf("http2 multiple streams (1 and 3): PASS\n")
 }
 
 @test("http2_e2e_headers_flags")
@@ -545,6 +576,160 @@ func testH2HeadersFlags() {
     // DATA must have END_STREAM (0x1)
     assert(readNextFrame(fd, 0x00, &frame))
     assert(frame.flags & 0x01)
+}
 
-    printf("http2 frame flags: PASS\n")
+@test("http2_e2e_large_body")
+func testH2LargeBody() {
+    ensureServer()
+
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    assert(doHandshake(fd))
+
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    buildGetHpack($"/large", &hpack)
+    assert(sendHeadersFrame(fd, 1_u32, &hpack, true))
+
+    // Read HEADERS frame (status 200)
+    var frame = H2Frame{}
+    assert(readNextFrame(fd, 0x01, &frame))
+    assert(frame.streamId == 1_u32)
+    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+
+    // Accumulate all DATA frames until END_STREAM; verify total byte count
+    var totalBytes = 0
+    while(true) {
+        assert(readNextFrame(fd, 0x00, &frame))
+        assert(frame.streamId == 1_u32)
+        // Each chunk must be <= default max frame size (16384)
+        assert(frame.length <= 16384)
+        totalBytes += frame.length
+        if(frame.flags & 0x01) {
+            break  // END_STREAM
+        }
+    }
+    assert(totalBytes == H2_LARGE_BODY_SIZE)
+}
+
+// Handshake where the client advertises a small INITIAL_WINDOW_SIZE.
+// Returns true on success.
+func doHandshakeSmallWindow(fd: i32, windowSize: i32) : bool {
+    const preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    if(!h2WriteAll(fd, preface, 24)) { return false }
+    if(!sendSettingsWindowSize(fd, windowSize)) { return false }
+
+    var buf: [512]char
+    var n = h2ReadAtLeast(fd, buf, 18, 512)
+    if(n < 18) { return false }
+
+    if((buf[3] as (i32) & 0xFF) != 0x04) { return false }
+    if((buf[4] as (i32) & 0xFF) != 0x00) { return false }
+    if((buf[12] as (i32) & 0xFF) != 0x04) { return false }
+    if((buf[13] as (i32) & 0xFF) != 0x01) { return false }
+
+    return sendSettingsAck(fd)
+}
+
+@test("http2_e2e_flow_control")
+func testH2FlowControl() {
+    ensureServer()
+
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    // Advertise an initial stream window of 1024 bytes — server must respect it.
+    const SMALL_WINDOW: i32 = 1024
+    assert(doHandshakeSmallWindow(fd, SMALL_WINDOW))
+
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    buildGetHpack($"/large", &hpack)
+    assert(sendHeadersFrame(fd, 1_u32, &hpack, true))
+
+    // Read HEADERS (status 200)
+    var frame = H2Frame{}
+    assert(readNextFrame(fd, 0x01, &frame))
+    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+
+    // Drain DATA frames, sending WINDOW_UPDATEs to keep flow going.
+    // Each DATA frame must be <= SMALL_WINDOW (the stream's send window).
+    var totalBytes = 0
+    var grantedExtra = 0
+    while(true) {
+        assert(readNextFrame(fd, 0x00, &frame))
+        assert(frame.streamId == 1_u32)
+        assert(frame.length <= SMALL_WINDOW)
+        totalBytes += frame.length
+        if(frame.flags & 0x01) {
+            break  // END_STREAM
+        }
+        // Open both stream and connection windows so server can continue
+        assert(sendWindowUpdate(fd, 1_u32, frame.length))
+        assert(sendWindowUpdate(fd, 0_u32, frame.length))
+        grantedExtra += frame.length
+    }
+    assert(totalBytes == H2_LARGE_BODY_SIZE)
+}
+
+// Send two requests on streams 1 and 3 before reading any response.
+// Both must be dispatched from a single process() call and both responses
+// must arrive with their correct stream IDs.
+@test("http2_e2e_pipelined_requests")
+func testH2PipelinedRequests() {
+    ensureServer()
+
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    assert(doHandshake(fd))
+
+    // Stream 1: GET /hello  (END_STREAM in HEADERS)
+    var hpack1 = StringBuilderInit(64, defaultAllocator)
+    buildGetHpack($"/hello", &hpack1)
+    assert(sendHeadersFrame(fd, 1_u32, &hpack1, true))
+
+    // Stream 3: POST /echo  (HEADERS + DATA with END_STREAM)
+    var hpack2 = StringBuilderInit(64, defaultAllocator)
+    buildPostHpack($"/echo", &hpack2)
+    assert(sendHeadersFrame(fd, 3_u32, &hpack2, false))
+    assert(sendDataFrame(fd, 3_u32, "world", 5, true))
+
+    // Collect both responses regardless of arrival order.
+    var got1  = false
+    var got3  = false
+    var body1 = false
+    var body3 = false
+
+    var frame = H2Frame{}
+    for(var iter = 0; iter < 16 && !(got1 && got3); iter += 1) {
+        // Accept any frame type (pass a type that won't match so the loop reads one frame)
+        if(!readFrame(fd, &frame)) { break }
+        // Skip SETTINGS and WINDOW_UPDATE noise
+        if(frame.frameType == 0x04) { sendSettingsAck(fd); continue }
+        if(frame.frameType == 0x08) { continue }
+
+        if(frame.frameType == 0x01) {  // HEADERS
+            assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+            if(frame.streamId == 1_u32 && (frame.flags & 0x01)) { got1 = true }
+            if(frame.streamId == 3_u32 && (frame.flags & 0x01)) { got3 = true }
+        } else if(frame.frameType == 0x00) {  // DATA
+            if(frame.streamId == 1_u32) {
+                assert(frame.length == 5)
+                assert(memcmp(frame.payload, "hello" as (*const void), 5_usize) == 0)
+                if(frame.flags & 0x01) { got1 = true; body1 = true }
+            } else if(frame.streamId == 3_u32) {
+                assert(frame.length == 5)
+                assert(memcmp(frame.payload, "world" as (*const void), 5_usize) == 0)
+                if(frame.flags & 0x01) { got3 = true; body3 = true }
+            }
+        }
+    }
+
+    assert(got1)
+    assert(got3)
+    assert(body1)
+    assert(body3)
 }

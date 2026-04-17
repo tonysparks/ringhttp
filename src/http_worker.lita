@@ -794,11 +794,17 @@ internal func (this: *WorkerThread) processHttp2Data(
         return status
     }
 
-    // Dispatch any stream that became ready
-    if(session.http2.readyStreamIdx >= 0) {
-        var streamIdx = session.http2.readyStreamIdx
-        session.http2.readyStreamIdx = -1
+    // Dispatch every stream that became ready during this read.
+    while(!session.http2.readyQueueEmpty()) {
+        var streamIdx = session.http2.dequeueReady()
+        // Skip streams reset by RST_STREAM before we got here.
+        if(session.http2.streams[streamIdx].state == Http2StreamState.IDLE) {
+            continue
+        }
         status = this.http2DispatchStream(session, streamIdx)
+        if(status != Status.OK) {
+            break
+        }
     }
 
     return status
@@ -812,7 +818,7 @@ internal func (this: *WorkerThread) http2DispatchStream(
     streamIdx: i32
 ) : Status {
     var h2 = &session.http2
-    assert(streamIdx >= 0 && streamIdx < h2.streamCount)
+    assert(streamIdx >= 0 && streamIdx < MAX_H2_STREAMS)
 
     var stream = &h2.streams[streamIdx]
     var allocator = &session.requestAllocator.allocator
@@ -917,92 +923,90 @@ internal func (this: *WorkerThread) http2DispatchStream(
     )
 
     // ---- Serialise response as H2 frames ----------------------------------
-    this.http2SerializeResponse(session, streamId)
+    this.http2SerializeResponse(session, streamIdx)
 
-    // Close the stream slot
-    h2.closeStream(streamIdx)
+    // Close the stream only if the full response was sent immediately.
+    // If blocked by flow control, the stream stays SEND_BLOCKED and will be
+    // closed by flushBlockedStreams once WINDOW_UPDATE arrives.
+    if(stream.state != Http2StreamState.SEND_BLOCKED) {
+        h2.closeStream(streamIdx)
+    }
 
     return Status.OK
 }
 
-// Serialise session.response into HEADERS + DATA frame(s) on the given streamId.
+// Serialise session.response into HEADERS + DATA frame(s) for stream at streamIdx.
+// Enforces both connection-level and stream-level send windows (RFC 7540 §6.9).
+// If the body exceeds the available window, the remainder is buffered in
+// stream.pendingResponse and stream.state is set to SEND_BLOCKED.
 internal func (this: *WorkerThread) http2SerializeResponse(
-    session:  *SessionContext,
-    streamId: u32
+    session:   *SessionContext,
+    streamIdx: i32
 ) {
+    var h2        = &session.http2
+    var stream    = &h2.streams[streamIdx]
+    var streamId  = stream.streamId
     var allocator = &session.requestAllocator.allocator
     var writeBuf  = &session.connection.writeBuffer
     var response  = &session.response
 
-    // Encode HPACK response headers into a temporary buffer
+    // Normalise FILE responses to BODY (no async read path yet)
+    if(response.type == ResponseType.FILE) {
+        response.status = 501
+        response.type   = ResponseType.BODY
+        response.body.clear()
+        response.body.append("File responses not yet supported over HTTP/2\n")
+        response.numberOfHeaders = 0
+    }
+
+    // Encode HPACK response headers
     var hpackBuf = StringBuilderInit(256, allocator)
+    h2.hpack.encodeResponse(response, &hpackBuf)
 
-    session.http2.hpack.encodeResponse(response, &hpackBuf)
-
-    var noBody = HttpStatusForbidsBody(session.request.method, response.status)
+    var noBody   = HttpStatusForbidsBody(session.request.method, response.status)
+    var bodyData = response.body.buffer
+    var bodyLen  = response.body.length
 
     if(response.type == ResponseType.BODY || response.type == ResponseType.NONE) {
-        var hasBody = !noBody && response.body.length > 0
-        var headersFlags = HTTP2_FLAG_END_HEADERS
+        var hasBody = !noBody && bodyLen > 0
+
         if(!hasBody) {
-            headersFlags |= HTTP2_FLAG_END_STREAM
+            http2WriteHeadersFrame(writeBuf, streamId, hpackBuf.buffer, hpackBuf.length,
+                HTTP2_FLAG_END_HEADERS | HTTP2_FLAG_END_STREAM)
+            return;
         }
 
-        http2WriteHeadersFrame(
-            writeBuf,
-            streamId,
-            hpackBuf.buffer,
-            hpackBuf.length,
-            headersFlags
-        )
+        // Compute how many body bytes we can send right now
+        var canSend = h2.sendWindow
+        if(stream.sendWindow < canSend) { canSend = stream.sendWindow }
+        if(canSend < 0) { canSend = 0 }
+        if(canSend > bodyLen) { canSend = bodyLen }
 
-        if(hasBody) {
-            http2WriteDataFrame(
-                writeBuf,
-                streamId,
-                response.body.buffer,
-                response.body.length,
-                true
-            )
+        var fullyNow = canSend >= bodyLen
+
+        http2WriteHeadersFrame(writeBuf, streamId, hpackBuf.buffer, hpackBuf.length,
+            HTTP2_FLAG_END_HEADERS)
+
+        if(canSend > 0) {
+            http2WriteDataChunked(writeBuf, streamId, bodyData, canSend,
+                h2.remoteMaxFrameSize, fullyNow)
+            h2.sendWindow    -= canSend
+            stream.sendWindow -= canSend
         }
-    } else if(response.type == ResponseType.FILE) {
-        // For file responses over H2, send headers only — full file send
-        // requires a separate async path (Phase 3+). For now, fall back to
-        // a 501 if the file path is taken. Typically static files are served
-        // via the HTTP/1.1 path; leave this as a future enhancement.
-        session.response.status = 501
-        session.response.type   = ResponseType.BODY
-        session.response.body.clear()
-        session.response.body.append("File responses not yet supported over HTTP/2\n")
-        session.response.numberOfHeaders = 0
-        hpackBuf.clear()
 
-        session.http2.hpack.encodeResponse(response, &hpackBuf)
+        if(!fullyNow) {
+            // Buffer the unsent remainder on the stream
+            var remaining = bodyLen - canSend
+            stream.pendingResponse.appendStrn(bodyData + canSend, remaining)
+            stream.state = Http2StreamState.SEND_BLOCKED
+            Debug("HTTP/2: stream %u flow-controlled: sent %d/%d bytes\n",
+                streamId, canSend, bodyLen)
+        }
 
-        http2WriteHeadersFrame(
-            writeBuf,
-            streamId,
-            hpackBuf.buffer,
-            hpackBuf.length,
-            HTTP2_FLAG_END_HEADERS
-        )
-
-        http2WriteDataFrame(
-            writeBuf,
-            streamId,
-            response.body.buffer,
-            response.body.length,
-            true
-        )
     } else {
-        // STREAM / SSE — send headers only with END_STREAM (not supported yet)
-        http2WriteHeadersFrame(
-            writeBuf,
-            streamId,
-            hpackBuf.buffer,
-            hpackBuf.length,
-            HTTP2_FLAG_END_HEADERS | HTTP2_FLAG_END_STREAM
-        )
+        // STREAM / SSE — not supported yet
+        http2WriteHeadersFrame(writeBuf, streamId, hpackBuf.buffer, hpackBuf.length,
+            HTTP2_FLAG_END_HEADERS | HTTP2_FLAG_END_STREAM)
     }
 }
 

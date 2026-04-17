@@ -17,6 +17,7 @@ import "http_websocket"
 import "http_sse"
 import "http_server"
 import "http2_connection"
+import "openssl"
 
 @asStr
 internal enum SessionState {
@@ -34,7 +35,9 @@ internal enum SessionState {
     SSE_UPGRADED,
     SSE_OPERATION,
 
-    HTTP2_OPEN,   // HTTP/2 connection: framing layer active
+    HTTP2_OPEN,         // HTTP/2 connection: framing layer active
+
+    TLS_HANDSHAKING,    // TLS handshake in progress (non-blocking SSL_accept)
 
     PREP_CLOSE,
     CLOSED,
@@ -73,6 +76,9 @@ internal struct SessionContext {
 
     // HTTP/2 connection state — valid only when protocolVersion == HTTP2
     http2: Http2Connection
+
+    // TLS session — non-null when the connection is TLS-wrapped
+    ssl: *SSL
 
     // Allocator for each request on this thread
     requestAllocator: LinearAllocator
@@ -125,6 +131,7 @@ internal func (this: *SessionContext) begin(
 
     this.protocolVersion = ProtocolVersion.UNKNOWN
     memset(&this.http2, 0, sizeof(:Http2Connection))
+    this.ssl = null
 
     this.state = SessionState.CONNECTED
 
@@ -185,6 +192,11 @@ internal func (this: *SessionContext) finish(forceClose: bool = false) {
     this.file = 0
 
     this.state = SessionState.UNKNOWN
+
+    if(this.ssl) {
+        SSL_free(this.ssl)
+        this.ssl = null
+    }
 
     this.connection.reset()
     this.response.reset()

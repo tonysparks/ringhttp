@@ -125,9 +125,6 @@ func testHttp2ClientGet() {
     assert(resp.statusCode == 200)
     var body = String{.buffer = resp.body.buffer as (*const char), .length = resp.body.length}
     assert(body.equals($"hello from h2"))
-
-    printf("Http2 GET /hello: PASS (status=%d body='%.*s')\n",
-        resp.statusCode, body.length, body.buffer)
 }
 
 @test("http2_client_post")
@@ -148,9 +145,6 @@ func testHttp2ClientPost() {
     assert(resp.statusCode == 200)
     var body = String{.buffer = resp.body.buffer as (*const char), .length = resp.body.length}
     assert(body.equals($"ping123"))
-
-    printf("Http2 POST /echo: PASS (status=%d body='%.*s')\n",
-        resp.statusCode, body.length, body.buffer)
 }
 
 @test("http2_client_not_found")
@@ -169,7 +163,6 @@ func testHttp2ClientNotFound() {
     assert(client.get(url, &resp))
 
     assert(resp.statusCode == 404)
-    printf("Http2 GET /no-such-path: PASS (status=%d)\n", resp.statusCode)
 }
 
 @test("http2_client_with_headers")
@@ -194,8 +187,6 @@ func testHttp2ClientWithHeaders() {
     assert(resp.statusCode == 200)
     var body = String{.buffer = resp.body.buffer as (*const char), .length = resp.body.length}
     assert(body.equals($"{\"key\":\"value\"}"))
-
-    printf("Http2 POST /echo with headers: PASS (status=%d)\n", resp.statusCode)
 }
 
 @test("http2_client_json")
@@ -216,7 +207,4 @@ func testHttp2ClientJson() {
     assert(resp.statusCode == 200)
     var body = String{.buffer = resp.body.buffer as (*const char), .length = resp.body.length}
     assert(body.equals($"{\"version\":\"h2\"}"))
-
-    printf("Http2 GET /json: PASS (status=%d body='%.*s')\n",
-        resp.statusCode, body.length, body.buffer)
 }

@@ -202,6 +202,31 @@ public func http2WriteRstStream(buf: *StringBuilder, streamId: u32, errorCode: i
     buf.appendStrn(payload as (*const char), 4)
 }
 
+// Split body into DATA frames of at most maxFrameSize bytes.
+// END_STREAM is set on the final frame only when endStream=true.
+public func http2WriteDataChunked(
+    buf:         *StringBuilder,
+    streamId:    u32,
+    data:        *const char,
+    dataLen:     i32,
+    maxFrameSize: i32,
+    endStream:   bool
+) {
+    if(maxFrameSize <= 0) { maxFrameSize = 16384 }
+    if(dataLen == 0) {
+        http2WriteDataFrame(buf, streamId, data, 0, endStream)
+        return;
+    }
+    var offset = 0
+    while(offset < dataLen) {
+        var chunk = dataLen - offset
+        if(chunk > maxFrameSize) { chunk = maxFrameSize }
+        var isLast = endStream && ((offset + chunk) >= dataLen)
+        http2WriteDataFrame(buf, streamId, data + offset, chunk, isLast)
+        offset += chunk
+    }
+}
+
 // Append a WINDOW_UPDATE frame (connection-level if streamId==0).
 public func http2WriteWindowUpdate(buf: *StringBuilder, streamId: u32, increment: u32) {
     var payload: [4]u8;

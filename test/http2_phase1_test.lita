@@ -163,5 +163,4 @@ func testHttp2SettingsHandshake() {
     assert(srvAckFlags == 0x1)  // ACK flag set
 
     close(fd)
-    printf("HTTP/2 settings handshake: OK\n")
 }

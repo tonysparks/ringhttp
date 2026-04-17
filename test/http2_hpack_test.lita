@@ -1,0 +1,97 @@
+// Unit tests for the HPACK encoder/decoder in http2_hpack.lita.
+
+import "std/mem"
+import "std/assert"
+import "std/string"
+import "std/string/builder"
+import "std/libc"
+
+import "http_ring"
+import "http2_hpack"
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Find the first occurrence of needle (lowercase ASCII) in a byte buffer.
+// Returns the offset or -1 if not found.
+func findBytes(haystack: *const char, haystackLen: i32, needle: *const char, needleLen: i32) : i32 {
+    if(needleLen <= 0 || needleLen > haystackLen) { return -1 }
+    for(var i = 0; i <= haystackLen - needleLen; i += 1) {
+        if(memcmp(haystack + i, needle as (*const void), needleLen as (usize)) == 0) {
+            return i
+        }
+    }
+    return -1
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+// Encoder must lowercase header names on the wire (RFC 7540 §8.1.2).
+// When a handler sets "Content-Type" or "X-My-Header", the HPACK bytes must
+// contain "content-type" / "x-my-header", not the mixed-case originals.
+@test("hpack_encode_lowercase_names")
+func testHpackEncodeLowercaseNames() {
+    var hpack: Hpack
+    hpack.init(defaultAllocator as (*Allocator))
+
+    var response: HttpResponse
+    response.init(defaultAllocator)
+    response.status = 200
+    response.addHeaderStr("Content-Type", "text/plain")
+    response.addHeaderStr("X-My-Header", "value")
+
+    var out = StringBuilderInit(256, defaultAllocator)
+    hpack.encodeResponse(&response, &out)
+
+    // "Content-Type" must appear on the wire as "content-type".
+    // "content-type" is static entry 31, so the encoder uses an indexed name
+    // reference (no literal name bytes), which is already correct.
+    // "X-My-Header" has no static entry — it must be emitted as the literal
+    // "x-my-header" (lowercase).
+    assert(findBytes(out.buffer, out.length, "x-my-header", 11) >= 0)
+    // The original mixed-case form must NOT appear.
+    assert(findBytes(out.buffer, out.length, "X-My-Header", 11) < 0)
+}
+
+// Decoder must accept Huffman-encoded strings and correctly populate the request.
+@test("hpack_decode_indexed_method_path")
+func testHpackDecodeIndexedMethodPath() {
+    var hpack: Hpack
+    hpack.init(defaultAllocator as (*Allocator))
+
+    // Wire encoding of: :method GET (idx 2) + :path / (idx 4) + :scheme http (idx 6)
+    // Each is an indexed header field: 0x80 | index
+    var wire: [3]u8
+    wire[0] = (0x80 | 2) as (u8)   // :method GET
+    wire[1] = (0x80 | 4) as (u8)   // :path /
+    wire[2] = (0x80 | 6) as (u8)   // :scheme http
+
+    var request: HttpRequest
+    memset(&request, 0, sizeof(:HttpRequest))
+    request.reset()
+
+    assert(hpack.decode(wire as (*const u8), 3, &request, defaultAllocator as (*Allocator)) == Status.OK)
+    assert(request.method == HttpMethod.GET)
+    assert(request.path.equals($"/"))
+}
+
+// Encoder produces indexed representation for :status 200 (static entry 8).
+@test("hpack_encode_status_200_indexed")
+func testHpackEncodeStatus200Indexed() {
+    var hpack: Hpack
+    hpack.init(defaultAllocator as (*Allocator))
+
+    var response: HttpResponse
+    response.init(defaultAllocator)
+    response.status = 200
+
+    var out = StringBuilderInit(64, defaultAllocator)
+    hpack.encodeResponse(&response, &out)
+
+    // First byte must be 0x80 | 8 = 0x88 (indexed :status 200)
+    assert(out.length >= 1)
+    assert((out.buffer[0] as (i32) & 0xFF) == 0x88)
+}
