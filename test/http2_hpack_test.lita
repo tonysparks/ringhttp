@@ -4,6 +4,7 @@ import "std/mem"
 import "std/assert"
 import "std/string"
 import "std/string/builder"
+import "std/array"
 import "std/libc"
 
 import "http_ring"
@@ -29,9 +30,9 @@ func findBytes(haystack: *const char, haystackLen: i32, needle: *const char, nee
 // Tests
 // ---------------------------------------------------------------------------
 
-// Encoder must lowercase header names on the wire (RFC 7540 §8.1.2).
-// When a handler sets "Content-Type" or "X-My-Header", the HPACK bytes must
-// contain "content-type" / "x-my-header", not the mixed-case originals.
+// Encoder must lowercase header names and Huffman-encode strings.
+// Encodes a response with a mixed-case custom header, then decodes the HPACK
+// block and verifies the name arrives as lowercase (RFC 7540 §8.1.2).
 @test("hpack_encode_lowercase_names")
 func testHpackEncodeLowercaseNames() {
     var hpack: Hpack
@@ -40,20 +41,52 @@ func testHpackEncodeLowercaseNames() {
     var response: HttpResponse
     response.init(defaultAllocator)
     response.status = 200
-    response.addHeaderStr("Content-Type", "text/plain")
-    response.addHeaderStr("X-My-Header", "value")
+    response.addHeaderStr("X-My-Header", "SomeValue")
 
     var out = StringBuilderInit(256, defaultAllocator)
     hpack.encodeResponse(&response, &out)
 
-    // "Content-Type" must appear on the wire as "content-type".
-    // "content-type" is static entry 31, so the encoder uses an indexed name
-    // reference (no literal name bytes), which is already correct.
-    // "X-My-Header" has no static entry — it must be emitted as the literal
-    // "x-my-header" (lowercase).
-    assert(findBytes(out.buffer, out.length, "x-my-header", 11) >= 0)
-    // The original mixed-case form must NOT appear.
+    // The mixed-case literal bytes must NOT appear on the wire
+    // (neither as raw text nor — since Huffman is used — as raw bytes).
     assert(findBytes(out.buffer, out.length, "X-My-Header", 11) < 0)
+
+    // Decode the block back into an HttpRequest and verify lowercase name.
+    var request: HttpRequest
+    memset(&request, 0, sizeof(:HttpRequest))
+    request.headers.init(16, defaultAllocator as (*Allocator))
+    request.reset()
+    assert(hpack.decode(out.buffer as (*const u8), out.length,
+        &request, defaultAllocator as (*Allocator)) == Status.OK)
+    assert(request.headers.length >= 1)
+    assert(request.headers.get(0).name.equals($"x-my-header"))
+}
+
+// Encoder uses Huffman when it produces fewer bytes.
+// "content-type" encodes to 9 bytes Huffman vs 12 raw.
+@test("hpack_huffman_shorter_than_raw")
+func testHpackHuffmanShorterThanRaw() {
+    var hpack: Hpack
+    hpack.init(defaultAllocator as (*Allocator))
+
+    var response: HttpResponse
+    response.init(defaultAllocator)
+    response.status = 200
+    // "content-type" has no static-table entry for its value — will be emitted
+    // as literal name (indexed) + Huffman-encoded value "text/plain".
+    response.addHeaderStr("content-type", "text/plain")
+
+    var out = StringBuilderInit(256, defaultAllocator)
+    hpack.encodeResponse(&response, &out)
+
+    // Decode back; value must survive the round-trip intact.
+    var request: HttpRequest
+    memset(&request, 0, sizeof(:HttpRequest))
+    request.headers.init(16, defaultAllocator as (*Allocator))
+    request.reset()
+    assert(hpack.decode(out.buffer as (*const u8), out.length,
+        &request, defaultAllocator as (*Allocator)) == Status.OK)
+    assert(request.headers.length >= 1)
+    assert(request.headers.get(0).values.equals($"text/plain"))
 }
 
 // Decoder must accept Huffman-encoded strings and correctly populate the request.

@@ -31,6 +31,7 @@ public enum Status {
     ERROR_IO_ERROR,
     ERROR_IOURING_ERROR,
     ERROR_PIPE_ERROR,
+    ERROR_SSL_ERROR,
 
 
     // Http specific errors

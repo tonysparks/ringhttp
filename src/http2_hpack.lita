@@ -614,21 +614,92 @@ func writeIntEnc(val: i32, prefixBits: i32, firstBytePrefix: i32, out: *StringBu
     out.appendStrn(&last, 1)
 }
 
-func writeStringLit(s: String, out: *StringBuilder) {
-    writeIntEnc(s.length, 7, 0, out)
-    if(s.length > 0) {
-        out.appendStrn(s.buffer, s.length)
+// ---------------------------------------------------------------------------
+// Huffman encoder helpers
+// ---------------------------------------------------------------------------
+
+// Number of bytes needed to Huffman-encode dataLen bytes from data.
+func huffEncodeLen(data: *const u8, dataLen: i32) : i32 {
+    var bits = 0
+    for(var i = 0; i < dataLen; i += 1) {
+        bits += H_BITS[data[i] as (i32)]
+    }
+    return (bits + 7) / 8
+}
+
+// Append Huffman-encoded payload bytes (no length prefix) to out.
+// Packs codes MSB-first; pads the final byte with 1-bits per RFC 7541 §5.2.
+func huffEncodeBits(data: *const u8, dataLen: i32, out: *StringBuilder) {
+    var curByte:  u32 = 0_u32
+    var bitsLeft: i32 = 8
+    for(var i = 0; i < dataLen; i += 1) {
+        var sym   = data[i] as (i32)
+        var code  = H_CODE[sym] as (u32)
+        var bits  = H_BITS[sym]
+        while(bits > 0) {
+            if(bits >= bitsLeft) {
+                curByte |= (code >> (bits - bitsLeft)) & ((1_u32 << bitsLeft) - 1_u32)
+                bits -= bitsLeft
+                var b = curByte as (char)
+                out.appendStrn(&b, 1)
+                curByte   = 0_u32
+                bitsLeft  = 8
+            } else {
+                curByte |= (code & ((1_u32 << bits) - 1_u32)) << (bitsLeft - bits)
+                bitsLeft -= bits
+                bits = 0
+            }
+        }
+    }
+    if(bitsLeft < 8) {
+        curByte |= (1_u32 << bitsLeft) - 1_u32   // pad with 1-bits
+        var b = curByte as (char)
+        out.appendStrn(&b, 1)
     }
 }
 
-// Like writeStringLit but lowercases ASCII letters in-place (RFC 7540 §8.1.2).
+// ---------------------------------------------------------------------------
+// String literal writers — use Huffman when it produces fewer bytes.
+// ---------------------------------------------------------------------------
+
+func writeStringLit(s: String, out: *StringBuilder) {
+    var huffLen = huffEncodeLen(s.buffer as (*const u8), s.length)
+    if(huffLen < s.length) {
+        writeIntEnc(huffLen, 7, 0x80, out)   // H bit set
+        huffEncodeBits(s.buffer as (*const u8), s.length, out)
+    } else {
+        writeIntEnc(s.length, 7, 0, out)
+        if(s.length > 0) { out.appendStrn(s.buffer, s.length) }
+    }
+}
+
+// Like writeStringLit but lowercases ASCII letters before encoding (RFC 7540 §8.1.2).
+// Uses a 256-byte stack buffer; names longer than that fall back to raw literal.
 func writeStringLitLower(s: String, out: *StringBuilder) {
-    writeIntEnc(s.length, 7, 0, out)
+    var buf: [256]u8
+    if(s.length > 255) {
+        // Fallback: emit raw literal with per-byte lowercasing (no Huffman)
+        writeIntEnc(s.length, 7, 0, out)
+        for(var i = 0; i < s.length; i += 1) {
+            var c = s.buffer[i] as (i32)
+            if(c >= 0x41 && c <= 0x5A) { c |= 0x20 }
+            var b = c as (char)
+            out.appendStrn(&b, 1)
+        }
+        return;
+    }
     for(var i = 0; i < s.length; i += 1) {
         var c = s.buffer[i] as (i32)
         if(c >= 0x41 && c <= 0x5A) { c |= 0x20 }
-        var b = c as (char)
-        out.appendStrn(&b, 1)
+        buf[i] = c as (u8)
+    }
+    var huffLen = huffEncodeLen(buf as (*const u8), s.length)
+    if(huffLen < s.length) {
+        writeIntEnc(huffLen, 7, 0x80, out)
+        huffEncodeBits(buf as (*const u8), s.length, out)
+    } else {
+        writeIntEnc(s.length, 7, 0, out)
+        if(s.length > 0) { out.appendStrn(buf as (*const char), s.length) }
     }
 }
 

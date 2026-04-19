@@ -137,3 +137,51 @@ public func SSL_write(ssl: *SSL, buf: *const void, num: i32) : i32;
 @foreign
 public func SSL_get0_alpn_selected(ssl: *const SSL, data: **const u8, len: *u32);
 
+// ---------------------------------------------------------------------------
+// Memory BIO (for io_uring: keeps all I/O through io_uring READ/SENDMSG)
+// ---------------------------------------------------------------------------
+
+@foreign
+public struct BIO {}
+
+@foreign
+public struct BIO_METHOD {}
+
+// Returns the BIO_METHOD for in-memory (no-fd) BIOs.
+@foreign
+public func BIO_s_mem() : *BIO_METHOD;
+
+// Create a new BIO of the given type.
+@foreign
+public func BIO_new(type: *BIO_METHOD) : *BIO;
+
+// Free a BIO that has not been transferred to an SSL object.
+@foreign
+public func BIO_free(bio: *BIO);
+
+// Transfer ownership of rbio/wbio to ssl. After this call, SSL_free frees them.
+@foreign
+public func SSL_set_bio(ssl: *SSL, rbio: *BIO, wbio: *BIO);
+
+// Retrieve the read / write BIO from an SSL object (no ownership transfer).
+@foreign
+public func SSL_get_rbio(ssl: *const SSL) : *BIO;
+
+@foreign
+public func SSL_get_wbio(ssl: *const SSL) : *BIO;
+
+// Write data into a BIO; returns bytes written or <=0 on error.
+@foreign
+public func BIO_write(bio: *BIO, data: *const void, len: i32) : i32;
+
+// Read data out of a BIO; returns bytes read or <=0 when empty.
+@foreign
+public func BIO_read(bio: *BIO, data: *void, len: i32) : i32;
+
+// BIO_ctrl command: query how many bytes are available to read.
+// (Maps to the BIO_pending(b) macro which expands to BIO_ctrl(b,10,0,NULL).)
+public const BIO_CTRL_PENDING: i32 = 10
+
+@foreign
+public func BIO_ctrl(bio: *BIO, cmd: i32, larg: i64, parg: *void) : i64;
+

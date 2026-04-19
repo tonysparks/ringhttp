@@ -34,6 +34,8 @@ import "http_router"
 import "http_context"
 import "http_websocket"
 import "http_worker"
+import "openssl"
+import "http_tls"
 
 internal struct HttpRingEngine {
     config: using *HttpConfig
@@ -52,6 +54,9 @@ internal struct HttpRingEngine {
     clientAddrLen: socklen_t;
 
     server: *HttpServer
+
+    // Non-null when TLS is configured (tlsCertFile + tlsKeyFile in HttpConfig).
+    sslCtx: *SSL_CTX
 }
 
 internal func (this: *HttpRingEngine) init(
@@ -109,6 +114,12 @@ internal func (this: *HttpRingEngine) listen() : Status {
         Info("Initialized worker thread: %d with ringfd: %d\n", worker.thread.id(), worker.ring.ring_fd)
     }
 
+    // TLS context setup — only when cert + key are configured.
+    this.sslCtx = setupSslCtx(this.config)
+    if(this.config.tlsCertFile && !this.sslCtx) {
+        return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
+    }
+
     if(!this.serverSocket.create()) {
         return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
     }
@@ -163,6 +174,11 @@ internal func (this: *HttpRingEngine) close() {
 
     if(this.ring.ring_fd > 0) {
         io_uring_queue_exit(&this.ring)
+    }
+
+    if(this.sslCtx) {
+        SSL_CTX_free(this.sslCtx)
+        this.sslCtx = null
     }
 }
 

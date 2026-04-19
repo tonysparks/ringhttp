@@ -25,6 +25,7 @@ import "http_response"
 import "http_server"
 import "http_worker"
 import "openssl"
+import "http_tls"
 
 const MAX_ENGINE_EVENTS : i32 = 64
 
@@ -102,32 +103,9 @@ internal func (this: *HttpRingEngine) listen() : Status {
     }
 
     // TLS context setup — only when cert + key are configured.
-    if(this.config.tlsCertFile && this.config.tlsKeyFile) {
-        this.sslCtx = SSL_CTX_new(TLS_server_method())
-        if(!this.sslCtx) {
-            Error("TLS: SSL_CTX_new failed\n")
-            return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
-        }
-
-        if(SSL_CTX_use_certificate_file(this.sslCtx, this.config.tlsCertFile, SSL_FILETYPE_PEM) <= 0) {
-            Error("TLS: failed to load certificate: %s\n", this.config.tlsCertFile)
-            return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
-        }
-
-        if(SSL_CTX_use_PrivateKey_file(this.sslCtx, this.config.tlsKeyFile, SSL_FILETYPE_PEM) <= 0) {
-            Error("TLS: failed to load private key: %s\n", this.config.tlsKeyFile)
-            return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
-        }
-
-        if(!SSL_CTX_check_private_key(this.sslCtx)) {
-            Error("TLS: cert/key mismatch\n")
-            return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
-        }
-
-        // ALPN: advertise h2 and http/1.1; the select callback picks the best match.
-        SSL_CTX_set_alpn_select_cb(this.sslCtx, (&alpnSelectCallback) as (AlpnSelectCallback), null)
-
-        Info("TLS enabled (cert=%s)\n", this.config.tlsCertFile)
+    this.sslCtx = setupSslCtx(this.config)
+    if(this.config.tlsCertFile && !this.sslCtx) {
+        return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
     }
 
     if(!this.serverSocket.create()) {
@@ -232,44 +210,6 @@ func (this: *HttpRingEngine) acceptConnections() {
     }
 }
 
-// ALPN server-side selection callback.
-// Prefers "h2" over "http/1.1"; falls back to whatever the client offers.
-func alpnSelectCallback(
-    ssl      : *SSL,
-    out      : **const u8,
-    outlen   : *u8,
-    in       : *const u8,
-    inlen    : u32,
-    arg      : *void
-) : i32 {
-    // Wire-format: length-prefixed list, e.g. \x02h2\x08http/1.1
-    var h2Protocols: [12]u8
-    h2Protocols[0]  = 2_u8
-    h2Protocols[1]  = 'h' as (u8)
-    h2Protocols[2]  = '2' as (u8)
-    h2Protocols[3]  = 8_u8
-    h2Protocols[4]  = 'h' as (u8)
-    h2Protocols[5]  = 't' as (u8)
-    h2Protocols[6]  = 't' as (u8)
-    h2Protocols[7]  = 'p' as (u8)
-    h2Protocols[8]  = '/' as (u8)
-    h2Protocols[9]  = '1' as (u8)
-    h2Protocols[10] = '.' as (u8)
-    h2Protocols[11] = '1' as (u8)
-    var selected: *u8 = null
-    var selectedLen: u8 = 0_u8
-    var rc = SSL_select_next_proto(
-        &selected, &selectedLen,
-        h2Protocols as (*const u8), 11_u32,
-        in, inlen
-    )
-    if(rc == OPENSSL_NPN_NEGOTIATED) {
-        ;*out    = selected as (*const u8)
-        ;*outlen = selectedLen
-        return SSL_TLSEXT_ERR_OK
-    }
-    return SSL_TLSEXT_ERR_NOACK
-}
 
 internal func (this: *HttpRingEngine) close() {
     this.isRunning.set(false)

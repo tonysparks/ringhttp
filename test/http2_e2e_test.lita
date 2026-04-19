@@ -16,8 +16,7 @@ import "std/string/builder"
 import "std/net/posix_socket"
 import "http_ring"
 
-@foreign
-func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
+@foreign func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
 
 // ---------------------------------------------------------------------------
 // Test server port (separate from main_test.lita to avoid conflicts)

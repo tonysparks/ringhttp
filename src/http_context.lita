@@ -194,7 +194,7 @@ internal func (this: *SessionContext) finish(forceClose: bool = false) {
     this.state = SessionState.UNKNOWN
 
     if(this.ssl) {
-        SSL_free(this.ssl)
+        SSL_free(this.ssl)  // also frees rbio/wbio BIOs (SSL_free owns them)
         this.ssl = null
     }
 
