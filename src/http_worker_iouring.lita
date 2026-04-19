@@ -169,29 +169,19 @@ func (this: *WorkerThread) queueWriteBufferSend(
     var connection = &session.connection
     var writeBuffer = &connection.writeBuffer
 
-    var iov = iovec {
-        .iov_base = writeBuffer.buffer,
-        .iov_len  = writeBuffer.length,
-    }
-
-    var msg = msghdr {
-        .msg_iov = &iov,
-        .msg_iovlen = 1,
-    }
-
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
         Error("Error creating SQE for socket: %d for ring: %d\n", connection.handle(), ring.ring_fd)
         goto error;
     }
 
-    io_uring_prep_sendmsg(
+    io_uring_prep_send(
         sqe,
         connection.handle(),
-        &msg,
+        writeBuffer.buffer,
+        writeBuffer.length,
         moreContents ? SocketFlags.MSG_MORE : 0
     )
-
     io_uring_sqe_set_data64(
         sqe,
         makeOp(RingOpcode.SENDMSG, session.index, session.generation)
@@ -423,7 +413,7 @@ func (this: *WorkerThread) queueWriteHttpFileResponse(
     var socketFd = connection.handle()
 
     if(pipe2(request.pipes, O_CLOEXEC | O_NONBLOCK) < 0) {
-        Error("Error creating pipes!")
+        Error("Error creating pipes for connection: %d\n", connection.handle())
         return Status.ERROR_PIPE_ERROR
     }
 

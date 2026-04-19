@@ -9,6 +9,7 @@ import "std/thread"
 import "std/io"
 import "std/mem"
 import "std/json"
+import "std/log"
 
 import "std/array"
 import "std/map"
@@ -130,6 +131,7 @@ var defaultConfig = HttpConfig {
     .keepAliveTimeoutInSec = 5,
     .isLogEnabled = false,
     .logFilePath = null,
+    .logLevel = LogLevel.DEBUG,
     .fileServerPath = $"./static",
     .maxHttpBodySizeInBytes = 1_024,
 }
