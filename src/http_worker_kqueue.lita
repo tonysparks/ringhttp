@@ -466,11 +466,6 @@ public func (this: *WorkerThread) sendSseEvent(
     return Status.OK
 }
 
-// closeSseSession: public — called to terminate the SSE stream.
-public func (this: *WorkerThread) closeSseSession(session: *SessionContext) {
-    this.closeSession(session)
-}
-
 // ---------------------------------------------------------------
 // kqueue event loop
 // ---------------------------------------------------------------

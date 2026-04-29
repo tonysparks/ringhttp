@@ -109,7 +109,10 @@ internal func (this: *WorkerThread) queueSend(session: *SessionContext) : Status
 
 // closeSession: cancel pending operations and close the connection.
 internal func (this: *WorkerThread) closeSession(session: *SessionContext) {
-    this.queueCancelAndClose(&this.ring, session)
+    if (this.queueCancelAndClose(&this.ring, session) == Status.OK) {
+        session.submissions -= 1
+        io_uring_submit(&this.ring)
+    }
 }
 
 // rearmTimeout: re-queue the periodic timeout SQE.
@@ -221,7 +224,11 @@ func (this: *WorkerThread) queueCancelAndClose(
         // Cancel ALL in-flight operations on the socket fd so no stale CQEs
         // arrive after the session is freed.  prep_cancel_fd matches by fd,
         // which is correct because all our SQEs operate on this socket.
-        io_uring_prep_cancel_fd(sqe, connection.handle(), IORING_ASYNC_CANCEL_ALL)
+        io_uring_prep_cancel_fd(
+            sqe,
+            connection.handle(),
+            IORING_ASYNC_CANCEL_ALL
+        )
 
         io_uring_sqe_set_data64(
             sqe,
@@ -238,39 +245,15 @@ error:
 
 func (this: *WorkerThread) queueReadHttpRequest(
     ring: *io_uring,
-    request: *SessionContext
+    session: *SessionContext
 ): Status {
 
-    request.state = SessionState.READ_REQUEST_LINE
+    session.state = SessionState.READ_REQUEST_LINE
 
-    var connection = &request.connection
+    var connection = &session.connection
 
-    Debug("Reading HTTP request for socket: %d state: %s\n", connection.handle(), SessionStateAsStr(request.state))
-
-    var sqe = io_uring_get_sqe(ring)
-    if(!sqe) {
-        Error("Error creating SQE for socket: %d\n", connection.handle())
-        goto error;
-    }
-
-    var readBuffer = &connection.readBuffer
-
-    io_uring_prep_read(
-        sqe,
-        connection.handle(),
-        &readBuffer.buffer[readBuffer.length],
-        readBuffer.remaining(),
-        0
-    )
-
-    io_uring_sqe_set_data64(
-        sqe,
-        makeOp(RingOpcode.READ, request.index, request.generation)
-    )
-    return Status.OK
-
-error:
-    return Status.ERROR_IOURING_ERROR;
+    Debug("Reading HTTP request for socket: %d state: %s\n", connection.handle(), SessionStateAsStr(session.state))
+    return this.queueReadBufferRecv(ring, session)
 }
 
 func (this: *WorkerThread) queueWriteHttpResponse(
@@ -319,15 +302,19 @@ func (this: *WorkerThread) queueWriteHttpResponse(
         // No body for HEAD: async-close the file handle, then wait for both
         // the SENDMSG and CLOSE CQEs before resetting (submissions tracks both).
         if(response.fileHandle > 0) {
-            var closeSqe = io_uring_get_sqe(ring)
-            if(closeSqe) {
-                io_uring_prep_close(closeSqe, response.fileHandle)
+            var sqe = io_uring_get_sqe(ring)
+            if(sqe) {
+                io_uring_prep_close(
+                    sqe,
+                    response.fileHandle
+                )
                 io_uring_sqe_set_data64(
-                    closeSqe,
+                    sqe,
                     makeOp(RingOpcode.CLOSE, session.index, session.generation)
                 )
                 session.submissions += 1
             } else {
+                // for sync close if no sqe
                 close(response.fileHandle)
             }
             response.fileHandle = 0
@@ -354,8 +341,7 @@ error:
     return Status.ERROR_IOURING_ERROR;
 }
 
-// advanceChunkedWrite handles both STREAM and SSE chunked responses.
-func (this: *WorkerThread) advanceChunkedWrite(
+func (this: *WorkerThread) queueAdvanceChunkedWrite(
     ring: *io_uring,
     session: *SessionContext
 ): Status {
@@ -524,23 +510,22 @@ func (this: *WorkerThread) queueWebSocketSend(
     }
 
     status = this.queueWriteBufferSend(ring, session)
+
+    // we need to dispatch the submit as this is in the
+    // user space
     if (status == Status.OK) {
+        session.submissions -= 1
         io_uring_submit(&this.ring)
     }
 
     return status
 }
 
-public func (this: *WorkerThread) sendSseEvent(
+internal func (this: *WorkerThread) sendSseEvent(
     session: *SessionContext,
     event:   *SseEvent
 ) : Status {
     return this.queueWriteSseEvent(&this.ring, session, event)
-}
-
-public func (this: *WorkerThread) closeSseSession(session: *SessionContext) {
-    this.queueCancelAndClose(&this.ring, session)
-    io_uring_submit(&this.ring)
 }
 
 func (this: *WorkerThread) queueWriteSseEvent(
@@ -586,9 +571,17 @@ func (this: *WorkerThread) queueTimeoutCheck(ring: *io_uring): Status {
     ts.tv_sec = this.config.timeoutCheckMSec / 1_000;
     ts.tv_nsec = (this.config.timeoutCheckMSec % 1_000) * 1_000_000;
 
-    io_uring_prep_timeout(sqe, &ts, 0, 0)
+    io_uring_prep_timeout(
+        sqe,
+        &ts,
+        0,
+        0
+    )
 
-    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.TIMEOUT, -1))
+    io_uring_sqe_set_data64(
+        sqe,
+        makeOp(RingOpcode.TIMEOUT, -1)
+    )
 
     return Status.OK;
 
@@ -623,28 +616,35 @@ func (this: *WorkerThread) queueTlsWrite(
     ring:    *io_uring,
     session: *SessionContext
 ) : Status {
-    var pending = BIO_ctrl(SSL_get_wbio(session.ssl), BIO_CTRL_PENDING, 0, null) as (i32)
-    if(pending <= 0) {
-        return Status.OK
-    }
+    // var pending = BIO_ctrl(SSL_get_wbio(session.ssl), BIO_CTRL_PENDING, 0, null) as (i32)
+    // if(pending <= 0) {
+    //     return Status.OK
+    // }
 
-    var writeBuffer = &session.connection.writeBuffer
-    writeBuffer.clear()
-    if(!writeBuffer.reserve(pending)) {
-        Error("TLS: OOM flushing output on socket %d\n", session.connection.handle())
-        return this.queueCancelAndClose(ring, session)
-    }
-    var n = BIO_read(SSL_get_wbio(session.ssl), writeBuffer.buffer as (*void), pending)
-    if(n <= 0) {
-        Error("TLS: BIO_read failed on socket %d\n", session.connection.handle())
-        return this.queueCancelAndClose(ring, session)
-    }
-    writeBuffer.length = n
-
-    var status = this.queueWriteBufferSend(ring, session)
+    // var writeBuffer = &session.connection.writeBuffer
+    // writeBuffer.clear()
+    // if(!writeBuffer.reserve(pending)) {
+    //     Error("TLS: OOM flushing output on socket %d\n", session.connection.handle())
+    //     return this.queueCancelAndClose(ring, session)
+    // }
+    // var n = BIO_read(SSL_get_wbio(session.ssl), writeBuffer.buffer as (*void), pending)
+    // if(n <= 0) {
+    //     Error("TLS: BIO_read failed on socket %d\n", session.connection.handle())
+    //     return this.queueCancelAndClose(ring, session)
+    // }
+    // writeBuffer.length = n
+    var status = this.tlsFillWriteBuffer(ring, session)
     if(status != Status.OK) {
-        return this.queueCancelAndClose(ring, session)
+        this.queueCancelAndClose(ring, session)
+        return status
     }
+
+    status = this.queueWriteBufferSend(ring, session)
+    if(status != Status.OK) {
+        this.queueCancelAndClose(ring, session)
+        return status
+    }
+
     return status
 }
 
@@ -734,6 +734,34 @@ func (this: *WorkerThread) queueTlsContinueHandshake(
     return this.queueCancelAndClose(ring, session)
 }
 
+func (this: *WorkerThread) tlsFillWriteBuffer(
+    ring:    *io_uring,
+    session: *SessionContext
+) : Status {
+    var writeBuffer = &session.connection.writeBuffer
+    writeBuffer.clear()
+
+    // Swap writeBuffer to contain the ciphertext.
+    var pending = BIO_ctrl(SSL_get_wbio(session.ssl), BIO_CTRL_PENDING, 0, null) as (i32)
+    if (pending <= 0) {
+        return Status.OK
+    }
+
+    if(!writeBuffer.reserve(pending)) {
+        Error("TLS: OOM swapping encrypted buffer on socket %d\n", session.connection.handle())
+        return Status.ERROR_OUT_OF_MEMORY
+    }
+    var n = BIO_read(SSL_get_wbio(session.ssl), writeBuffer.buffer as (*void), pending)
+    if(n <= 0) {
+        Error("TLS: BIO_read failed on socket %d\n", session.connection.handle())
+        return Status.ERROR_SSL_ERROR
+    }
+
+    writeBuffer.length = n
+    return Status.OK
+}
+
+
 // Encrypt connection.writeBuffer in-place via SSL (two-phase: plaintext → BIO → ciphertext).
 // Returns false and closes the session on error.
 func (this: *WorkerThread) tlsEncryptWriteBuffer(
@@ -754,23 +782,30 @@ func (this: *WorkerThread) tlsEncryptWriteBuffer(
         return Status.ERROR_SSL_ERROR
     }
 
-    // Swap writeBuffer to contain the ciphertext.
-    var pending = BIO_ctrl(SSL_get_wbio(session.ssl), BIO_CTRL_PENDING, 0, null) as (i32)
-    writeBuffer.clear()
-
-    if(pending > 0) {
-        if(!writeBuffer.reserve(pending)) {
-            Error("TLS: OOM swapping encrypted buffer on socket %d\n", session.connection.handle())
-            var status = this.queueCancelAndClose(ring, session)
-                ?: return status
-            return Status.ERROR_OUT_OF_MEMORY
-        }
-        var n = BIO_read(SSL_get_wbio(session.ssl), writeBuffer.buffer as (*void), pending)
-        if(n > 0) {
-            writeBuffer.length = n
-        }
+    var status = this.tlsFillWriteBuffer(ring, session)
+    if(status != Status.OK) {
+        this.queueCancelAndClose(ring, session)
+        return status
     }
-    return Status.OK
+
+    return status
+    // Swap writeBuffer to contain the ciphertext.
+    // var pending = BIO_ctrl(SSL_get_wbio(session.ssl), BIO_CTRL_PENDING, 0, null) as (i32)
+    // writeBuffer.clear()
+
+    // if(pending > 0) {
+    //     if(!writeBuffer.reserve(pending)) {
+    //         Error("TLS: OOM swapping encrypted buffer on socket %d\n", session.connection.handle())
+    //         var status = this.queueCancelAndClose(ring, session)
+    //             ?: return status
+    //         return Status.ERROR_OUT_OF_MEMORY
+    //     }
+    //     var n = BIO_read(SSL_get_wbio(session.ssl), writeBuffer.buffer as (*void), pending)
+    //     if(n > 0) {
+    //         writeBuffer.length = n
+    //     }
+    // }
+    // return Status.OK
 }
 
 // Decrypt raw TLS ciphertext already in readBuffer back into readBuffer (in-place).
@@ -800,6 +835,8 @@ func (this: *WorkerThread) tlsDecryptToReadBuffer(
         var err = SSL_get_error(session.ssl, lastN)
         if(err == SSL_ERROR_WANT_READ) {
             this.queueReadBufferRecv(ring, session, .clearBuffer = true)
+                ?: return -1
+
             return 0
         }
         this.queueCancelAndClose(ring, session)
@@ -839,31 +876,31 @@ func (this: *WorkerThread) queueSendRaw(
 // Run the H2 frame machine on `bytesRead` plaintext bytes sitting in readBuffer
 // (not yet committed — processHttp2Data will advance readBuffer.length).
 // Caller must ensure decryption has already been done for TLS sessions.
-func (this: *WorkerThread) dispatchH2Data(
+func (this: *WorkerThread) queueDispatchH2DataSend(
     ring:      *io_uring,
     session:   *SessionContext,
     bytesRead: i32
-) {
+): Status {
     var connection = &session.connection
     var status = this.processHttp2Data(session, bytesRead)
     if(status == Status.PARTIAL_REQUEST_DISPATCHING_READ) {
-        this.queueNextRead(ring, session)
-        return;
+        return this.queueNextRead(ring, session)
     }
+
     if(status != Status.OK) {
         // processHttp2Data may have written a GOAWAY — flush before closing.
         if(connection.writeBuffer.length > 0) {
             this.queueSendRaw(ring, session)
         }
         this.queueCancelAndClose(ring, session)
-        return;
+        return status;
     }
     if(connection.writeBuffer.length > 0) {
         // SENDMSG CQE will re-arm the read.
-        this.queueSendRaw(ring, session)
-    } else {
-        this.queueNextRead(ring, session)
+        return this.queueSendRaw(ring, session)
     }
+
+    return this.queueNextRead(ring, session)
 }
 
 // io_uring-specific HTTP/2 data handler (called from handleCompletionRing READ path).
@@ -879,7 +916,8 @@ func (this: *WorkerThread) handleHttp2Data(session: *SessionContext, rawBytesRea
         }
     }
 
-    this.dispatchH2Data(ring, session, bytesRead)
+    var status = this.queueDispatchH2DataSend(ring, session, bytesRead)
+    // TODO: Handle status, return something from this callback..
 }
 
 // ---------------------------------------------------------------
@@ -1160,7 +1198,8 @@ func (this: *WorkerThread) handleCompletionRing(
 
             if(session.state == SessionState.HTTP2_OPEN) {
                 // Bytes already decrypted (or plaintext) — skip the TLS layer in dispatchH2Data.
-                this.dispatchH2Data(ring, session, bytesRead)
+                var s = this.queueDispatchH2DataSend(ring, session, bytesRead)
+                    ?: return s
                 break
             }
 
@@ -1270,7 +1309,7 @@ func (this: *WorkerThread) handleCompletionRing(
         }
         case SessionState.WRITING_STREAM: {
             session.submissions -= 1
-            return this.advanceChunkedWrite(ring, session)
+            return this.queueAdvanceChunkedWrite(ring, session)
         }
         case SessionState.WRITTEN_HTTP_RESPONSE:
         case SessionState.WRITTEN_HTTP_RESPONSE_MORE:

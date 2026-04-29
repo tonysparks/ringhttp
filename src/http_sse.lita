@@ -31,7 +31,7 @@ public func (this: *SseSession) send(event: *SseEvent) : i32 {
 @doc("Close the SSE connection from the server side")
 public func (this: *SseSession) close() {
     this.context.isSse = false
-    this.worker.closeSseSession(this.context)
+    this.worker.closeSession(this.context)
 }
 
 internal func (event: *SseEvent) serialize(output: *StringBuilder) {
