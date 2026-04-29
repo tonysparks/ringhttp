@@ -732,3 +732,353 @@ func testH2PipelinedRequests() {
     assert(body1)
     assert(body3)
 }
+
+// ---------------------------------------------------------------------------
+// Error-path helpers
+// ---------------------------------------------------------------------------
+
+// Read frames until a GOAWAY (type 0x07) arrives or the connection is closed.
+// Both outcomes are valid responses to a fatal protocol error.
+func expectGoaway(fd: i32) : bool {
+    var frame: H2Frame
+    for(var tries = 0; tries < 20; tries += 1) {
+        if(!readFrame(fd, &frame)) {
+            return true  // connection closed — acceptable after fatal error
+        }
+        if(frame.frameType == 0x07) {
+            return true
+        }
+    }
+    return false
+}
+
+// Send a SETTINGS frame with one 6-byte parameter.
+func sendSettingsParam(fd: i32, paramId: u16, value: u32) : bool {
+    var payload: [6]char
+    payload[0] = ((paramId >> 8) & 0xFF) as (char)
+    payload[1] =  (paramId       & 0xFF) as (char)
+    payload[2] = ((value >> 24)  & 0xFF) as (char)
+    payload[3] = ((value >> 16)  & 0xFF) as (char)
+    payload[4] = ((value >>  8)  & 0xFF) as (char)
+    payload[5] =  (value         & 0xFF) as (char)
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, 6, 0x04, 0x00, 0_u32)
+    return h2WriteAll(fd, hdr, 9) && h2WriteAll(fd, payload, 6)
+}
+
+// Send a raw frame with an arbitrary payload.
+func sendRawFrame(fd: i32, length: i32, frameType: i32, flags: i32, streamId: u32, payload: *const char) : bool {
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, length, frameType, flags, streamId)
+    if(!h2WriteAll(fd, hdr, 9)) { return false }
+    if(length > 0 && payload != null) {
+        return h2WriteAll(fd, payload, length)
+    }
+    return true
+}
+
+// Send a CONTINUATION frame.
+func sendContinuationFrame(fd: i32, streamId: u32, hpack: *StringBuilder, endHeaders: bool) : bool {
+    var flags = endHeaders ? 0x04 : 0x00
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, hpack.length, 0x09, flags, streamId)
+    return h2WriteAll(fd, hdr, 9) && h2WriteAll(fd, hpack.buffer, hpack.length)
+}
+
+// Read the RST_STREAM error code from a frame payload (4-byte big-endian).
+func rstStreamErrorCode(frame: *H2Frame) : u32 {
+    if(frame.length < 4) { return 0xFFFFFFFF_u32 }
+    return ((frame.payload[0] as (u32) & 0xFF) << 24) |
+           ((frame.payload[1] as (u32) & 0xFF) << 16) |
+           ((frame.payload[2] as (u32) & 0xFF) <<  8) |
+            (frame.payload[3] as (u32) & 0xFF)
+}
+
+// ---------------------------------------------------------------------------
+// GOAWAY error-path tests — fatal protocol violations that close the connection
+// ---------------------------------------------------------------------------
+
+// Client sends non-HTTP/2 bytes as connection preface.
+@test("http2_e2e_error_invalid_preface")
+func testH2ErrorInvalidPreface() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+
+    const garbage = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    h2WriteAll(fd, garbage, strlen(garbage) as (i32))
+
+    assert(expectGoaway(fd))
+}
+
+// SETTINGS frame sent on a non-zero stream (RFC 7540 §6.5: must be stream 0).
+@test("http2_e2e_error_settings_on_stream")
+func testH2ErrorSettingsOnStream() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, 0, 0x04, 0x00, 1_u32)  // SETTINGS on stream 1
+    assert(h2WriteAll(fd, hdr, 9))
+
+    assert(expectGoaway(fd))
+}
+
+// SETTINGS payload length not a multiple of 6 bytes (RFC 7540 §6.5).
+@test("http2_e2e_error_settings_bad_length")
+func testH2ErrorSettingsBadLength() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    var payload: [5]char
+    assert(sendRawFrame(fd, 5, 0x04, 0x00, 0_u32, payload))  // length=5, not mult of 6
+
+    assert(expectGoaway(fd))
+}
+
+// SETTINGS INITIAL_WINDOW_SIZE > 2^31-1 (RFC 7540 §6.9.2: FLOW_CONTROL_ERROR).
+@test("http2_e2e_error_settings_window_overflow")
+func testH2ErrorSettingsWindowOverflow() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    // paramId 0x0004 = SETTINGS_INITIAL_WINDOW_SIZE, value = 0x80000000
+    assert(sendSettingsParam(fd, 0x0004_u16, 0x80000000_u32))
+
+    assert(expectGoaway(fd))
+}
+
+// PING sent on a non-zero stream (RFC 7540 §6.7: must be stream 0).
+@test("http2_e2e_error_ping_on_stream")
+func testH2ErrorPingOnStream() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    var payload: [8]char
+    assert(sendRawFrame(fd, 8, 0x06, 0x00, 1_u32, payload))  // PING on stream 1
+
+    assert(expectGoaway(fd))
+}
+
+// PING with wrong payload length (must be exactly 8 bytes).
+@test("http2_e2e_error_ping_bad_length")
+func testH2ErrorPingBadLength() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    var payload: [7]char
+    assert(sendRawFrame(fd, 7, 0x06, 0x00, 0_u32, payload))  // PING with 7-byte payload
+
+    assert(expectGoaway(fd))
+}
+
+// HEADERS sent on stream 0 (RFC 7540 §6.2: must be non-zero stream).
+@test("http2_e2e_error_headers_on_stream0")
+func testH2ErrorHeadersOnStream0() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    defer hpack.free()
+    buildGetHpack($"/hello", &hpack)
+
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, hpack.length, 0x01, 0x05, 0_u32)  // HEADERS on stream 0
+    assert(h2WriteAll(fd, hdr, 9))
+    assert(h2WriteAll(fd, hpack.buffer, hpack.length))
+
+    assert(expectGoaway(fd))
+}
+
+// CONTINUATION frame arrives without a preceding HEADERS frame (RFC 7540 §6.10).
+@test("http2_e2e_error_continuation_without_headers")
+func testH2ErrorContinuationWithoutHeaders() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    defer hpack.free()
+    buildGetHpack($"/hello", &hpack)
+
+    assert(sendContinuationFrame(fd, 1_u32, &hpack, true))
+
+    assert(expectGoaway(fd))
+}
+
+// DATA sent on stream 0 (RFC 7540 §6.1: must be non-zero stream).
+@test("http2_e2e_error_data_on_stream0")
+func testH2ErrorDataOnStream0() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    const body = "hello"
+    assert(sendRawFrame(fd, 5, 0x00, 0x01, 0_u32, body))  // DATA on stream 0
+
+    assert(expectGoaway(fd))
+}
+
+// RST_STREAM sent on stream 0 (RFC 7540 §6.4: must be non-zero stream).
+@test("http2_e2e_error_rst_stream_on_stream0")
+func testH2ErrorRstStreamOnStream0() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    var payload: [4]char  // error code = 0 (NO_ERROR)
+    assert(sendRawFrame(fd, 4, 0x03, 0x00, 0_u32, payload))
+
+    assert(expectGoaway(fd))
+}
+
+// Connection-level WINDOW_UPDATE with increment=0 (RFC 7540 §6.9.1: PROTOCOL_ERROR).
+@test("http2_e2e_error_window_update_zero_connection")
+func testH2ErrorWindowUpdateZeroConnection() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    assert(sendWindowUpdate(fd, 0_u32, 0))
+
+    assert(expectGoaway(fd))
+}
+
+// ---------------------------------------------------------------------------
+// RST_STREAM error-path tests — stream violations that leave connection open
+// ---------------------------------------------------------------------------
+
+// HEADERS with even stream ID (RFC 7540 §5.1.1: client streams are odd).
+@test("http2_e2e_error_even_stream_id")
+func testH2ErrorEvenStreamId() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    defer hpack.free()
+    buildGetHpack($"/hello", &hpack)
+
+    var hdr: [9]char
+    h2WriteFrameHdr(hdr, hpack.length, 0x01, 0x05, 2_u32)  // HEADERS, END_HEADERS|END_STREAM, stream 2
+    assert(h2WriteAll(fd, hdr, 9))
+    assert(h2WriteAll(fd, hpack.buffer, hpack.length))
+
+    var frame: H2Frame
+    assert(readNextFrame(fd, 0x03, &frame))  // expect RST_STREAM
+    assert(frame.streamId == 2_u32)
+
+    // processFrame() updates lastStreamId=2 before rejecting; next valid stream is 3.
+    // Connection still alive — make a valid request on stream 3.
+    assert(sendHeadersFrame(fd, 3_u32, &hpack, true))
+    assert(readNextFrame(fd, 0x01, &frame))
+    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+}
+
+// DATA arrives on a stream that was never opened.
+@test("http2_e2e_error_data_unknown_stream")
+func testH2ErrorDataUnknownStream() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    // Send DATA on stream 7 — never opened via HEADERS.
+    const body = "hi"
+    assert(sendRawFrame(fd, 2, 0x00, 0x01, 7_u32, body))
+
+    var frame: H2Frame
+    assert(readNextFrame(fd, 0x03, &frame))  // expect RST_STREAM
+    assert(frame.streamId == 7_u32)
+
+    // processFrame() updates lastStreamId=7 before rejecting; next valid stream is 9.
+    // Connection still alive.
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    defer hpack.free()
+    buildGetHpack($"/hello", &hpack)
+    assert(sendHeadersFrame(fd, 9_u32, &hpack, true))
+    assert(readNextFrame(fd, 0x01, &frame))
+    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+}
+
+// Stream-level WINDOW_UPDATE with increment=0 (RFC 7540 §6.9.1: RST_STREAM PROTOCOL_ERROR).
+@test("http2_e2e_error_window_update_zero_stream")
+func testH2ErrorWindowUpdateZeroStream() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    // Open stream 1 so WINDOW_UPDATE on it is valid target.
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    defer hpack.free()
+    buildGetHpack($"/hello", &hpack)
+    assert(sendHeadersFrame(fd, 1_u32, &hpack, false))  // no END_STREAM: stream stays OPEN
+
+    // WINDOW_UPDATE with increment=0 on stream 1.
+    assert(sendWindowUpdate(fd, 1_u32, 0))
+
+    var frame: H2Frame
+    assert(readNextFrame(fd, 0x03, &frame))  // expect RST_STREAM
+    assert(frame.streamId == 1_u32)
+    assert(rstStreamErrorCode(&frame) == 1_u32)  // PROTOCOL_ERROR = 0x1
+}
+
+// Opening more than MAX_H2_STREAMS (16) concurrent streams triggers RST_STREAM REFUSED_STREAM.
+@test("http2_e2e_error_stream_limit_exceeded")
+func testH2ErrorStreamLimitExceeded() {
+    ensureServer()
+    var fd = h2Connect()
+    assert(fd >= 0)
+    defer close(fd)
+    assert(doHandshake(fd))
+
+    var hpack = StringBuilderInit(64, defaultAllocator)
+    defer hpack.free()
+    buildGetHpack($"/hello", &hpack)
+
+    // Open 16 streams without END_STREAM so they remain OPEN.
+    for(var i = 0; i < 16; i += 1) {
+        var streamId = (1_u32 + (2_u32 * i as (u32)))
+        assert(sendHeadersFrame(fd, streamId, &hpack, false))
+    }
+
+    // Stream 33 (17th concurrent) must be refused.
+    assert(sendHeadersFrame(fd, 33_u32, &hpack, false))
+
+    var frame: H2Frame
+    assert(readNextFrame(fd, 0x03, &frame))  // expect RST_STREAM
+    assert(frame.streamId == 33_u32)
+    assert(rstStreamErrorCode(&frame) == 7_u32)  // REFUSED_STREAM
+}

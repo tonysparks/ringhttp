@@ -64,6 +64,9 @@ public const OPENSSL_NPN_NO_OVERLAP = 0
 public func TLS_server_method() : *const SSL_METHOD;
 
 @foreign
+public func TLS_client_method() : *const SSL_METHOD;
+
+@foreign
 public func SSL_CTX_new(method: *const SSL_METHOD) : *SSL_CTX;
 
 @foreign
@@ -77,6 +80,19 @@ public func SSL_CTX_use_PrivateKey_file(ctx: *SSL_CTX, file: *const char, type: 
 
 @foreign
 public func SSL_CTX_check_private_key(ctx: *SSL_CTX) : i32;
+
+// SSL_VERIFY_NONE: skip peer certificate verification (useful for test clients).
+public const SSL_VERIFY_NONE: i32 = 0
+
+// Set the verification mode for a context.  Pass null for the callback to use default.
+public typedef func(*SSL, i32) : i32 as SslVerifyCallback;
+@foreign
+public func SSL_CTX_set_verify(ctx: *SSL_CTX, mode: i32, cb: SslVerifyCallback);
+
+// Client-side ALPN: wire-format list (length-prefixed), e.g. "\x02h2\x08http/1.1".
+// Returns 0 on success (note: inverted from most OpenSSL functions).
+@foreign
+public func SSL_CTX_set_alpn_protos(ctx: *SSL_CTX, protos: *const u8, protos_len: u32) : i32;
 
 // ALPN — server-side selection callback.
 // Signature: int cb(SSL*, const u8** out, u8* outlen, const u8* in, uint inlen, void* arg)
@@ -110,10 +126,23 @@ public func SSL_free(ssl: *SSL);
 @foreign
 public func SSL_set_fd(ssl: *SSL, fd: i32) : i32;
 
+@foreign
+public func SSL_get_fd(ssl: *const SSL) : i32;
+
 // SSL_accept: perform the TLS handshake as server.
 // Returns 1 on success, <=0 on error/pending.
 @foreign
 public func SSL_accept(ssl: *SSL) : i32;
+
+// SSL_connect: perform the TLS handshake as client.
+// Returns 1 on success, <=0 on error/pending.
+@foreign
+public func SSL_connect(ssl: *SSL) : i32;
+
+// SSL_shutdown: initiate a graceful TLS close_notify shutdown.
+// Returns 1 when complete, 0 when the peer's close_notify is still pending.
+@foreign
+public func SSL_shutdown(ssl: *SSL) : i32;
 
 // Returns one of the SSL_ERROR_* constants.
 @foreign

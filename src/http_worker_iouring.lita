@@ -245,7 +245,8 @@ error:
 
 func (this: *WorkerThread) queueReadHttpRequest(
     ring: *io_uring,
-    session: *SessionContext
+    session: *SessionContext,
+    clearBuffer: bool = false
 ): Status {
 
     session.state = SessionState.READ_REQUEST_LINE
@@ -253,7 +254,7 @@ func (this: *WorkerThread) queueReadHttpRequest(
     var connection = &session.connection
 
     Debug("Reading HTTP request for socket: %d state: %s\n", connection.handle(), SessionStateAsStr(session.state))
-    return this.queueReadBufferRecv(ring, session)
+    return this.queueReadBufferRecv(ring, session, clearBuffer)
 }
 
 func (this: *WorkerThread) queueWriteHttpResponse(
@@ -599,13 +600,11 @@ func (this: *WorkerThread) queueNextRead(
     ring:    *io_uring,
     session: *SessionContext
 ) : Status {
-    if(session.ssl) {
-        return this.queueReadBufferRecv(ring, session, .clearBuffer = true)
-    }
     if(session.state == SessionState.HTTP2_OPEN) {
         return this.queueReadBufferRecv(ring, session)
     }
-    return this.queueReadHttpRequest(ring, session)
+
+    return this.queueReadHttpRequest(ring, session, .clearBuffer = session.ssl != null)
 }
 
 // Drain any encrypted TLS output from OpenSSL's write BIO and send it via SENDMSG.
@@ -616,23 +615,6 @@ func (this: *WorkerThread) queueTlsWrite(
     ring:    *io_uring,
     session: *SessionContext
 ) : Status {
-    // var pending = BIO_ctrl(SSL_get_wbio(session.ssl), BIO_CTRL_PENDING, 0, null) as (i32)
-    // if(pending <= 0) {
-    //     return Status.OK
-    // }
-
-    // var writeBuffer = &session.connection.writeBuffer
-    // writeBuffer.clear()
-    // if(!writeBuffer.reserve(pending)) {
-    //     Error("TLS: OOM flushing output on socket %d\n", session.connection.handle())
-    //     return this.queueCancelAndClose(ring, session)
-    // }
-    // var n = BIO_read(SSL_get_wbio(session.ssl), writeBuffer.buffer as (*void), pending)
-    // if(n <= 0) {
-    //     Error("TLS: BIO_read failed on socket %d\n", session.connection.handle())
-    //     return this.queueCancelAndClose(ring, session)
-    // }
-    // writeBuffer.length = n
     var status = this.tlsFillWriteBuffer(ring, session)
     if(status != Status.OK) {
         this.queueCancelAndClose(ring, session)
@@ -789,23 +771,6 @@ func (this: *WorkerThread) tlsEncryptWriteBuffer(
     }
 
     return status
-    // Swap writeBuffer to contain the ciphertext.
-    // var pending = BIO_ctrl(SSL_get_wbio(session.ssl), BIO_CTRL_PENDING, 0, null) as (i32)
-    // writeBuffer.clear()
-
-    // if(pending > 0) {
-    //     if(!writeBuffer.reserve(pending)) {
-    //         Error("TLS: OOM swapping encrypted buffer on socket %d\n", session.connection.handle())
-    //         var status = this.queueCancelAndClose(ring, session)
-    //             ?: return status
-    //         return Status.ERROR_OUT_OF_MEMORY
-    //     }
-    //     var n = BIO_read(SSL_get_wbio(session.ssl), writeBuffer.buffer as (*void), pending)
-    //     if(n > 0) {
-    //         writeBuffer.length = n
-    //     }
-    // }
-    // return Status.OK
 }
 
 // Decrypt raw TLS ciphertext already in readBuffer back into readBuffer (in-place).
