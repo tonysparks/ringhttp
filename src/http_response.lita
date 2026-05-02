@@ -4,7 +4,6 @@ import "std/string/builder"
 import "std/io"
 import "std/system"
 import "std/libc"
-
 import "std/array"
 import "http_request"
 import "http_common"
@@ -169,3 +168,4 @@ public func (this: *HttpResponse) reset() {
     //     close(this.fileHandle)
     // }
 }
+

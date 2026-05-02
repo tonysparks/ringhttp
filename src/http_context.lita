@@ -1,6 +1,7 @@
 import "std/libc"
 import "std/mem"
 import "std/mem/linear_allocator"
+import "std/string/builder"
 import "std/array"
 import "std/assert"
 import "std/system"
@@ -99,6 +100,13 @@ internal struct SessionContext {
 
     // the last time we received a request from the client
     lastRequestTime: f64
+
+    // WebSocket message fragmentation state (RFC 6455 §5.4).
+    // Active when wsFragInProgress is true; wsFragOpcode holds the first
+    // fragment's opcode; wsFragBuf accumulates the reassembled payload.
+    wsFragInProgress: bool
+    wsFragOpcode:     i32
+    wsFragBuf:        StringBuilder
 }
 
 // begining of a HTTP request cycle
@@ -122,6 +130,10 @@ internal func (this: *SessionContext) begin(
 
     this.isWebSocket = false
     this.isSse = false
+
+    this.wsFragInProgress = false
+    this.wsFragOpcode     = 0
+    this.wsFragBuf.clear()
 
     this.submissions = 0
 
@@ -164,6 +176,9 @@ internal func (this: *SessionContext) finish(forceClose: bool = false) {
 
     this.isWebSocket = false
     this.isSse = false
+    this.wsFragInProgress = false
+    this.wsFragOpcode     = 0
+    this.wsFragBuf.clear()
     this.submissions = 0
 
     this.requestLineIndex = 0

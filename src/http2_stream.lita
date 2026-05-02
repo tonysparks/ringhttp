@@ -36,6 +36,7 @@ public struct Http2Stream {
     // Accumulates raw HPACK bytes across HEADERS + CONTINUATION frames.
     headerBlock: StringBuilder
     endHeaders:  bool  // END_HEADERS flag seen
+    endStream:   bool  // END_STREAM flag seen on HEADERS (saved for CONTINUATION dispatch)
 
     // Accumulates DATA payload bytes.
     bodyBuf:     StringBuilder
@@ -51,6 +52,7 @@ public func (this: *Http2Stream) open(streamId: u32, allocator: *Allocator, init
     this.state         = Http2StreamState.OPEN
     this.sendWindow    = initWindow
     this.endHeaders    = false
+    this.endStream     = false
     this.pendingOffset = 0
 
     this.headerBlock.init(512, allocator)
@@ -63,6 +65,7 @@ public func (this: *Http2Stream) reset() {
     this.state         = Http2StreamState.IDLE
     this.sendWindow    = 0
     this.endHeaders    = false
+    this.endStream     = false
     this.pendingOffset = 0
     this.headerBlock.clear()
     this.bodyBuf.clear()

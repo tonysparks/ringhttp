@@ -698,43 +698,127 @@ internal func (this: *WorkerThread) handleWebSocketFrame(
 
     readBuffer.length += bytesRead
 
-    var frame = Frame{}
-    var status = frame.parseHeader(readBuffer)
-    if(status != Status.OK) {
-        return Status.ERROR_WEB_SOCKET_FRAME
-    }
+    // Loop to process all complete frames that arrived in this read.
+    // Multiple frames can arrive in a single TCP segment; the original
+    // single-shot parse + clear() would silently discard all but the first.
+    while(readBuffer.length >= 2) {
+        var frame = Frame{}
+        var status = frame.parseHeader(readBuffer)
+        if(status != Status.OK) {
+            readBuffer.clear()
+            return Status.ERROR_WEB_SOCKET_FRAME
+        }
 
-    if(this.config.maxHttpBodySizeInBytes > 0 &&
-       frame.payloadLength > this.config.maxHttpBodySizeInBytes
-    ) {
-        return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
-    }
+        if(this.config.maxHttpBodySizeInBytes > 0 &&
+           frame.payloadLength > this.config.maxHttpBodySizeInBytes
+        ) {
+            readBuffer.clear()
+            return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
+        }
 
-    status = frame.parsePayload(readBuffer)
-    if(status != Status.OK) {
-        if(status == Status.ERROR_WEB_SOCKET_FRAME_LENGTH) {
-            if((readBuffer.capacity - frame.offset) < frame.payloadLength) {
-                var neededSpace = frame.payloadLength - readBuffer.capacity
-                readBuffer.reserve(readBuffer.capacity + neededSpace as (i32))
-                Error("TODO: Grow buffer!\n")
-                exit(1)
-                return Status.ERROR_OUT_OF_MEMORY
+        status = frame.parsePayload(readBuffer)
+        if(status != Status.OK) {
+            if(status == Status.ERROR_WEB_SOCKET_FRAME_LENGTH) {
+                if((readBuffer.capacity - frame.offset) < frame.payloadLength) {
+                    var neededSpace = frame.payloadLength - readBuffer.capacity
+                    readBuffer.reserve(readBuffer.capacity + neededSpace as (i32))
+                    Error("TODO: Grow buffer!\n")
+                    exit(1)
+                    return Status.ERROR_OUT_OF_MEMORY
+                }
+                return Status.PARTIAL_WEB_SOCKET_DISPATCHING_READ
             }
-            return Status.PARTIAL_WEB_SOCKET_DISPATCHING_READ
+            readBuffer.clear()
+            return Status.ERROR_WEB_SOCKET_FRAME
         }
-        return Status.ERROR_WEB_SOCKET_FRAME
-    }
 
-    defer readBuffer.clear()
+        // How many bytes does this frame occupy in the buffer.
+        var consumed = (frame.offset + frame.payloadLength) as (i32)
 
-    if(session.socketHandler.callback) {
-        if(!session.socketHandler.callback(&session.socketSession, frame)) {
-            return Status.ERROR_WEB_SOCKET_HANDLE_FRAME_ERROR
+        // RFC 6455 §5.5.2: auto-respond to PING with PONG, then continue loop.
+        if(frame.opcode == Opcode.PING) {
+            var pong = Frame{}
+            pong.isFinal       = true
+            pong.masked        = false
+            pong.opcode        = Opcode.PONG
+            pong.payload       = frame.payload
+            pong.payloadLength = frame.payloadLength
+            this.sendWebSocketFrame(session, &pong)
+            var remaining = readBuffer.length - consumed
+            if(remaining > 0) {
+                memmove(readBuffer.buffer, readBuffer.buffer + consumed, remaining as (usize))
+            }
+            readBuffer.length = remaining
+            continue
         }
-    }
 
-    if(frame.opcode == Opcode.CLOSE) {
-        return Status.WEB_SOCKET_CLOSED
+        // RFC 6455 §5.4: message fragmentation.
+        if(!frame.isFinal || frame.opcode == Opcode.CONTINUATION) {
+            if(frame.opcode != Opcode.CONTINUATION) {
+                // First fragment — remember opcode, start accumulation buffer.
+                session.wsFragInProgress = true
+                session.wsFragOpcode     = frame.opcode as (i32)
+                session.wsFragBuf.clear()
+                if(!session.wsFragBuf.buffer) {
+                    session.wsFragBuf.init(1024, &session.requestAllocator.allocator)
+                }
+            }
+            if(session.wsFragInProgress && frame.payload != null && frame.payloadLength > 0) {
+                var limit = this.config.maxWsFragmentedMessageSizeInBytes
+                var newTotal = (session.wsFragBuf.length + frame.payloadLength as (i32)) as (usize)
+                if(limit > 0 && newTotal > limit) {
+                    readBuffer.clear()
+                    return Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT
+                }
+                session.wsFragBuf.appendStrn(frame.payload, frame.payloadLength as (i32))
+            }
+            var remaining = readBuffer.length - consumed
+            if(remaining > 0) {
+                memmove(readBuffer.buffer, readBuffer.buffer + consumed, remaining as (usize))
+            }
+            readBuffer.length = remaining
+            if(!frame.isFinal) {
+                continue  // more fragments to come
+            }
+            // FIN=1 + CONTINUATION opcode → final fragment; dispatch assembled message.
+            var assembled = Frame{}
+            assembled.isFinal       = true
+            assembled.masked        = false
+            assembled.opcode        = session.wsFragOpcode as (Opcode)
+            assembled.payload       = session.wsFragBuf.buffer
+            assembled.payloadLength = session.wsFragBuf.length
+            session.wsFragInProgress = false
+            if(session.socketHandler.callback) {
+                if(!session.socketHandler.callback(&session.socketSession, assembled)) {
+                    return Status.ERROR_WEB_SOCKET_HANDLE_FRAME_ERROR
+                }
+            }
+            continue
+        }
+
+        // Non-fragmented data/control frame — call user handler first, then consume.
+        var cbStatus = Status.OK
+        if(session.socketHandler.callback) {
+            if(!session.socketHandler.callback(&session.socketSession, frame)) {
+                cbStatus = Status.ERROR_WEB_SOCKET_HANDLE_FRAME_ERROR
+            }
+        }
+
+        var remaining = readBuffer.length - consumed
+        if(remaining > 0) {
+            memmove(readBuffer.buffer, readBuffer.buffer + consumed, remaining as (usize))
+        }
+        readBuffer.length = remaining
+
+        if(frame.opcode == Opcode.CLOSE) {
+            readBuffer.clear()
+            return Status.WEB_SOCKET_CLOSED
+        }
+
+        if(cbStatus != Status.OK) {
+            readBuffer.clear()
+            return cbStatus
+        }
     }
 
     return Status.OK
@@ -765,7 +849,8 @@ internal func (this: *WorkerThread) tryDetectProtocol(
     }
     if(readBuffer.buffer[0] == 'P' &&
        readBuffer.buffer[1] == 'R' &&
-       readBuffer.buffer[2] == 'I') {
+       readBuffer.buffer[2] == 'I'
+    ) {
         session.protocolVersion = ProtocolVersion.HTTP2
         session.state = SessionState.HTTP2_OPEN
         session.http2.init(&session.requestAllocator.allocator)
@@ -831,15 +916,63 @@ internal func (this: *WorkerThread) http2DispatchStream(
     var hpackPayload = stream.headerBlock.buffer as (*const u8)
     var hpackLen     = stream.headerBlock.length
 
-    var decodeStatus = h2.hpack.decode(hpackPayload, hpackLen, &session.request, allocator)
+    var pseudoError  = false
+    var decodeStatus = h2.hpack.decode(hpackPayload, hpackLen, &session.request, allocator, &pseudoError)
     if(decodeStatus != Status.OK) {
+        // RFC 7540 §4.3: HPACK decode failure is a connection error (GOAWAY),
+        // not a stream error, because the HPACK state is shared across streams.
+        h2.sendGoaway(&session.connection.writeBuffer, HTTP2_ERR_COMPRESSION_ERROR)
+        return Status.ERROR_IO_ERROR
+    }
+
+    var streamId = stream.streamId
+    var req = &session.request
+
+    // RFC 7540 §8.1.2.1: duplicate pseudo-headers or pseudo after regular header
+    // are stream-level PROTOCOL_ERRORs.
+    if(pseudoError) {
+        http2WriteRstStream(&session.connection.writeBuffer, streamId, HTTP2_ERR_PROTOCOL_ERROR)
         h2.closeStream(streamIdx)
-        http2WriteRstStream(
-            &session.connection.writeBuffer,
-            stream.streamId,
-            HTTP2_ERR_COMPRESSION_ERROR
-        )
         return Status.OK
+    }
+
+    // RFC 7540 §8.1.2.3: :method, :path, :scheme MUST all be present and
+    // non-empty for every request except CONNECT.
+    if(req.method == HttpMethod.INVALID ||
+       (req.method != HttpMethod.CONNECT &&
+        (req.path.length == 0 || req.scheme.length == 0))
+    ) {
+        http2WriteRstStream(&session.connection.writeBuffer, streamId, HTTP2_ERR_PROTOCOL_ERROR)
+        h2.closeStream(streamIdx)
+        return Status.OK
+    }
+
+    // RFC 7540 §8.1.2.2: connection-specific header fields are forbidden in H2.
+    // connection, keep-alive, proxy-connection, transfer-encoding, upgrade, and
+    // te (unless value is exactly "trailers") MUST be treated as stream errors.
+    for(var hi = 0; hi < req.headers.size(); hi += 1) {
+        var hdr = req.headers.get(hi)
+        var n   = hdr.name
+        if(n.equalsIgnoreCase($"connection")        ||
+           n.equalsIgnoreCase($"keep-alive")        ||
+           n.equalsIgnoreCase($"proxy-connection")  ||
+           n.equalsIgnoreCase($"transfer-encoding") ||
+           n.equalsIgnoreCase($"upgrade")           ||
+           (n.equalsIgnoreCase($"te") && !hdr.values.equalsIgnoreCase($"trailers"))
+        ) {
+            http2WriteRstStream(&session.connection.writeBuffer, streamId, HTTP2_ERR_PROTOCOL_ERROR)
+            h2.closeStream(streamIdx)
+            return Status.OK
+        }
+        // RFC 7540 §8.1.2: header field names MUST be lowercase in HTTP/2.
+        for(var ci = 0; ci < n.length; ci += 1) {
+            var c = n.buffer[ci] as (i32)
+            if(c >= 0x41 && c <= 0x5A) {
+                http2WriteRstStream(&session.connection.writeBuffer, streamId, HTTP2_ERR_PROTOCOL_ERROR)
+                h2.closeStream(streamIdx)
+                return Status.OK
+            }
+        }
     }
 
     // Attach body
@@ -847,8 +980,6 @@ internal func (this: *WorkerThread) http2DispatchStream(
         session.request.buffer = stream.bodyBuf.buffer as (*const char)
         session.request.length = stream.bodyBuf.length
     }
-
-    var streamId = stream.streamId
 
     // ---- Reset response for this request ----------------------------------
     session.response.reset()

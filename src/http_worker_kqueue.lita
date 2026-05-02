@@ -397,7 +397,14 @@ func (this: *WorkerThread) resetRequest(session: *SessionContext) {
     session.submissions = 0
 
     var connection = &session.connection
+
+    // Preserve TLS state across session.begin() — begin() resets ssl to null, but a
+    // keep-alive connection reuses the same SSL object for subsequent requests.
+    var savedSsl   = session.ssl
+    var savedProto = session.protocolVersion
     session.begin(connection.handle())
+    session.ssl             = savedSsl
+    session.protocolVersion = savedProto
 
     var change = kevent {
         .ident  = connection.handle() as (usize),
@@ -699,6 +706,17 @@ func (this: *WorkerThread) continueTlsHandshake(session: *SessionContext) {
             session.protocolVersion = ProtocolVersion.HTTP1
             session.state = SessionState.READ_REQUEST_LINE
         }
+
+        // The peer may have sent application data (e.g. HTTP/2 preface + SETTINGS) in
+        // the same TCP segment as the final handshake message.  SSL_accept() reads the
+        // entire segment, decrypting each TLS record in turn, leaving application-data
+        // records in OpenSSL's internal buffer.  Because the raw socket buffer is now
+        // empty, kqueue won't fire again — drain every buffered record here so the
+        // connection isn't silently stalled.
+        while(SSL_has_pending(session.ssl) > 0) {
+            this.handleReadReady(session)
+            if(!session.connection.isConnected()) { return; }
+        }
         return;
     }
 
@@ -782,6 +800,29 @@ func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
     switch(session.state) {
         case SessionState.HTTP2_OPEN: {
             this.handleHttp2Data(session, bytesRead as (i32))
+            // EV_CLEAR makes EVFILT_READ edge-triggered: kqueue fires once per data
+            // arrival and resets the counter.  After SSL_read returns one TLS record,
+            // remaining records may still be in the socket kernel buffer (FIONREAD > 0)
+            // or in SSL's internal read-ahead buffer (SSL_has_pending > 0) — in both
+            // cases kqueue won't re-fire.  Drain everything before returning.
+            var socketBytes: i32 = 0
+            if(session.ssl != null) {
+                ioctl(connection.handle(), FIONREAD, &socketBytes)
+            }
+            while(session.ssl != null && session.connection.isConnected() &&
+                  (SSL_has_pending(session.ssl) > 0 || socketBytes > 0)) {
+                var moreBytes = this.doRecv(
+                    session,
+                    &readBuffer.buffer[readBuffer.length],
+                    readBuffer.remaining() as (i32)
+                )
+                if(moreBytes <= 0) { break }
+                this.handleHttp2Data(session, moreBytes as (i32))
+                socketBytes = 0
+                if(session.ssl != null) {
+                    ioctl(connection.handle(), FIONREAD, &socketBytes)
+                }
+            }
             return;
         }
         case SessionState.READ_REQUEST_LINE: {

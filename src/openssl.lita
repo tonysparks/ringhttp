@@ -158,6 +158,20 @@ public func SSL_read(ssl: *SSL, buf: *void, num: i32) : i32;
 @foreign
 public func SSL_write(ssl: *SSL, buf: *const void, num: i32) : i32;
 
+// Returns bytes already decrypted and buffered inside OpenSSL (not yet read by the app).
+// After SSL_accept/SSL_connect, the peer may have sent application data in the same TCP
+// segment as the final handshake message; those bytes are buffered here, invisible to kqueue.
+@foreign
+public func SSL_pending(ssl: *const SSL) : i32;
+
+// Returns 1 if ssl has ANY data buffered internally — either decrypted bytes ready
+// to be read (SSL_pending > 0) OR undecrypted bytes in the SSL input buffer that
+// have been read from the socket but not yet returned to the app.  Use this instead
+// of SSL_pending when checking whether another SSL_read call is safe on a blocking fd:
+// SSL_read will not block if SSL_has_pending returns 1.
+@foreign
+public func SSL_has_pending(ssl: *const SSL) : i32;
+
 // ---------------------------------------------------------------------------
 // ALPN result (after handshake)
 // ---------------------------------------------------------------------------

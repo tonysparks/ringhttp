@@ -271,14 +271,11 @@ func (this: *Http2Connection) processFrame(
         return Status.OK
     }
 
-    // Unknown frame on connection level: ignore (RFC 7540 §4.1)
-    if(hdr.streamId == 0) {
-        Debug("HTTP/2: ignoring unknown connection-level frame type 0x%02x\n", hdr.type)
-        return Status.OK
-    }
-
-    // Unknown frame on a stream — send RST_STREAM
-    http2WriteRstStream(writeBuf, hdr.streamId, HTTP2_ERR_PROTOCOL_ERROR)
+    // RFC 7540 §4.1: "Implementations MUST ignore and discard any frame that
+    // has a type that is unknown."  This applies to both stream-0 and all
+    // other streams — unknown types are never a protocol error.
+    Debug("HTTP/2: ignoring unknown frame type 0x%02x on stream %u\n",
+          hdr.type, hdr.streamId)
     return Status.OK
 }
 
@@ -311,8 +308,8 @@ func (this: *Http2Connection) handleSettings(
     for(var i = 0; i < numParams; i += 1) {
         var p    = payload + i * 6
         var id   = ((p[0] as (i32)) << 8) | (p[1] as (i32))
-        var val  = ((p[2] as (i32)) << 24) | ((p[3] as (i32)) << 16) |
-                   ((p[4] as (i32)) << 8)  |  (p[5] as (i32))
+        var val  = (((p[2] as (u32)) << 24) | ((p[3] as (u32)) << 16) |
+                    ((p[4] as (u32)) << 8)  |  (p[5] as (u32))) as (i32)
 
         if(id == H2_SETTINGS_HEADER_TABLE_SIZE) {
             this.hpack.updateMaxSize(val)
@@ -458,7 +455,9 @@ func (this: *Http2Connection) handleHeaders(
         }
         // else: waiting for DATA frames
     } else {
-        // CONTINUATION frames expected next
+        // CONTINUATION frames expected next — save END_STREAM so we can
+        // dispatch the request once END_HEADERS arrives via CONTINUATION.
+        stream.endStream       = (hdr.flags & HTTP2_FLAG_END_STREAM) != 0
         this.pendingHeadersIdx = idx
     }
 
@@ -495,9 +494,13 @@ func (this: *Http2Connection) handleContinuation(
         stream.endHeaders       = true
         this.pendingHeadersIdx  = -1
 
-        // Check for END_STREAM: CONTINUATION doesn't carry END_STREAM itself,
-        // but if the original HEADERS had it we'd have dispatched already.
-        // If the stream is OPEN and headers are done, wait for DATA or RST.
+        // If the original HEADERS had END_STREAM (no body), dispatch now.
+        // Without this, a GET whose headers span CONTINUATION would never run.
+        if(stream.endStream) {
+            stream.state = Http2StreamState.HALF_CLOSED_REMOTE
+            this.enqueueReady(this.findStream(hdr.streamId))
+        }
+        // else: stream stays OPEN, waiting for DATA frames.
     }
 
     return Status.OK
@@ -689,7 +692,7 @@ public func (this: *Http2Connection) flushBlockedStreams(writeBuf: *StringBuilde
 // Helper
 // ---------------------------------------------------------------------------
 
-func (this: *Http2Connection) sendGoaway(writeBuf: *StringBuilder, errorCode: i32) {
+internal func (this: *Http2Connection) sendGoaway(writeBuf: *StringBuilder, errorCode: i32) {
     http2WriteGoaway(writeBuf, this.lastStreamId, errorCode)
     this.state = Http2ConnState.GOAWAY_SENT
     Debug("HTTP/2: sent GOAWAY (lastStreamId=%u, errorCode=0x%x)\n",

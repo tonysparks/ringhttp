@@ -402,11 +402,9 @@ func (this: *HttpParser) parseBodyInternal(input: String, body: *Body) : ParseSt
 
                 currentParam.name = pair.next().trim().decodeFormUrl(this.allocator)
 
-                if(!pair.hasNext()) {
-                    return ParseStatus.ERROR_INVALID_FORM_URLENCODED_PARAM
+                if(pair.hasNext()) {
+                    currentParam.value = pair.next().trim().decodeFormUrl(this.allocator)
                 }
-
-                currentParam.value = pair.next().trim().decodeFormUrl(this.allocator)
                 body.formParams.add(currentParam)
             }
             break
@@ -415,7 +413,7 @@ func (this: *HttpParser) parseBodyInternal(input: String, body: *Body) : ParseSt
             var jsonParser = JsonParserInit(this.allocator)
 
             // TODO: fix horrible duplicate copy
-            var sb = StringBuilderInit(input.length, this.allocator)
+            var sb = StringBuilderInit(input.length + 1, this.allocator)
             input.copyTo(sb.buffer, input.length)
 
             body.json = jsonParser.parseJson(sb.buffer)

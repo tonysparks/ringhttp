@@ -80,8 +80,11 @@ public func (this: *HttpRequest) reset() {
     this.flags = 0
     this.bodyLength = 0
     this.headers.clear()
-    this.method = HttpMethod.INVALID
+    this.method   = HttpMethod.INVALID
     this.bodyType = BodyType.UNKNOWN
+    this.path     = String{}
+    this.scheme   = String{}
+    this.query    = String{}
 }
 
 public struct Payload {

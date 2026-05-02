@@ -513,13 +513,39 @@ func applyHeader(name: String, value: String, request: *HttpRequest) {
 // Decode a complete HPACK header block
 // ---------------------------------------------------------------------------
 
+// Bitmask values for pseudo-header seen tracking.
+const PSEUDO_AUTHORITY: i32 = 0x01
+const PSEUDO_METHOD:    i32 = 0x02
+const PSEUDO_PATH:      i32 = 0x04
+const PSEUDO_SCHEME:    i32 = 0x08
+const PSEUDO_STATUS:    i32 = 0x10
+
+func pseudoBit(name: String) : i32 {
+    if(name.equals($":authority")) { return PSEUDO_AUTHORITY }
+    if(name.equals($":method"))    { return PSEUDO_METHOD    }
+    if(name.equals($":path"))      { return PSEUDO_PATH      }
+    if(name.equals($":scheme"))    { return PSEUDO_SCHEME    }
+    if(name.equals($":status"))    { return PSEUDO_STATUS    }
+    return 0
+}
+
+// Decode a complete HPACK header block.
+//
+// pseudoError is set to true (but decoding continues to keep HPACK state
+// consistent) if:
+//   • any pseudo-header field appears more than once, or
+//   • a pseudo-header field appears after a regular header field.
+// Both are stream-level PROTOCOL_ERRORs per RFC 7540 §8.1.2.1 / §8.1.2.6.
 public func (this: *Hpack) decode(
-    payload:    *const u8,
-    payloadLen: i32,
-    request:    *HttpRequest,
-    allocator:  *Allocator
+    payload:     *const u8,
+    payloadLen:  i32,
+    request:     *HttpRequest,
+    allocator:   *Allocator,
+    pseudoError: *bool
 ) : Status {
-    var pos = 0
+    var pos         = 0
+    var seenPseudo  = 0     // bitmask of pseudo-headers seen so far
+    var seenRegular = false // true once we see a non-pseudo header
 
     while(pos < payloadLen) {
         var first = payload[pos] as (i32)
@@ -533,6 +559,13 @@ public func (this: *Hpack) decode(
             }
             var name  = this.indexName(r.value)
             var value = this.indexValue(r.value)
+            var bit   = pseudoBit(name)
+            if(bit != 0) {
+                if(seenRegular || (seenPseudo & bit) != 0) { *pseudoError = true }
+                seenPseudo |= bit
+            } else {
+                seenRegular = true
+            }
             applyHeader(name, value, request)
 
         } else if((first & 0x40) != 0) {
@@ -556,6 +589,13 @@ public func (this: *Hpack) decode(
             }
             pos = rv.newPos
             this.dynAdd(name, rv.value)
+            var bit = pseudoBit(name)
+            if(bit != 0) {
+                if(seenRegular || (seenPseudo & bit) != 0) { *pseudoError = true }
+                seenPseudo |= bit
+            } else {
+                seenRegular = true
+            }
             applyHeader(name, rv.value, request)
 
         } else if((first & 0xe0) == 0x20) {
@@ -584,6 +624,13 @@ public func (this: *Hpack) decode(
                 return Status.ERROR_PARSING_HTTP_REQUEST
             }
             pos = rv.newPos
+            var bit = pseudoBit(name)
+            if(bit != 0) {
+                if(seenRegular || (seenPseudo & bit) != 0) { *pseudoError = true }
+                seenPseudo |= bit
+            } else {
+                seenRegular = true
+            }
             applyHeader(name, rv.value, request)
         }
     }

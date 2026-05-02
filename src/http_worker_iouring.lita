@@ -245,8 +245,7 @@ error:
 
 func (this: *WorkerThread) queueReadHttpRequest(
     ring: *io_uring,
-    session: *SessionContext,
-    clearBuffer: bool = false
+    session: *SessionContext
 ): Status {
 
     session.state = SessionState.READ_REQUEST_LINE
@@ -254,7 +253,7 @@ func (this: *WorkerThread) queueReadHttpRequest(
     var connection = &session.connection
 
     Debug("Reading HTTP request for socket: %d state: %s\n", connection.handle(), SessionStateAsStr(session.state))
-    return this.queueReadBufferRecv(ring, session, clearBuffer)
+    return this.queueReadBufferRecv(ring, session, session.ssl != null)
 }
 
 func (this: *WorkerThread) queueWriteHttpResponse(
@@ -547,6 +546,7 @@ func (this: *WorkerThread) queueWriteSseEvent(
 
     var status = this.queueWriteBufferSend(ring, session)
     if (status == Status.OK) {
+        session.submissions -= 1
         io_uring_submit(&this.ring)
     }
 
@@ -604,7 +604,7 @@ func (this: *WorkerThread) queueNextRead(
         return this.queueReadBufferRecv(ring, session)
     }
 
-    return this.queueReadHttpRequest(ring, session, .clearBuffer = session.ssl != null)
+    return this.queueReadHttpRequest(ring, session)
 }
 
 // Drain any encrypted TLS output from OpenSSL's write BIO and send it via SENDMSG.
@@ -704,7 +704,7 @@ func (this: *WorkerThread) queueTlsContinueHandshake(
 
     // No output to send — queue the next read now.
     if(ret == 1) {
-        return this.queueNextRead(ring, session)
+        return this.queueReadBufferRecv(ring, session, .clearBuffer = true)
     }
 
     var err = SSL_get_error(session.ssl, ret)
@@ -849,7 +849,7 @@ func (this: *WorkerThread) queueDispatchH2DataSend(
     var connection = &session.connection
     var status = this.processHttp2Data(session, bytesRead)
     if(status == Status.PARTIAL_REQUEST_DISPATCHING_READ) {
-        return this.queueNextRead(ring, session)
+        return this.queueReadBufferRecv(ring, session)
     }
 
     if(status != Status.OK) {
@@ -865,7 +865,7 @@ func (this: *WorkerThread) queueDispatchH2DataSend(
         return this.queueSendRaw(ring, session)
     }
 
-    return this.queueNextRead(ring, session)
+    return this.queueReadBufferRecv(ring, session)
 }
 
 // io_uring-specific HTTP/2 data handler (called from handleCompletionRing READ path).
@@ -1098,7 +1098,7 @@ func (this: *WorkerThread) handleCompletionRing(
                     if(session.submissions == 0) {
                         // Handshake output sent — re-arm read.
                         // State was already updated in queueTlsContinueHandshake if done.
-                        return this.queueNextRead(ring, session)
+                        return this.queueReadHttpRequest(ring, session)
                     }
                     break
                 }
@@ -1119,7 +1119,7 @@ func (this: *WorkerThread) handleCompletionRing(
                 case RingOpcode.SENDMSG: {
                     session.submissions -= 1
                     if(session.submissions == 0) {
-                        this.queueNextRead(ring, session)
+                        return this.queueReadBufferRecv(ring, session)
                     }
                     break
                 }
@@ -1134,7 +1134,8 @@ func (this: *WorkerThread) handleCompletionRing(
             if(operation.opcode() == RingOpcode.SENDMSG) {
                 session.submissions -= 1
                 if(session.submissions == 0) {
-                    this.queueNextRead(ring, session)
+                    //this.queueNextRead(ring, session)
+                    return this.queueReadHttpRequest(ring, session)
                 }
                 break
             }

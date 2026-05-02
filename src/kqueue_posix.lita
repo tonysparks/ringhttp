@@ -4,6 +4,7 @@
     "<sys/types.h>",
     "<sys/socket.h>",
     "<sys/uio.h>",
+    "<sys/ioctl.h>",
     "<unistd.h>",
     "<fcntl.h>",
     "<errno.h>",
@@ -87,6 +88,11 @@ public func sendfile(fd: i32, s: i32, offset: i64, len: *i64, hdtr: *void, flags
 
 @foreign public func pipe(pipefd: [2]i32) : i32;
 @foreign public func fcntl(fd: i32, cmd: i32, arg: i32) : i32;
+
+// FIONREAD: query bytes available in the socket receive buffer.
+// Value is the macOS _IOR('f', 127, int) expansion — stable across macOS versions.
+public const FIONREAD: i64 = 0x4004667f
+@foreign public func ioctl(fd: i32, request: i64, arg: *i32) : i32;
 //@foreign public func close(fd: i32) : i32;
 @foreign public func read(fd: i32, buf: *void, count: usize) : i64;
 @foreign public func write(fd: i32, buf: *const void, count: usize) : i64;
