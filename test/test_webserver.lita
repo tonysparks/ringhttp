@@ -492,10 +492,10 @@ public func runServer(testServer: *TestServer) : i32 {
     var status = server.start()
     defer server.close()
 
-    // TODO: Do NOT use assert() here — this runs on a background thread and
-    // assert() uses longjmp() to the main thread's jmp_buf, which is
-    // undefined behaviour (PAC authentication failure on ARM64e).
-    assert(Status.OK == status)
+    if(status != Status.OK) {
+        printf("Test server on port %d failed to start: %s\n",
+            testServer.config.port as (i32), StatusAsStr(status))
+    }
     return 0
 }
 

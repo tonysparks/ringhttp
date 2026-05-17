@@ -43,9 +43,6 @@ RUN mkdir -p /opt/litac-lang/bin/output \
 WORKDIR /build
 COPY . .
 
-# Patch the GitHub-cloned stdlib with local changes (verifySsl, http2, priorKnowledge on HttpOptions).
-# RUN cp /build/litac-patches/std/http/http.lita /opt/litac-lang/stdlib/std/http/http.lita
-
 # Fetch the liburing LitaC bindings declared in pkg.json.
 RUN litac install
 

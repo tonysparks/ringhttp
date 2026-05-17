@@ -18,6 +18,16 @@ import "http_ring"
 
 @foreign func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
 
+@raw("""
+#include <sys/socket.h>
+#include <sys/time.h>
+void _h2e2e_setRecvTimeout(int fd, int seconds) {
+    struct timeval tv = { seconds, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const void*)&tv, sizeof(tv));
+}
+""");
+@foreign func _h2e2e_setRecvTimeout(fd: i32, seconds: i32);
+
 // ---------------------------------------------------------------------------
 // Test server port (separate from main_test.lita to avoid conflicts)
 // ---------------------------------------------------------------------------
@@ -112,7 +122,7 @@ func ensureServer() {
     var thread = Thread{}
     assert(thread.create(H2E2EServerThread, &gServer) == ThreadStatus.SUCCESS)
     gServer.barrier.wait()
-    ThreadSleepMSec(50)  // let the listen socket bind
+    ThreadSleepMSec(200)  // let the listen socket bind
     gServerReady = true
 }
 
@@ -134,6 +144,7 @@ func h2Connect() : i32 {
         close(fd)
         return -1
     }
+    _h2e2e_setRecvTimeout(fd, 10)
     return fd
 }
 

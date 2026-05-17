@@ -15,6 +15,16 @@ import "http_ring"
 @foreign
 func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
 
+@raw("""
+#include <sys/socket.h>
+#include <sys/time.h>
+void _h2p1_setRecvTimeout(int fd, int seconds) {
+    struct timeval tv = { seconds, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const void*)&tv, sizeof(tv));
+}
+""");
+@foreign func _h2p1_setRecvTimeout(fd: i32, seconds: i32);
+
 // ---------------------------------------------------------------------------
 // Minimal HTTP handler
 // ---------------------------------------------------------------------------
@@ -66,6 +76,7 @@ func rawConnect(port: u16) : i32 {
         close(fd)
         return -1
     }
+    _h2p1_setRecvTimeout(fd, 10)
     return fd
 }
 
@@ -114,7 +125,7 @@ func testHttp2SettingsHandshake() {
     var thread = Thread{}
     assert(thread.create(ServerThread, &ts) == ThreadStatus.SUCCESS)
     ts.barrier.wait()
-    ThreadSleepMSec(50)
+    ThreadSleepMSec(200)
 
     var fd = rawConnect(9191_u16)
     assert(fd >= 0)

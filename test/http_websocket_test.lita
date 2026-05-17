@@ -20,8 +20,18 @@ import "test_webserver"
 @foreign
 func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
 
+@raw("""
+#include <sys/socket.h>
+#include <sys/time.h>
+void _ws_setRecvTimeout(int fd, int seconds) {
+    struct timeval tv = { seconds, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const void*)&tv, sizeof(tv));
+}
+""");
+@foreign func _ws_setRecvTimeout(fd: i32, seconds: i32);
+
 const WS_TEST_PORT = 19082_u16
-const WS_LIMIT_PORT: u16 = 19083_u16
+const WS_LIMIT_PORT: u16 = 19084_u16
 
 var wsTestServer = TestServer{}
 var wsConfig = HttpConfig {
@@ -186,6 +196,7 @@ func test_websocket_handshake() {
 
     var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
     assert(ret == 0)
+    _ws_setRecvTimeout(sock, 10)
 
     // Send HTTP Upgrade request
     var reqBuilder = StringBuilderInit(512)
@@ -232,6 +243,7 @@ func test_websocket_echo() {
 
     var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
     assert(ret == 0)
+    _ws_setRecvTimeout(sock, 10)
 
     // Send upgrade request
     var reqBuilder = StringBuilderInit(512)
@@ -291,6 +303,7 @@ func test_websocket_close() {
 
     var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
     assert(ret == 0)
+    _ws_setRecvTimeout(sock, 10)
 
     // Send upgrade request
     var reqBuilder = StringBuilderInit(512)
@@ -343,6 +356,7 @@ func connectToWsServer() : i32 {
         close(sock)
         return -1
     }
+    _ws_setRecvTimeout(sock, 10)
     return sock
 }
 

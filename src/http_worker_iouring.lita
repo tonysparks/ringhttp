@@ -267,6 +267,8 @@ func (this: *WorkerThread) queueWriteHttpResponse(
     var request = &session.request
     var response = &session.response
 
+    printf("[DBG] queueWriteHttpResponse: socket=%d status=%d\n", connection.handle(), response.status)
+    fflush(null)
     connection.bufferContents(request, response, this.config)
 
     Debug("Writing Http Response (socket: %d, length: %d):\n%.*s\n",
@@ -982,7 +984,6 @@ func (this: *WorkerThread) handleCompletionRing(
 
     if(!cqe) {
         Error("Error reading completion queue: %d\n", result)
-        assert(false)
         return Status.ERROR_IO_ERROR;
     }
 
@@ -1049,6 +1050,8 @@ func (this: *WorkerThread) handleCompletionRing(
     var session: *SessionContext = null
 
     if(operation.opcode() == RingOpcode.MSG_RING) {
+        printf("[DBG] MSG_RING: clientSocket=%d ring=%d\n", operation.contextIndex, ring.ring_fd)
+        fflush(null)
         session = this.handleAccept(operation.contextIndex)
         if(session == null) {
             // Pool exhausted — drop the connection rather than crashing.
@@ -1242,8 +1245,7 @@ func (this: *WorkerThread) handleCompletionRing(
                         Error("Error handling websocket frame for socket: %d: %s\n",
                             connection.handle(), StatusAsStr(status)
                         )
-                        assert(false)
-                        return status
+                        return this.queueCancelAndClose(ring, session)
                     }
 
                     return this.queueReadWebSocket(ring, session)

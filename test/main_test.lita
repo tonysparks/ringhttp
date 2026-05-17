@@ -24,6 +24,16 @@ import "test_webserver"
 @foreign
 func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
 
+@raw("""
+#include <sys/socket.h>
+#include <sys/time.h>
+void _main_setRecvTimeout(int fd, int seconds) {
+    struct timeval tv = { seconds, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const void*)&tv, sizeof(tv));
+}
+""");
+@foreign func _main_setRecvTimeout(fd: i32, seconds: i32);
+
 /**
  * Open a raw TCP connection to localhost:port, send `request` verbatim, read
  * back the response, and return the HTTP status code (e.g. 200, 400, 417).
@@ -45,6 +55,7 @@ func rawHttpStatusCode(request: *const char, port: u16 = 8080_u16) : i32 {
     if (connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) < 0) {
         return -1
     }
+    _main_setRecvTimeout(fd, 10)
 
     var reqLen = strlen(request) as (usize)
     send(fd, request as (*void), reqLen, 0)
@@ -88,6 +99,7 @@ func rawHttpHeader(request: *const char, headerName: *const char, port: u16 = 80
     if (connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) < 0) {
         return String{}
     }
+    _main_setRecvTimeout(fd, 10)
 
     var reqLen = strlen(request) as (usize)
     send(fd, request as (*void), reqLen, 0)

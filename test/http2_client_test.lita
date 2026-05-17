@@ -89,7 +89,7 @@ func ensureClientServer() {
     var thread = Thread{}
     assert(thread.create(ClientServerThread, &gClientServer) == ThreadStatus.SUCCESS)
     gClientServer.barrier.wait()
-    ThreadSleepMSec(50)
+    ThreadSleepMSec(200)
     gClientServerReady = true
 }
 
