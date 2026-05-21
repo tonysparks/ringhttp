@@ -32,8 +32,11 @@ import "openssl"
 import "std/crypto/sha1"
 import "std/encoding/base64"
 
-import "pipe_posix"
-import "liburing"
+import "std/os/linux/pipe"
+import "std/os/linux/io_uring"
+import "std/os/posix/fcntl"
+import "std/os/posix/errno"
+import "std/thread/barrier"
 import "http_sse"
 
 // Cancel all in-flight operations on a given fd (IORING_ASYNC_CANCEL_ALL = 1).
@@ -96,7 +99,7 @@ internal struct WorkerThread {
     rootPath: String
 
     // Engine state — passed in from engine to avoid circular imports
-    barrier:    *pthread_barrier_t
+    barrier:    *Barrier
     isRunning:  *Atomic<bool>
     mainRingFd: i32
 }
@@ -267,8 +270,6 @@ func (this: *WorkerThread) queueWriteHttpResponse(
     var request = &session.request
     var response = &session.response
 
-    printf("[DBG] queueWriteHttpResponse: socket=%d status=%d\n", connection.handle(), response.status)
-    fflush(null)
     connection.bufferContents(request, response, this.config)
 
     Debug("Writing Http Response (socket: %d, length: %d):\n%.*s\n",
@@ -894,7 +895,7 @@ func (this: *WorkerThread) handleHttp2Data(session: *SessionContext, rawBytesRea
 internal func (this: *WorkerThread) init(
     server:     *HttpServer,
     index:      i32,
-    barrier:    *pthread_barrier_t,
+    barrier:    *Barrier,
     isRunning:  *Atomic<bool>,
     mainRingFd: i32
 ): Status {
@@ -943,12 +944,13 @@ internal func WorkerFunction(arg: *void) : i32 {
     var ioStatus = io_uring_queue_init_params(workerThread.config.ioQueueDepth, ring, &params)
     if(ioStatus != 0) {
         Error("Error initializing the io_uring queue: %d\n", ioStatus)
+        workerThread.barrier.wait()
         return -1
     }
 
     Info("Started worker thread: %d ringfd: %d\n", ThreadCurrent().id(), workerThread.ring.ring_fd)
 
-    pthread_barrier_wait(workerThread.barrier)
+    workerThread.barrier.wait()
 
     workerThread.queueTimeoutCheck(ring)
     io_uring_submit(ring)
@@ -969,7 +971,7 @@ internal func WorkerFunction(arg: *void) : i32 {
         io_uring_submit(ring)
     }
 
-    if(ring.ring_fd > 0) {
+    if(ring.ring_fd >= 0) {
         io_uring_queue_exit(ring)
     }
 
@@ -1050,8 +1052,6 @@ func (this: *WorkerThread) handleCompletionRing(
     var session: *SessionContext = null
 
     if(operation.opcode() == RingOpcode.MSG_RING) {
-        printf("[DBG] MSG_RING: clientSocket=%d ring=%d\n", operation.contextIndex, ring.ring_fd)
-        fflush(null)
         session = this.handleAccept(operation.contextIndex)
         if(session == null) {
             // Pool exhausted — drop the connection rather than crashing.
@@ -1240,6 +1240,9 @@ func (this: *WorkerThread) handleCompletionRing(
                     if(status == Status.WEB_SOCKET_CLOSED) {
                         Info("Client Closed socket: %d\n", connection.handle())
                         return this.queueCancelAndClose(ring, session)
+                    }
+                    else if(status == Status.PARTIAL_WEB_SOCKET_DISPATCHING_READ) {
+                        return this.queueReadWebSocket(ring, session)
                     }
                     else if(status != Status.OK) {
                         Error("Error handling websocket frame for socket: %d: %s\n",

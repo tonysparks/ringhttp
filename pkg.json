@@ -109,12 +109,6 @@
         }
     },
 
-    "dependencies": [
-        {
-            "name" : "liburing",
-            "version" : "v0.0.4",
-            "repo" : "https://github.com/tonysparks/liburing"
-        }
-    ],
+    "dependencies": [],
 
 }

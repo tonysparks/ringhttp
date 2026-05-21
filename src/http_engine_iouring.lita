@@ -19,9 +19,9 @@ import "std/log"
 
 // posix specific
 import "std/net/posix_socket"
-import "pipe_posix"
-
-import "liburing"
+import "std/os/linux/pipe"
+import "std/os/linux/io_uring"
+import "std/thread/barrier"
 
 import "http_connection"
 import "http_parser"
@@ -48,7 +48,7 @@ internal struct HttpRingEngine {
 
     distribution: u64
     workers: Array<WorkerThread>
-    barrier: pthread_barrier_t
+    barrier: Barrier
 
     clientAddr: sockaddr_in;
     clientAddrLen: socklen_t;
@@ -78,6 +78,11 @@ internal func (this: *HttpRingEngine) init(
     if(!this.config.disableSignal) {
         signal(SIGINT, signal_handler);
     }
+
+    this.ring.ring_fd = -1
+    // Prevent close(0) on first close() call — Socket zero-initializes to fd=0
+    // which would close stdin and cause io_uring to be allocated fd=0.
+    this.serverSocket.socket = -1
 }
 
 internal func (this: *HttpRingEngine) listen() : Status {
@@ -93,22 +98,13 @@ internal func (this: *HttpRingEngine) listen() : Status {
     params.flags |= IORING_SETUP_COOP_TASKRUN
     params.flags |= IORING_SETUP_SUBMIT_ALL
 
-    // Get a probe fd to see what number the next fd allocation will be
-    var probeFd = dup(1)  // dup stdout to get next fd#
-    if(probeFd >= 0) close(probeFd) as (void)
-    printf("[DBG] pre-init probe fd=%d port=%d\n", probeFd, this.config.port as (i32))
-    fflush(null)
-
     var ioStatus = io_uring_queue_init_params(this.config.ioQueueDepth, &this.ring, &params)
     if(ioStatus != 0) {
         Panic("Error initializing the io_uring queue: %d\n", ioStatus)
     }
-    printf("[DBG] engine ring_fd=%d enter_ring_fd=%d port=%d\n",
-        this.ring.ring_fd, this.ring.enter_ring_fd, this.config.port as (i32))
-    fflush(null)
 
-    pthread_barrier_init(&this.barrier, null, this.config.numThreads + 1)
-    defer pthread_barrier_destroy(&this.barrier)
+    this.barrier.init(this.config.numThreads + 1)
+    defer this.barrier.destroy()
 
     var maxWorkers = MAX(this.config.numThreads, 1)
     for(var i = 0; i < maxWorkers; i+=1) {
@@ -118,7 +114,7 @@ internal func (this: *HttpRingEngine) listen() : Status {
         worker.init(this.server, i, &this.barrier, &this.isRunning, this.ring.enter_ring_fd)
     }
 
-    pthread_barrier_wait(&this.barrier)
+    this.barrier.wait()
 
     for(var i = 0; i < this.workers.length; i+=1) {
         var worker = this.workers.getPtr(i)
@@ -183,8 +179,9 @@ internal func (this: *HttpRingEngine) close() {
     this.serverSocket.close()
     this.safeAllocator.free()
 
-    if(this.ring.ring_fd > 0) {
+    if(this.ring.ring_fd >= 0) {
         io_uring_queue_exit(&this.ring)
+        this.ring.ring_fd = -1
     }
 
     if(this.sslCtx) {
@@ -200,14 +197,9 @@ internal func (this: *HttpRingEngine) free() {
 
 
 func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): Status {
-    printf("[DBG] queueAcceptRequest: port=%d serverSock=%d ring=%d\n",
-        this.config.port as (i32), this.serverSocket.handle(), ring.ring_fd)
-    fflush(null)
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
         var space = io_uring_sq_space_left(ring)
-        printf("[DBG] queueAcceptRequest FAILED: port=%d space=%d\n", this.config.port as (i32), space)
-        fflush(null)
         Error("Error creating SQE for server socket, space remaining: %d\n", space)
         goto error;
     }
@@ -222,11 +214,8 @@ func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): Status {
 
     io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.ACCEPT, 0))
     var submitResult = io_uring_submit(ring)
-    printf("[DBG] queueAcceptRequest: port=%d submit=%d\n", this.config.port as (i32), submitResult)
-    fflush(null)
-
-    if(submitResult < 0) {
-        Error("io_uring_submit failed for multishot accept: %d (%s)\n", submitResult, strerror(-submitResult))
+    if(submitResult <= 0) {
+        Error("io_uring_submit failed for multishot accept: %d\n", submitResult)
         goto error;
     }
 
@@ -252,9 +241,6 @@ func (this: *HttpRingEngine) queueHandleConnection(
     this.distribution = (this.distribution + 1) % (this.workers.length as (u64))
     var worker = this.workers.getPtr(this.distribution as (i32))
 
-    printf("[DBG] DISPATCH: port=%d socket=%d → workerRing=%d\n",
-        this.config.port as (i32), clientSocket, worker.ring.ring_fd)
-    fflush(null)
     Debug("Handing off to thread: %d with ring %d\n", worker.thread.id(), worker.ring.ring_fd)
 
     // Dispatch to one of the worker threads about this connect
@@ -291,8 +277,6 @@ func (this: *HttpRingEngine) handleCompletionRing(
 
     switch(operation.opcode()) {
         case RingOpcode.ACCEPT: {
-            printf("[DBG] ACCEPT: clientSocket=%d port=%d ring=%d\n", cqe.res, this.config.port as (i32), ring.ring_fd)
-            fflush(null)
             Debug("CONNECTED: client socket: %d\n", cqe.res)
             if(cqe.res == 0) {
                 break

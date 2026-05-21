@@ -196,7 +196,7 @@ func test_websocket_handshake() {
 
     var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
     assert(ret == 0)
-    _ws_setRecvTimeout(sock, 10)
+    _ws_setRecvTimeout(sock, 5)
 
     // Send HTTP Upgrade request
     var reqBuilder = StringBuilderInit(512)
@@ -243,7 +243,7 @@ func test_websocket_echo() {
 
     var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
     assert(ret == 0)
-    _ws_setRecvTimeout(sock, 10)
+    _ws_setRecvTimeout(sock, 5)
 
     // Send upgrade request
     var reqBuilder = StringBuilderInit(512)
@@ -303,7 +303,7 @@ func test_websocket_close() {
 
     var ret = connect(sock, (&addr) as (*sockaddr), sizeof(addr) as (socklen_t))
     assert(ret == 0)
-    _ws_setRecvTimeout(sock, 10)
+    _ws_setRecvTimeout(sock, 5)
 
     // Send upgrade request
     var reqBuilder = StringBuilderInit(512)
@@ -356,7 +356,7 @@ func connectToWsServer() : i32 {
         close(sock)
         return -1
     }
-    _ws_setRecvTimeout(sock, 10)
+    _ws_setRecvTimeout(sock, 5)
     return sock
 }
 
