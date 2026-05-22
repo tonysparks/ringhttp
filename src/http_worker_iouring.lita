@@ -105,9 +105,80 @@ internal struct WorkerThread {
 }
 
 
-// queueSend: buffer the response and submit it via io_uring sendmsg.
+// queueSend: serialize the HTTP/1.1 response, optionally encrypt via TLS, and submit via io_uring.
 internal func (this: *WorkerThread) queueSend(session: *SessionContext) : Status {
-    return this.queueWriteHttpResponse(&this.ring, session)
+    var ring = &this.ring
+
+    session.state = SessionState.WRITTEN_HTTP_RESPONSE
+
+    var connection = &session.connection
+    var request = &session.request
+    var response = &session.response
+
+    connection.bufferContents(request, response, this.config)
+
+    Debug("Writing Http Response (socket: %d, length: %d):\n%.*s\n",
+        connection.handle(),
+        connection.writeBuffer.length,
+        connection.writeBuffer.length, connection.writeBuffer.buffer
+    )
+
+    // SSE headers must be flushed immediately (no MSG_MORE) so the browser sees
+    // the event-stream content-type right away.  FILE and STREAM still use MSG_MORE
+    // to hint the kernel to batch headers with the first data write.
+    // RFC 7231 §4.3.2: HEAD must not include a body — treat like a plain response.
+    var isHeadFile = (response.type == ResponseType.FILE && session.request.method == HttpMethod.HEAD)
+    var useMoreFlag = !session.ssl && !isHeadFile &&
+                      (response.type == ResponseType.FILE || response.type == ResponseType.STREAM)
+
+    var sqeFlags = 0_u8
+    if(response.type == ResponseType.FILE && !isHeadFile) {
+        sqeFlags |= IOSQE_IO_LINK
+    }
+
+    // Encrypt TLS BODY responses in-place; FILE/STREAM/SSE use streaming paths.
+    var useTls = session.ssl != null && response.type == ResponseType.BODY
+    var status = this.queueWriteBufferSend(ring, session, useTls, useMoreFlag, sqeFlags)
+        ?: return status
+
+    if(isHeadFile) {
+        // No body for HEAD: async-close the file handle, then wait for both
+        // the SENDMSG and CLOSE CQEs before resetting (submissions tracks both).
+        if(response.fileHandle > 0) {
+            var sqe = io_uring_get_sqe(ring)
+            if(sqe) {
+                io_uring_prep_close(
+                    sqe,
+                    response.fileHandle
+                )
+                io_uring_sqe_set_data64(
+                    sqe,
+                    makeOp(RingOpcode.CLOSE, session.index, session.generation)
+                )
+                session.submissions += 1
+            } else {
+                // for sync close if no sqe
+                close(response.fileHandle)
+            }
+            response.fileHandle = 0
+            session.file        = 0
+        }
+        session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
+    }
+    else if(response.type == ResponseType.FILE) {
+        session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
+        return this.queueWriteHttpFileResponse(ring, session)
+    }
+    else if(response.type == ResponseType.SSE) {
+        // Headers sent; the WRITTEN_HTTP_RESPONSE_MORE CQE handler will invoke
+        // the SSE callback once the send completes.
+        session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
+    }
+    else if(response.type == ResponseType.STREAM) {
+        session.state = SessionState.WRITING_STREAM
+    }
+
+    return Status.OK
 }
 
 // closeSession: cancel pending operations and close the connection.
@@ -165,15 +236,52 @@ error:
     return Status.ERROR_IOURING_ERROR;
 }
 
+// Single write path: optionally encrypt via TLS, then submit a SENDMSG SQE.
+// useTls=true  — plaintext is in writeBuffer; SSL_write encrypts it before sending.
+// useTls=false — writeBuffer is already ready (plain) or BIO has handshake output to drain.
 func (this: *WorkerThread) queueWriteBufferSend(
     ring: *io_uring,
     session: *SessionContext,
+    useTls: bool = false,
     moreContents: bool = false,
     sqeFlags: u8 = 0
 ): Status {
-
-    var connection = &session.connection
+    var connection  = &session.connection
     var writeBuffer = &connection.writeBuffer
+
+    if(session.ssl) {
+        if(useTls && writeBuffer.length > 0) {
+            var written = SSL_write(session.ssl, writeBuffer.buffer as (*const void), writeBuffer.length)
+            if(written <= 0) {
+                Error("TLS: SSL_write failed on socket %d\n", connection.handle())
+                var status = this.queueCancelAndClose(ring, session)
+                    ?: return status
+                return Status.ERROR_SSL_ERROR
+            }
+        }
+
+        // Drain write BIO into writeBuffer (covers both app-data encryption and handshake output).
+        writeBuffer.clear()
+        var pending = BIO_ctrl(SSL_get_wbio(session.ssl), BIO_CTRL_PENDING, 0, null) as (i32)
+        if(pending > 0) {
+            if(!writeBuffer.reserve(pending)) {
+                Error("TLS: OOM on socket %d\n", connection.handle())
+                this.queueCancelAndClose(ring, session)
+                return Status.ERROR_OUT_OF_MEMORY
+            }
+            var n = BIO_read(SSL_get_wbio(session.ssl), writeBuffer.buffer as (*void), pending)
+            if(n <= 0) {
+                Error("TLS: BIO_read failed on socket %d\n", connection.handle())
+                this.queueCancelAndClose(ring, session)
+                return Status.ERROR_SSL_ERROR
+            }
+            writeBuffer.length = n
+        }
+
+        if(writeBuffer.length == 0) {
+            return Status.OK
+        }
+    }
 
     var sqe = io_uring_get_sqe(ring)
     if(!sqe) {
@@ -188,18 +296,14 @@ func (this: *WorkerThread) queueWriteBufferSend(
         writeBuffer.length,
         moreContents ? SocketFlags.MSG_MORE : 0
     )
-    io_uring_sqe_set_data64(
-        sqe,
-        makeOp(RingOpcode.SENDMSG, session.index, session.generation)
-    )
-
+    io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.SENDMSG, session.index, session.generation))
     sqe.flags |= sqeFlags
 
     session.submissions += 1
-    return Status.OK;
+    return Status.OK
 
 error:
-    return Status.ERROR_IOURING_ERROR;
+    return Status.ERROR_IOURING_ERROR
 }
 
 
@@ -259,90 +363,6 @@ func (this: *WorkerThread) queueReadHttpRequest(
     return this.queueReadBufferRecv(ring, session, session.ssl != null)
 }
 
-func (this: *WorkerThread) queueWriteHttpResponse(
-    ring: *io_uring,
-    session: *SessionContext
-): Status {
-
-    session.state = SessionState.WRITTEN_HTTP_RESPONSE
-
-    var connection = &session.connection
-    var request = &session.request
-    var response = &session.response
-
-    connection.bufferContents(request, response, this.config)
-
-    Debug("Writing Http Response (socket: %d, length: %d):\n%.*s\n",
-        connection.handle(),
-        connection.writeBuffer.length,
-        connection.writeBuffer.length, connection.writeBuffer.buffer
-    )
-
-    // For TLS BODY responses: encrypt the serialized HTTP/1.1 response in-place.
-    // FILE/STREAM/SSE over TLS require streaming encryption and are not handled here.
-    if(session.ssl && response.type == ResponseType.BODY) {
-        this.tlsEncryptWriteBuffer(ring, session)
-            ?: return Status.ERROR_SSL_ERROR
-    }
-
-    // SSE headers must be flushed immediately (no MSG_MORE) so the browser sees
-    // the event-stream content-type right away.  FILE and STREAM still use MSG_MORE
-    // to hint the kernel to batch headers with the first data write.
-    // RFC 7231 §4.3.2: HEAD must not include a body — treat like a plain response.
-    var isHeadFile = (response.type == ResponseType.FILE && session.request.method == HttpMethod.HEAD)
-    var useMoreFlag = !session.ssl && !isHeadFile &&
-                      (response.type == ResponseType.FILE || response.type == ResponseType.STREAM)
-
-    var sqeFlags = 0_u8
-    if(response.type == ResponseType.FILE && !isHeadFile) {
-        sqeFlags |= IOSQE_IO_LINK
-    }
-
-    var status = this.queueWriteBufferSend(ring, session, useMoreFlag, sqeFlags)
-        ?: return status
-
-    if(isHeadFile) {
-        // No body for HEAD: async-close the file handle, then wait for both
-        // the SENDMSG and CLOSE CQEs before resetting (submissions tracks both).
-        if(response.fileHandle > 0) {
-            var sqe = io_uring_get_sqe(ring)
-            if(sqe) {
-                io_uring_prep_close(
-                    sqe,
-                    response.fileHandle
-                )
-                io_uring_sqe_set_data64(
-                    sqe,
-                    makeOp(RingOpcode.CLOSE, session.index, session.generation)
-                )
-                session.submissions += 1
-            } else {
-                // for sync close if no sqe
-                close(response.fileHandle)
-            }
-            response.fileHandle = 0
-            session.file        = 0
-        }
-        session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
-    }
-    else if(response.type == ResponseType.FILE) {
-        session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
-        return this.queueWriteHttpFileResponse(ring, session)
-    }
-    else if(response.type == ResponseType.SSE) {
-        // Headers sent; the WRITTEN_HTTP_RESPONSE_MORE CQE handler will invoke
-        // the SSE callback once the send completes.
-        session.state = SessionState.WRITTEN_HTTP_RESPONSE_MORE
-    }
-    else if(response.type == ResponseType.STREAM) {
-        session.state = SessionState.WRITING_STREAM
-    }
-
-    return Status.OK
-
-error:
-    return Status.ERROR_IOURING_ERROR;
-}
 
 func (this: *WorkerThread) queueAdvanceChunkedWrite(
     ring: *io_uring,
@@ -610,28 +630,6 @@ func (this: *WorkerThread) queueNextRead(
     return this.queueReadHttpRequest(ring, session)
 }
 
-// Drain any encrypted TLS output from OpenSSL's write BIO and send it via SENDMSG.
-// Writes to connection.writeBuffer; submits a SENDMSG SQE if there is data.
-// Returns Status.OK on success or if there is nothing to send; closes the session and
-// returns an error Status on failure.
-func (this: *WorkerThread) queueTlsWrite(
-    ring:    *io_uring,
-    session: *SessionContext
-) : Status {
-    var status = this.tlsFillWriteBuffer(ring, session)
-    if(status != Status.OK) {
-        this.queueCancelAndClose(ring, session)
-        return status
-    }
-
-    status = this.queueWriteBufferSend(ring, session)
-    if(status != Status.OK) {
-        this.queueCancelAndClose(ring, session)
-        return status
-    }
-
-    return status
-}
 
 // Create SSL with memory BIOs and begin the TLS handshake.
 func (this: *WorkerThread) queueTlsBeginHandshake(
@@ -696,8 +694,9 @@ func (this: *WorkerThread) queueTlsContinueHandshake(
     }
 
     // Flush any handshake output (ServerHello, Finished, etc.) via SENDMSG.
+    // useTls=false: BIO already has the handshake records from SSL_accept; no SSL_write needed.
     // The SENDMSG CQE will queue the next READ when submissions reaches 0.
-    var flushStatus = this.queueTlsWrite(ring, session)
+    var flushStatus = this.queueWriteBufferSend(ring, session)
         ?: return flushStatus
 
     if(session.submissions > 0) {
@@ -719,62 +718,6 @@ func (this: *WorkerThread) queueTlsContinueHandshake(
     return this.queueCancelAndClose(ring, session)
 }
 
-func (this: *WorkerThread) tlsFillWriteBuffer(
-    ring:    *io_uring,
-    session: *SessionContext
-) : Status {
-    var writeBuffer = &session.connection.writeBuffer
-    writeBuffer.clear()
-
-    // Swap writeBuffer to contain the ciphertext.
-    var pending = BIO_ctrl(SSL_get_wbio(session.ssl), BIO_CTRL_PENDING, 0, null) as (i32)
-    if (pending <= 0) {
-        return Status.OK
-    }
-
-    if(!writeBuffer.reserve(pending)) {
-        Error("TLS: OOM swapping encrypted buffer on socket %d\n", session.connection.handle())
-        return Status.ERROR_OUT_OF_MEMORY
-    }
-    var n = BIO_read(SSL_get_wbio(session.ssl), writeBuffer.buffer as (*void), pending)
-    if(n <= 0) {
-        Error("TLS: BIO_read failed on socket %d\n", session.connection.handle())
-        return Status.ERROR_SSL_ERROR
-    }
-
-    writeBuffer.length = n
-    return Status.OK
-}
-
-
-// Encrypt connection.writeBuffer in-place via SSL (two-phase: plaintext → BIO → ciphertext).
-// Returns false and closes the session on error.
-func (this: *WorkerThread) tlsEncryptWriteBuffer(
-    ring:    *io_uring,
-    session: *SessionContext
-) : Status {
-    var writeBuffer = &session.connection.writeBuffer
-    if(writeBuffer.length == 0) {
-        return Status.OK
-    }
-
-    // Encrypt: SSL_write reads plaintext from writeBuffer → stores ciphertext in wbio.
-    var written = SSL_write(session.ssl, writeBuffer.buffer as (*const void), writeBuffer.length)
-    if(written <= 0) {
-        Error("TLS: SSL_write failed on socket %d\n", session.connection.handle())
-        var status = this.queueCancelAndClose(ring, session)
-            ?: return status
-        return Status.ERROR_SSL_ERROR
-    }
-
-    var status = this.tlsFillWriteBuffer(ring, session)
-    if(status != Status.OK) {
-        this.queueCancelAndClose(ring, session)
-        return status
-    }
-
-    return status
-}
 
 // Decrypt raw TLS ciphertext already in readBuffer back into readBuffer (in-place).
 // Returns number of decrypted bytes, 0 if more wire bytes are needed (WANT_READ),
@@ -817,29 +760,6 @@ func (this: *WorkerThread) tlsDecryptToReadBuffer(
 // HTTP/2 helpers
 // ---------------------------------------------------------------
 
-// Send connection.writeBuffer as-is (H2 frames already serialized).
-// Encrypts via TLS if active. The SENDMSG CQE re-arms the read.
-func (this: *WorkerThread) queueSendRaw(
-    ring:    *io_uring,
-    session: *SessionContext
-) : Status {
-    var connection  = &session.connection
-    var writeBuffer = &connection.writeBuffer
-
-    if(writeBuffer.length == 0) {
-        return Status.OK
-    }
-
-    if(session.ssl) {
-        if(this.tlsEncryptWriteBuffer(ring, session) != Status.OK) {
-            return Status.ERROR_IO_ERROR
-        }
-        if(writeBuffer.length == 0) {
-            return Status.OK
-        }
-    }
-    return this.queueWriteBufferSend(ring, session)
-}
 
 // Run the H2 frame machine on `bytesRead` plaintext bytes sitting in readBuffer
 // (not yet committed — processHttp2Data will advance readBuffer.length).
@@ -858,14 +778,14 @@ func (this: *WorkerThread) queueDispatchH2DataSend(
     if(status != Status.OK) {
         // processHttp2Data may have written a GOAWAY — flush before closing.
         if(connection.writeBuffer.length > 0) {
-            this.queueSendRaw(ring, session)
+            this.queueWriteBufferSend(ring, session, session.ssl != null)
         }
         this.queueCancelAndClose(ring, session)
         return status;
     }
     if(connection.writeBuffer.length > 0) {
         // SENDMSG CQE will re-arm the read.
-        return this.queueSendRaw(ring, session)
+        return this.queueWriteBufferSend(ring, session, session.ssl != null)
     }
 
     return this.queueReadBufferRecv(ring, session)
