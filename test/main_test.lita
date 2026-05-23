@@ -75,6 +75,9 @@ func rawHttpStatusCode(request: *const char, port: u16 = 8080_u16) : i32 {
     }
     var afterVersion = response.substring(spaceIdx + 1)
     var parsed = afterVersion.parseInt(10)
+    if(parsed.error != ParseError.NONE) {
+        return -1
+    }
     return parsed.value as (i32)
 }
 
@@ -987,6 +990,7 @@ func test_expect_100_continue() {
     var spaceIdx = finalResp.indexOf($" ")
     assert(spaceIdx >= 0)
     var parsed = finalResp.substring(spaceIdx + 1).parseInt(10)
+    assert(parsed.error == ParseError.NONE)
     assert(parsed.value == 200)
 }
 

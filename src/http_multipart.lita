@@ -5,6 +5,7 @@ import "std/mem"
 
 import "http_request"
 import "http_parser"
+import "http_common"
 
 public const MULTIPART_HEADER : String = $"multipart/form-data"
 public const CONTENT_TYPE_HEADER : String = $"content-type"
@@ -27,7 +28,7 @@ public func ParseMultipart(
     allocator: *const Allocator,
     request: *HttpRequest,
     result: *HttpMultipart
-) : ParseStatus {
+) : Status {
 
     for(var i = 0; i < request.headers.size(); i+=1) {
         var header = request.headers.getPtr(i)
@@ -43,16 +44,16 @@ public func ParseMultipart(
             if(index > -1) {
                 var boundaryStart = index + BOUNDARY_LENGTH
                 if(boundaryStart >= value.length) {
-                    return ParseStatus.ERROR_INVALID_MULTIPART_SECTION
+                    return Status.ERROR_HTTP_PARSING_INVALID_MULTIPART_SECTION
                 }
                 result.boundary.buffer = &value.buffer[boundaryStart]
                 result.boundary.length = value.length - boundaryStart
                 // TODO use HttpParser (parseHeaders to parse each part's header)
-                return ParseStatus.OK
+                return Status.OK
             }
         }
     }
 
-    return ParseStatus.ERROR_INVALID_MULTIPART_SECTION
+    return Status.ERROR_HTTP_PARSING_INVALID_MULTIPART_SECTION
 }
 

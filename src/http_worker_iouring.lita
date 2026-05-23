@@ -26,18 +26,18 @@ import "http_worker"
 import "http2_connection"
 import "http2_frame"
 import "http2_stream"
+import "http_sse"
 import "mime"
-import "openssl"
 
 import "std/crypto/sha1"
 import "std/encoding/base64"
 
+import "std/ssl/openssl"
 import "std/os/linux/pipe"
 import "std/os/linux/io_uring"
 import "std/os/posix/fcntl"
 import "std/os/posix/errno"
 import "std/thread/barrier"
-import "http_sse"
 
 // Cancel all in-flight operations on a given fd (IORING_ASYNC_CANCEL_ALL = 1).
 const IORING_ASYNC_CANCEL_ALL: i32 = 1
@@ -1111,6 +1111,7 @@ func (this: *WorkerThread) handleCompletionRing(
                     case Status.ERROR_EXPECT_FAILED:
                     case Status.ERROR_CONFLICTING_BODY_HEADERS:
                     case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
+                    case Status.ERROR_INVALID_CONTENT_LENGTH:
                     case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
                     case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION: {
                         return this.sendBadRequest(session, status)

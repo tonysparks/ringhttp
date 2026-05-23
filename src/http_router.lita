@@ -80,7 +80,7 @@ public func (this: *Router) register(
     handler: RequestHandler) : bool {
 
     var template: HttpPathTemplate;
-    if(ParsePathTemplateStr(route, &template) != ParseStatus.OK) {
+    if(ParsePathTemplateStr(route, &template) != Status.OK) {
         return false
     }
 
@@ -127,7 +127,7 @@ public func (this: *Router) match(
             result.template = &route.template
             result.handler = route.handler
 
-            return ParsePathValues(&route.template, path, &result.values) == ParseStatus.OK
+            return ParsePathValues(&route.template, path, &result.values) == Status.OK
         }
     }
 
@@ -139,7 +139,7 @@ public func (this: *Router) match(
             if(CheckMatch(&route.template, path)) {
                 result.template = &route.template
                 result.handler = route.handler
-                return ParsePathValues(&route.template, path, &result.values) == ParseStatus.OK
+                return ParsePathValues(&route.template, path, &result.values) == Status.OK
             }
         }
     }

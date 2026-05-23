@@ -20,7 +20,7 @@ func testParse() {
 "GET /this/is/path HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nOrigin: example.com\r\nAgent:Some other Stuff/And some thingds end.\r\n\r\nname=Anthony+Sparks&address=3265+FORDHAM+CT&phone=414-315-1920"
 );
 
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
 
     // request line
     assert(result.method == HttpMethod.GET)
@@ -40,7 +40,7 @@ func testParse() {
 
     // body — parse form params from the portion after \r\n\r\n
     var bodyStr = input.substring(input.endIndexOf($"\r\n\r\n"))
-    assert(parser.parseBody(bodyStr, &result) == ParseStatus.OK)
+    assert(parser.parseBody(bodyStr, &result) == Status.OK)
 
     assert(result.formParams.size() == 3)
     assert(result.formParams.getPtr(0).name.equals($"name"))
@@ -62,7 +62,7 @@ func testParseMultipart() {
 "POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Length: 356\r\n\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nJohn Doe\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"address\"\r\n\r\n123 Elm Street\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"phone\"\r\n\r\n+1234567890\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW\r\nContent-Disposition: form-data; name=\"file\"; filename=\"example.txt\"\r\nContent-Type: text/plain\r\n\r\nThis is the content of the file.\r\n------WebKitFormBoundary7MA4YWxkTrZu0gW--"
 );
 
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
 
     // request line
     assert(result.method == HttpMethod.POST)
@@ -83,7 +83,7 @@ func testParseMultipart() {
 
     // parse the multipart body
     var bodyStr = input.substring(input.endIndexOf($"\r\n\r\n"))
-    assert(parser.parseBody(bodyStr, &result) == ParseStatus.OK)
+    assert(parser.parseBody(bodyStr, &result) == Status.OK)
 
     assert(result.multipart.parts.size() == 4)
 
@@ -125,13 +125,13 @@ func testParseChunkSizeTruncation() {
     // 0x80000000 in hex followed by the mandatory CRLF terminator sequence.
     var input = StringInit("80000000\r\n0\r\n\r\n")
     var status = parser.parseChunk(input, &result)
-    assert(status == ParseStatus.ERROR_INVALID_CHUNK)
+    assert(status == Status.ERROR_HTTP_PARSING_INVALID_CHUNK)
 
     // Sanity-check: a normal small chunk still parses correctly.
     var result2: HttpRequest;
     var input2 = StringInit("5\r\nhello\r\n0\r\n\r\n")
     var status2 = parser.parseChunk(input2, &result2)
-    assert(status2 == ParseStatus.OK)
+    assert(status2 == Status.OK)
     assert(result2.body.body.equalsString("hello"))
 }
 
@@ -157,7 +157,7 @@ func testParseMultipartSingleCharQuotedName() {
     // Primary safety check: parsing must not crash or corrupt memory.
     // Don't assert parts.size() > 0; parser may skip or fail parts with
     // unusual disposition values, which is legitimate behaviour.
-    if(status == ParseStatus.OK && result.multipart.parts.size() > 0) {
+    if(status == Status.OK && result.multipart.parts.size() > 0) {
         var part = result.multipart.parts.getPtr(0)
         // After the fix length is either 0 (quotes stripped) or 2 (kept intact).
         assert(part.formData.name.length >= 0 && part.formData.name.length <= 2)
@@ -181,7 +181,7 @@ func testParseMultipartSingleCharQuotedFilename() {
     // If the parser also returns a well-formed part, validate the filename
     // length; but we do NOT demand a specific part count because the parser
     // may legitimately reject or skip parts with unusual sub-headers.
-    if(status == ParseStatus.OK && result.multipart.parts.size() > 0) {
+    if(status == Status.OK && result.multipart.parts.size() > 0) {
         var part = result.multipart.parts.getPtr(0)
         assert(part.formData.filename.length >= 0 && part.formData.filename.length <= 2)
     }
@@ -206,7 +206,7 @@ func testParseMultipartBodyTooShort() {
     var status = parser.parse(input, &result)
     // Must not crash — either the body is accepted (edge-case tolerance) or
     // ERROR_INVALID_MULTIPART is returned.  It must never silently corrupt.
-    assert(status == ParseStatus.ERROR_INVALID_MULTIPART || status == ParseStatus.OK)
+    assert(status == Status.ERROR_HTTP_PARSING_INVALID_MULTIPART || status == Status.OK)
 }
 
 // Bug fix: chunk end index was computed as (size + 3) instead of (index + 2 + size).
@@ -223,14 +223,14 @@ func testParseChunkMultiDigitHexSize() {
     var result: HttpRequest;
     var input = StringInit("0a\r\n0123456789\r\n0\r\n\r\n")
     var status = parser.parseChunk(input, &result)
-    assert(status == ParseStatus.OK)
+    assert(status == Status.OK)
     assert(result.body.body.equalsString("0123456789"))
 
     // Two chunks with multi-digit sizes.
     var result2: HttpRequest;
     var input2 = StringInit("05\r\nhello\r\n06\r\nworld!\r\n0\r\n\r\n")
     var status2 = parser.parseChunk(input2, &result2)
-    assert(status2 == ParseStatus.OK)
+    assert(status2 == Status.OK)
     assert(result2.body.body.equalsString("helloworld!"))
 }
 
@@ -265,7 +265,7 @@ func testHeaderValueWithColon() {
     var input = StringInit(
 "GET / HTTP/1.1\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nAuthorization: Bearer tok:en\r\nX-Custom: http://example.com/path\r\n\r\n"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.headers.size() == 3)
     assert(result.headers.getPtr(0).name.equals($"Date"))
     assert(result.headers.getPtr(0).values.equals($"Thu, 01 Jan 1970 00:00:00 GMT"))
@@ -287,7 +287,7 @@ func testTransferEncodingCaseInsensitive() {
     var input = StringInit(
 "POST /upload HTTP/1.1\r\nTransfer-Encoding: Chunked\r\n\r\n"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.flags & HttpFlags.CHUNKED_ENCODING)
 
     // "CHUNKED" (all caps).
@@ -295,7 +295,7 @@ func testTransferEncodingCaseInsensitive() {
     var input2 = StringInit(
 "POST /upload HTTP/1.1\r\nTransfer-Encoding: CHUNKED\r\n\r\n"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert(result2.flags & HttpFlags.CHUNKED_ENCODING)
 }
 
@@ -309,7 +309,7 @@ func testConnectionUpgradeCaseInsensitive() {
     var input = StringInit(
 "GET /ws HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.flags & HttpFlags.UPGRADE_REQUEST)
 
     // Mixed case.
@@ -317,7 +317,7 @@ func testConnectionUpgradeCaseInsensitive() {
     var input2 = StringInit(
 "GET /ws HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert(result2.flags & HttpFlags.UPGRADE_REQUEST)
 }
 
@@ -332,7 +332,7 @@ func testParseExpectContinue() {
     var input = StringInit(
 "POST /upload HTTP/1.1\r\nHost: example.com\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert((result.flags & HttpFlags.EXPECT_CONTINUE) != 0)
 
     // Case-insensitive variant.
@@ -340,7 +340,7 @@ func testParseExpectContinue() {
     var input2 = StringInit(
 "POST /upload HTTP/1.1\r\nHost: example.com\r\nExpect: 100-Continue\r\nContent-Length: 5\r\n\r\n"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert((result2.flags & HttpFlags.EXPECT_CONTINUE) != 0)
 
     // No Expect header → flag must NOT be set.
@@ -349,7 +349,7 @@ func testParseExpectContinue() {
     var input3 = StringInit(
 "POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\n"
 )
-    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert(parser.parse(input3, &result3) == Status.OK)
     assert((result3.flags & HttpFlags.EXPECT_CONTINUE) == 0)
 }
 
@@ -369,7 +369,7 @@ func testTransferEncodingTakesPrecedenceOverContentLength() {
     var input = StringInit(
 "POST /data HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 99\r\n\r\n"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.flags & HttpFlags.CHUNKED_ENCODING)
     // The worker strips CONTENT_LENGTH_PROVIDED when CHUNKED_ENCODING is set.
     // At parse time both flags may be present; the important invariant is that
@@ -391,7 +391,7 @@ func testAbsoluteFormUriStripping() {
     var input = StringInit(
 "GET http://example.com/some/path HTTP/1.1\r\nHost: example.com\r\n\r\n"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.path.equals($"/some/path"))
     assert(result.scheme.equals($"http"))
 
@@ -400,7 +400,7 @@ func testAbsoluteFormUriStripping() {
     var input2 = StringInit(
 "GET http://example.com/search?q=hello&page=2 HTTP/1.1\r\nHost: example.com\r\n\r\n"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert(result2.path.equals($"/search"))
     assert(result2.query.equals($"q=hello&page=2"))
 
@@ -409,7 +409,7 @@ func testAbsoluteFormUriStripping() {
     var input3 = StringInit(
 "GET http://example.com HTTP/1.1\r\nHost: example.com\r\n\r\n"
 )
-    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert(parser.parse(input3, &result3) == Status.OK)
     assert(result3.path.equals($"/"))
 
     // Normal origin-form must still work unchanged.
@@ -417,7 +417,7 @@ func testAbsoluteFormUriStripping() {
     var input4 = StringInit(
 "GET /origin/path HTTP/1.1\r\nHost: example.com\r\n\r\n"
 )
-    assert(parser.parse(input4, &result4) == ParseStatus.OK)
+    assert(parser.parse(input4, &result4) == Status.OK)
     assert(result4.path.equals($"/origin/path"))
 }
 
@@ -433,7 +433,7 @@ func testKeepAliveRequestedFlag() {
     var input = StringInit(
 "GET / HTTP/1.0\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert((result.flags & HttpFlags.KEEP_ALIVE_REQUESTED) != 0)
     // Must NOT set DISABLE_KEEP_ALIVE — only "close" sets that.
     assert((result.flags & HttpFlags.DISABLE_KEEP_ALIVE) == 0)
@@ -443,7 +443,7 @@ func testKeepAliveRequestedFlag() {
     var input2 = StringInit(
 "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert((result2.flags & HttpFlags.KEEP_ALIVE_REQUESTED) == 0)
     assert((result2.flags & HttpFlags.DISABLE_KEEP_ALIVE) != 0)
 
@@ -452,7 +452,7 @@ func testKeepAliveRequestedFlag() {
     var input3 = StringInit(
 "GET /ws HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive, upgrade\r\n\r\n"
 )
-    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert(parser.parse(input3, &result3) == Status.OK)
     assert((result3.flags & HttpFlags.KEEP_ALIVE_REQUESTED) != 0)
     assert((result3.flags & HttpFlags.UPGRADE_REQUEST) != 0)
 }
@@ -469,7 +469,7 @@ func testExpectUnknownFlag() {
     var input = StringInit(
 "POST /upload HTTP/1.1\r\nHost: example.com\r\nExpect: i-can-fly\r\nContent-Length: 5\r\n\r\n"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert((result.flags & HttpFlags.EXPECT_UNKNOWN) != 0)
     assert((result.flags & HttpFlags.EXPECT_CONTINUE) == 0)
 
@@ -478,7 +478,7 @@ func testExpectUnknownFlag() {
     var input2 = StringInit(
 "POST /upload HTTP/1.1\r\nHost: example.com\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert((result2.flags & HttpFlags.EXPECT_UNKNOWN) == 0)
     assert((result2.flags & HttpFlags.EXPECT_CONTINUE) != 0)
 }
@@ -496,13 +496,13 @@ func testChunkDataCompleteness() {
     var result: HttpRequest;
     var input = StringInit("100\r\n0\r\n\r\n")
     var status = parser.parseChunk(input, &result)
-    assert(status == ParseStatus.CHUNK_INCOMPLETE)
+    assert(status == Status.ERROR_HTTP_PARSING_CHUNK_INCOMPLETE)
 
     // Sanity: a fully-buffered chunk must still parse correctly.
     var result2: HttpRequest;
     var input2 = StringInit("5\r\nhello\r\n0\r\n\r\n")
     var status2 = parser.parseChunk(input2, &result2)
-    assert(status2 == ParseStatus.OK)
+    assert(status2 == Status.OK)
     assert(result2.body.body.equalsString("hello"))
 }
 
@@ -519,7 +519,7 @@ func testQuotedMultipartBoundary() {
     var input = StringInit(
 "POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=\"----MyBoundary\"\r\nContent-Length: 100\r\n\r\n"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.bodyType == BodyType.MULTIPART_FORMDATA)
     // Boundary must be the unquoted value.
     assert(result.multipart.boundary.equals($"----MyBoundary"))
@@ -529,7 +529,7 @@ func testQuotedMultipartBoundary() {
     var input2 = StringInit(
 "POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=----MyBoundary\r\nContent-Length: 100\r\n\r\n"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert(result2.bodyType == BodyType.MULTIPART_FORMDATA)
     assert(result2.multipart.boundary.equals($"----MyBoundary"))
 }
@@ -547,7 +547,7 @@ func testDuplicateContentLengthConflict() {
     var input = StringInit(
 "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nContent-Length: 10\r\n\r\nhello"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert((result.flags & HttpFlags.CONFLICTING_CONTENT_LENGTH) != 0)
 
     // Identical duplicates are benign — no conflict flag.
@@ -555,7 +555,7 @@ func testDuplicateContentLengthConflict() {
     var input2 = StringInit(
 "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert((result2.flags & HttpFlags.CONFLICTING_CONTENT_LENGTH) == 0)
     assert(result2.bodyLength == 5)
 
@@ -564,7 +564,7 @@ func testDuplicateContentLengthConflict() {
     var input3 = StringInit(
 "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 7\r\n\r\nabcdefg"
 )
-    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert(parser.parse(input3, &result3) == Status.OK)
     assert((result3.flags & HttpFlags.CONFLICTING_CONTENT_LENGTH) == 0)
     assert(result3.bodyLength == 7)
 }
@@ -580,21 +580,21 @@ func testChunkWithTrailers() {
     var result: HttpRequest;
     var input = StringInit("5\r\nhello\r\n0\r\nX-Checksum: abc123\r\n\r\n")
     var status = parser.parseChunk(input, &result)
-    assert(status == ParseStatus.OK)
+    assert(status == Status.OK)
     assert(result.body.body.equalsString("hello"))
 
     // Multiple trailers.
     var result2: HttpRequest;
     var input2 = StringInit("3\r\nfoo\r\n0\r\nX-A: 1\r\nX-B: 2\r\n\r\n")
     var status2 = parser.parseChunk(input2, &result2)
-    assert(status2 == ParseStatus.OK)
+    assert(status2 == Status.OK)
     assert(result2.body.body.equalsString("foo"))
 
     // No trailers — still OK.
     var result3: HttpRequest;
     var input3 = StringInit("5\r\nworld\r\n0\r\n\r\n")
     var status3 = parser.parseChunk(input3, &result3)
-    assert(status3 == ParseStatus.OK)
+    assert(status3 == Status.OK)
     assert(result3.body.body.equalsString("world"))
 }
 
@@ -611,7 +611,7 @@ func testContentTypeCaseInsensitive() {
     var input = StringInit(
 "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: APPLICATION/JSON\r\nContent-Length: 2\r\n\r\n{}"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.bodyType == BodyType.JSON)
 
     // Mixed-case form-urlencoded must be detected.
@@ -619,7 +619,7 @@ func testContentTypeCaseInsensitive() {
     var input2 = StringInit(
 "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: Application/X-WWW-Form-Urlencoded\r\nContent-Length: 5\r\n\r\na=b&c"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert(result2.bodyType == BodyType.FORM_URLENCODED)
 
     // Mixed-case multipart must be detected and boundary extracted.
@@ -627,7 +627,7 @@ func testContentTypeCaseInsensitive() {
     var input3 = StringInit(
 "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: Multipart/Form-Data; boundary=----Bound\r\nContent-Length: 10\r\n\r\n"
 )
-    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert(parser.parse(input3, &result3) == Status.OK)
     assert(result3.bodyType == BodyType.MULTIPART_FORMDATA)
     assert(result3.multipart.boundary.equals($"----Bound"))
 }
@@ -642,7 +642,7 @@ func testContentTypeWithParameters() {
     var input = StringInit(
 "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: 2\r\n\r\n{}"
 )
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.bodyType == BodyType.JSON)
 
     // "application/x-www-form-urlencoded; charset=UTF-8" must be recognised.
@@ -650,7 +650,7 @@ func testContentTypeWithParameters() {
     var input2 = StringInit(
 "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/x-www-form-urlencoded; charset=UTF-8\r\nContent-Length: 3\r\n\r\na=b"
 )
-    assert(parser.parse(input2, &result2) == ParseStatus.OK)
+    assert(parser.parse(input2, &result2) == Status.OK)
     assert(result2.bodyType == BodyType.FORM_URLENCODED)
 
     // Combined: upper-case type with a parameter.
@@ -658,7 +658,7 @@ func testContentTypeWithParameters() {
     var input3 = StringInit(
 "POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: APPLICATION/JSON;charset=utf-8\r\nContent-Length: 2\r\n\r\n{}"
 )
-    assert(parser.parse(input3, &result3) == ParseStatus.OK)
+    assert(parser.parse(input3, &result3) == Status.OK)
     assert(result3.bodyType == BodyType.JSON)
 }
 
@@ -674,7 +674,7 @@ func assertMethodParsed(method: *const char, expected: HttpMethod) {
     var buf: [64]char
     var len = snprintf(buf, 64_usize, "%s / HTTP/1.1\r\n\r\n", method)
     var input = String{.buffer = buf as (*const char), .length = len}
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.method == expected)
 }
 
@@ -709,28 +709,28 @@ func testAcceptEncodingFlags() {
     // gzip only
     var r1: HttpRequest
     var i1 = StringInit("GET / HTTP/1.1\r\nAccept-Encoding: gzip\r\n\r\n")
-    assert(parser.parse(i1, &r1) == ParseStatus.OK)
+    assert(parser.parse(i1, &r1) == Status.OK)
     assert((r1.flags & HttpFlags.ACCEPT_GZIP_ENCODING) != 0)
     assert((r1.flags & HttpFlags.ACCEPT_DEFLATE_ENCODING) == 0)
 
     // deflate only
     var r2: HttpRequest
     var i2 = StringInit("GET / HTTP/1.1\r\nAccept-Encoding: deflate\r\n\r\n")
-    assert(parser.parse(i2, &r2) == ParseStatus.OK)
+    assert(parser.parse(i2, &r2) == Status.OK)
     assert((r2.flags & HttpFlags.ACCEPT_GZIP_ENCODING) == 0)
     assert((r2.flags & HttpFlags.ACCEPT_DEFLATE_ENCODING) != 0)
 
     // Both in a single header value (typical browser header)
     var r3: HttpRequest
     var i3 = StringInit("GET / HTTP/1.1\r\nAccept-Encoding: gzip, deflate, br\r\n\r\n")
-    assert(parser.parse(i3, &r3) == ParseStatus.OK)
+    assert(parser.parse(i3, &r3) == Status.OK)
     assert((r3.flags & HttpFlags.ACCEPT_GZIP_ENCODING) != 0)
     assert((r3.flags & HttpFlags.ACCEPT_DEFLATE_ENCODING) != 0)
 
     // Case-insensitive: "Gzip" and "Deflate"
     var r4: HttpRequest
     var i4 = StringInit("GET / HTTP/1.1\r\nAccept-Encoding: Gzip, Deflate\r\n\r\n")
-    assert(parser.parse(i4, &r4) == ParseStatus.OK)
+    assert(parser.parse(i4, &r4) == Status.OK)
     assert((r4.flags & HttpFlags.ACCEPT_GZIP_ENCODING) != 0)
     assert((r4.flags & HttpFlags.ACCEPT_DEFLATE_ENCODING) != 0)
 }
@@ -747,25 +747,25 @@ func testContentEncodingFlags() {
 
     var r1: HttpRequest
     var i1 = StringInit("POST /upload HTTP/1.1\r\nContent-Encoding: gzip\r\nContent-Length: 0\r\n\r\n")
-    assert(parser.parse(i1, &r1) == ParseStatus.OK)
+    assert(parser.parse(i1, &r1) == Status.OK)
     assert((r1.flags & HttpFlags.GZIP_ENCODING) != 0)
     assert((r1.flags & HttpFlags.DEFLATE_ENCODING) == 0)
 
     var r2: HttpRequest
     var i2 = StringInit("POST /upload HTTP/1.1\r\nContent-Encoding: deflate\r\nContent-Length: 0\r\n\r\n")
-    assert(parser.parse(i2, &r2) == ParseStatus.OK)
+    assert(parser.parse(i2, &r2) == Status.OK)
     assert((r2.flags & HttpFlags.DEFLATE_ENCODING) != 0)
     assert((r2.flags & HttpFlags.GZIP_ENCODING) == 0)
 
     var r3: HttpRequest
     var i3 = StringInit("POST /upload HTTP/1.1\r\nContent-Encoding: compressed\r\nContent-Length: 0\r\n\r\n")
-    assert(parser.parse(i3, &r3) == ParseStatus.OK)
+    assert(parser.parse(i3, &r3) == Status.OK)
     assert((r3.flags & HttpFlags.COMPRESSED_ENCODING) != 0)
 
     // Case insensitive: "GZIP"
     var r4: HttpRequest
     var i4 = StringInit("POST /upload HTTP/1.1\r\nContent-Encoding: GZIP\r\nContent-Length: 0\r\n\r\n")
-    assert(parser.parse(i4, &r4) == ParseStatus.OK)
+    assert(parser.parse(i4, &r4) == Status.OK)
     assert((r4.flags & HttpFlags.GZIP_ENCODING) != 0)
 }
 
@@ -781,19 +781,19 @@ func testSseFlag() {
 
     var r1: HttpRequest
     var i1 = StringInit("GET /events HTTP/1.1\r\nAccept: text/event-stream\r\n\r\n")
-    assert(parser.parse(i1, &r1) == ParseStatus.OK)
+    assert(parser.parse(i1, &r1) == Status.OK)
     assert((r1.flags & HttpFlags.SSE) != 0)
 
     // SSE token within a multi-type Accept header
     var r2: HttpRequest
     var i2 = StringInit("GET /events HTTP/1.1\r\nAccept: text/html,text/event-stream\r\n\r\n")
-    assert(parser.parse(i2, &r2) == ParseStatus.OK)
+    assert(parser.parse(i2, &r2) == Status.OK)
     assert((r2.flags & HttpFlags.SSE) != 0)
 
     // No Accept header → SSE must NOT be set
     var r3: HttpRequest
     var i3 = StringInit("GET /events HTTP/1.1\r\n\r\n")
-    assert(parser.parse(i3, &r3) == ParseStatus.OK)
+    assert(parser.parse(i3, &r3) == Status.OK)
     assert((r3.flags & HttpFlags.SSE) == 0)
 }
 
@@ -812,7 +812,7 @@ func testWebSocketProtocolFlag() {
     var i1 = StringInit(
 "GET /ws HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
 )
-    assert(parser.parse(i1, &r1) == ParseStatus.OK)
+    assert(parser.parse(i1, &r1) == Status.OK)
     assert((r1.flags & HttpFlags.WEB_SOCKET_PROTOCOL) != 0)
     assert((r1.flags & HttpFlags.UPGRADE_REQUEST) != 0)
 
@@ -821,7 +821,7 @@ func testWebSocketProtocolFlag() {
     var i2 = StringInit(
 "GET /ws HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: WebSocket\r\n\r\n"
 )
-    assert(parser.parse(i2, &r2) == ParseStatus.OK)
+    assert(parser.parse(i2, &r2) == Status.OK)
     assert((r2.flags & HttpFlags.WEB_SOCKET_PROTOCOL) != 0)
 
     // "Upgrade: h2c" (not websocket) must NOT set WEB_SOCKET_PROTOCOL.
@@ -829,7 +829,7 @@ func testWebSocketProtocolFlag() {
     var i3 = StringInit(
 "GET / HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
 )
-    assert(parser.parse(i3, &r3) == ParseStatus.OK)
+    assert(parser.parse(i3, &r3) == Status.OK)
     assert((r3.flags & HttpFlags.WEB_SOCKET_PROTOCOL) == 0)
     assert((r3.flags & HttpFlags.UPGRADE_REQUEST) != 0)   // Connection: upgrade still fires
 }
@@ -848,7 +848,7 @@ func testJsonBodyTypeDetection() {
     var i1 = StringInit(
 "POST /api HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
 )
-    assert(parser.parse(i1, &r1) == ParseStatus.OK)
+    assert(parser.parse(i1, &r1) == Status.OK)
     assert(r1.bodyType == BodyType.JSON)
 
     // Unrecognised Content-Type must leave bodyType = UNKNOWN
@@ -856,7 +856,7 @@ func testJsonBodyTypeDetection() {
     var i2 = StringInit(
 "POST /api HTTP/1.1\r\nContent-Type: application/octet-stream\r\nContent-Length: 4\r\n\r\ndata"
 )
-    assert(parser.parse(i2, &r2) == ParseStatus.OK)
+    assert(parser.parse(i2, &r2) == Status.OK)
     assert(r2.bodyType == BodyType.UNKNOWN)
 }
 
@@ -872,17 +872,17 @@ func testMalformedRequestLine() {
     // No CRLF anywhere — can't find the end of the request line.
     var r1: HttpRequest
     var i1 = StringInit("GET / HTTP/1.1")
-    assert(parser.parse(i1, &r1) == ParseStatus.ERROR_INVALID_REQUEST_LINE)
+    assert(parser.parse(i1, &r1) == Status.ERROR_HTTP_PARSING_INVALID_REQUEST_LINE)
 
     // No space between method and path.
     var r2: HttpRequest
     var i2 = StringInit("GET/path HTTP/1.1\r\n\r\n")
-    assert(parser.parse(i2, &r2) == ParseStatus.ERROR_INVALID_REQUEST_LINE)
+    assert(parser.parse(i2, &r2) == Status.ERROR_HTTP_PARSING_INVALID_REQUEST_LINE)
 
     // Only one space — no second space to delimit path from version.
     var r3: HttpRequest
     var i3 = StringInit("GET /pathHTTP/1.1\r\n\r\n")
-    assert(parser.parse(i3, &r3) == ParseStatus.ERROR_INVALID_REQUEST_LINE)
+    assert(parser.parse(i3, &r3) == Status.ERROR_HTTP_PARSING_INVALID_REQUEST_LINE)
 }
 
 // ---------------------------------------------------------------------------
@@ -897,7 +897,7 @@ func testHeaderWithoutColon() {
 
     var r1: HttpRequest
     var i1 = StringInit("GET / HTTP/1.1\r\nBadHeaderNoColon\r\n\r\n")
-    assert(parser.parse(i1, &r1) == ParseStatus.ERROR_INVALID_HEADER_PARAM)
+    assert(parser.parse(i1, &r1) == Status.ERROR_HTTP_PARSING_INVALID_HEADER_PARAM)
 }
 
 // ==========================================================================
@@ -918,7 +918,7 @@ func testChunkMissingTrailingCrLf() {
 
     var result: HttpRequest
     var input = StringInit("5\r\nhelloX\r\n0\r\n\r\n")
-    assert(parser.parseChunk(input, &result) == ParseStatus.ERROR_INVALID_CHUNK)
+    assert(parser.parseChunk(input, &result) == Status.ERROR_HTTP_PARSING_INVALID_CHUNK)
 }
 
 // RFC 7230 §4.1.1 chunk extensions (";name=value" after the size) must be
@@ -930,7 +930,7 @@ func testChunkSizeWithExtension() {
 
     var result: HttpRequest
     var input = StringInit("5; ext=value\r\nhello\r\n0\r\n\r\n")
-    assert(parser.parseChunk(input, &result) == ParseStatus.OK)
+    assert(parser.parseChunk(input, &result) == Status.OK)
     assert(result.body.body.equalsString("hello"))
 }
 
@@ -943,7 +943,7 @@ func testZeroSizeChunkEmptyBody() {
 
     var result: HttpRequest
     var input = StringInit("0\r\n\r\n")
-    assert(parser.parseChunk(input, &result) == ParseStatus.OK)
+    assert(parser.parseChunk(input, &result) == Status.OK)
     assert(result.body.body.length == 0)
 }
 
@@ -956,7 +956,7 @@ func testChunkUppercaseHex() {
     // "A" is 10 in hex; body must be exactly 10 bytes.
     var result: HttpRequest
     var input = StringInit("A\r\n0123456789\r\n0\r\n\r\n")
-    assert(parser.parseChunk(input, &result) == ParseStatus.OK)
+    assert(parser.parseChunk(input, &result) == Status.OK)
     assert(result.body.body.equalsString("0123456789"))
 }
 
@@ -970,7 +970,7 @@ func testChunkSecondChunkMissingCrLf() {
     // First chunk "hi" is correct; second "3\r\nbad" is not followed by CRLF.
     var result: HttpRequest
     var input = StringInit("2\r\nhi\r\n3\r\nbadX\r\n0\r\n\r\n")
-    assert(parser.parseChunk(input, &result) == ParseStatus.ERROR_INVALID_CHUNK)
+    assert(parser.parseChunk(input, &result) == Status.ERROR_HTTP_PARSING_INVALID_CHUNK)
 }
 
 // ---------------------------------------------------------------------------
@@ -991,9 +991,9 @@ func testFormUrlencodedBodyBareParam() {
     var hi = StringInit(
 "POST /submit HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 4\r\n\r\n"
 )
-    assert(parser.parse(hi, &result) == ParseStatus.OK)
+    assert(parser.parse(hi, &result) == Status.OK)
     assert(result.bodyType == BodyType.FORM_URLENCODED)
-    assert(parser.parseBody(StringInit("name"), &result) == ParseStatus.OK)
+    assert(parser.parseBody(StringInit("name"), &result) == Status.OK)
     assert(result.formParams.size() == 1)
     assert(result.formParams.getPtr(0).name.equalsString("name"))
 }
@@ -1009,8 +1009,8 @@ func testFormUrlencodedDoubleAmpersand() {
     var hi = StringInit(
 "POST /submit HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 17\r\n\r\n"
 )
-    assert(parser.parse(hi, &result) == ParseStatus.OK)
-    assert(parser.parseBody(StringInit("a=1&&b=2"), &result) == ParseStatus.OK)
+    assert(parser.parse(hi, &result) == Status.OK)
+    assert(parser.parseBody(StringInit("a=1&&b=2"), &result) == Status.OK)
     assert(result.formParams.size() == 2)
     assert(result.formParams.getPtr(0).name.equalsString("a"))
     assert(result.formParams.getPtr(1).name.equalsString("b"))
@@ -1031,10 +1031,10 @@ func testMalformedJsonBodySetsType() {
     var hi = StringInit(
 "POST /api HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 8\r\n\r\n"
 )
-    assert(parser.parse(hi, &result) == ParseStatus.OK)
+    assert(parser.parse(hi, &result) == Status.OK)
     assert(result.bodyType == BodyType.JSON)
 
-    assert(parser.parseBody(StringInit("not json"), &result) == ParseStatus.OK)
+    assert(parser.parseBody(StringInit("not json"), &result) == Status.OK)
     assert(result.bodyType == BodyType.MALFORMED_INPUT)
 }
 
@@ -1049,10 +1049,10 @@ func testEmptyJsonBodyNotMalformed() {
     var hi = StringInit(
 "POST /api HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n"
 )
-    assert(parser.parse(hi, &result) == ParseStatus.OK)
+    assert(parser.parse(hi, &result) == Status.OK)
     assert(result.bodyType == BodyType.JSON)
 
-    assert(parser.parseBody(StringInit(""), &result) == ParseStatus.OK)
+    assert(parser.parseBody(StringInit(""), &result) == Status.OK)
     assert(result.bodyType == BodyType.JSON)  // not MALFORMED — body was empty
 }
 
@@ -1071,10 +1071,10 @@ func testMultipartBodyMissingLeadingDashes() {
     var hi = StringInit(
 "POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=myboundary\r\nContent-Length: 20\r\n\r\n"
 )
-    assert(parser.parse(hi, &result) == ParseStatus.OK)
+    assert(parser.parse(hi, &result) == Status.OK)
     assert(result.bodyType == BodyType.MULTIPART_FORMDATA)
 
-    assert(parser.parseBody(StringInit("NotBoundary\r\n"), &result) == ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY)
+    assert(parser.parseBody(StringInit("NotBoundary\r\n"), &result) == Status.ERROR_HTTP_PARSING_INVALID_MULTIPART_BOUNDARY)
 }
 
 // A multipart body that starts with "--" but uses a wrong boundary string
@@ -1088,10 +1088,10 @@ func testMultipartBodyWrongBoundary() {
     var hi = StringInit(
 "POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=myboundary\r\nContent-Length: 20\r\n\r\n"
 )
-    assert(parser.parse(hi, &result) == ParseStatus.OK)
+    assert(parser.parse(hi, &result) == Status.OK)
 
     var body = StringInit("--wrongboundary\r\nContent-Disposition: form-data; name=\"x\"\r\n\r\nval\r\n--wrongboundary--")
-    assert(parser.parseBody(body, &result) == ParseStatus.ERROR_INVALID_MULTIPART_BOUNDARY)
+    assert(parser.parseBody(body, &result) == Status.ERROR_HTTP_PARSING_INVALID_MULTIPART_BOUNDARY)
 }
 
 // A part header inside a multipart body that has no ':' separator must return
@@ -1105,11 +1105,11 @@ func testMultipartPartHeaderWithoutColon() {
     var hi = StringInit(
 "POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=myboundary\r\nContent-Length: 60\r\n\r\n"
 )
-    assert(parser.parse(hi, &result) == ParseStatus.OK)
+    assert(parser.parse(hi, &result) == Status.OK)
 
     // "BadHeaderNoColon" has no ':' → ERROR_INVALID_MULTIPART_HEADER
     var body = StringInit("--myboundary\r\nBadHeaderNoColon\r\n\r\nvalue\r\n--myboundary--")
-    assert(parser.parseBody(body, &result) == ParseStatus.ERROR_INVALID_MULTIPART_HEADER)
+    assert(parser.parseBody(body, &result) == Status.ERROR_HTTP_PARSING_INVALID_MULTIPART_HEADER)
 }
 
 // ---------------------------------------------------------------------------
@@ -1126,7 +1126,7 @@ func testNonNumericContentLength() {
 
     var result: HttpRequest
     var input = StringInit("GET / HTTP/1.1\r\nContent-Length: abc\r\n\r\n")
-    assert(parser.parse(input, &result) == ParseStatus.OK)
+    assert(parser.parse(input, &result) == Status.OK)
     assert(result.bodyLength == 0)
     assert((result.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) != 0)
 }
@@ -1140,8 +1140,5 @@ func testOverflowContentLength() {
 
     var result: HttpRequest
     var input = StringInit("GET / HTTP/1.1\r\nContent-Length: 99999999999999999999\r\n\r\n")
-    assert(parser.parse(input, &result) == ParseStatus.OK)
-    // Must not crash; bodyLength may be 0 or clamped — either is safe.
-    assert(result.bodyLength >= 0)
-    assert((result.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) != 0)
+    assert(parser.parse(input, &result) == Status.ERROR_INVALID_CONTENT_LENGTH)
 }

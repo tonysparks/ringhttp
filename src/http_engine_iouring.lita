@@ -22,6 +22,7 @@ import "std/net/posix_socket"
 import "std/os/linux/pipe"
 import "std/os/linux/io_uring"
 import "std/thread/barrier"
+import "std/ssl/openssl"
 
 import "http_connection"
 import "http_parser"
@@ -34,7 +35,6 @@ import "http_router"
 import "http_context"
 import "http_websocket"
 import "http_worker"
-import "openssl"
 import "http_tls"
 
 internal struct HttpRingEngine {

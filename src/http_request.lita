@@ -8,6 +8,7 @@ import "std/json"
 // import "std/json/from_json"
 // import "std/json/to_json"
 
+import "http_common"
 import "http_parser"
 
 
@@ -185,7 +186,7 @@ public func (this: *Payload) getHeaderValue(name: String) : String {
 public func ParsePathTemplateStr(
     pathTemplate: *const char,
     result: *HttpPathTemplate
-) : ParseStatus {
+) : Status {
     var template = StringInit(pathTemplate)
     return ParsePathTemplate(template, result)
 }
@@ -193,7 +194,7 @@ public func ParsePathTemplateStr(
 public func ParsePathTemplate(
     pathTemplate: String,
     result: *HttpPathTemplate
-) : ParseStatus {
+) : Status {
 
     result.template = pathTemplate
     result.numberOfEntries = 0
@@ -206,20 +207,20 @@ public func ParsePathTemplate(
         var c = pathTemplate.buffer[index]
         if(c == '{') {
             if(startIndex >= 0) {
-                return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START
+                return Status.ERROR_HTTP_PARSING_INVALID_TEMPLATE_NAME_START
             }
             startIndex = index
         }
         else if(c == '}') {
             if(startIndex < 0) {
-                return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_END
+                return Status.ERROR_HTTP_PARSING_INVALID_TEMPLATE_NAME_END
             }
 
             // Bug fix (8): no bounds check existed before writing into the
             // fixed-size entries array; a template with > MAX_TEMPATE_ENTRIES
             // parameters would overflow the array onto adjacent stack memory.
             if(result.numberOfEntries >= MAX_TEMPATE_ENTRIES) {
-                return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START
+                return Status.ERROR_HTTP_PARSING_INVALID_TEMPLATE_NAME_START
             }
 
             var entry = &result.entries[result.numberOfEntries]
@@ -240,23 +241,23 @@ public func ParsePathTemplate(
     }
 
     if(startIndex >= 0) {
-        return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_END
+        return Status.ERROR_HTTP_PARSING_INVALID_TEMPLATE_NAME_END
     }
 
-    return ParseStatus.OK
+    return Status.OK
 }
 
 public func ParsePathValues(
     template: *HttpPathTemplate,
     path: String,
-    result: *HttpPathValues) : ParseStatus {
+    result: *HttpPathValues) : Status {
 
     var index = 0
     for(var i = 0; i < template.numberOfEntries; i+=1) {
         var entry = &template.entries[i]
 
         if(index + entry.index >= path.length) {
-            return ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START
+            return Status.ERROR_HTTP_PARSING_INVALID_TEMPLATE_NAME_START
         }
 
         index += entry.index
@@ -277,7 +278,7 @@ public func ParsePathValues(
         result.numberOfEntries += 1
     }
 
-    return ParseStatus.OK
+    return Status.OK
 }
 
 public func HttpQueryInit(allocator: *const Allocator) : HttpQuery {
@@ -286,9 +287,9 @@ public func HttpQueryInit(allocator: *const Allocator) : HttpQuery {
     return query
 }
 
-public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : ParseStatus {
+public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : Status {
     if(this.query.empty()) {
-        return ParseStatus.OK;
+        return Status.OK;
     }
 
     var params = this.query.split($"&")
@@ -312,5 +313,5 @@ public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : ParseStatus {
         result.params.add(queryParam)
     }
 
-    return ParseStatus.OK
+    return Status.OK
 }

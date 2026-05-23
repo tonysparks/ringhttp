@@ -23,13 +23,14 @@ import "http_context"
 import "http_websocket"
 import "http_sse"
 import "http_worker"
+import "http2_connection"
 import "mime"
+
 import "std/os/darwin/kqueue"
 import "std/os/posix/sendfile"
 import "std/os/posix/fcntl"
 import "std/thread/barrier"
-import "http2_connection"
-import "openssl"
+import "std/ssl/openssl"
 
 import "std/crypto/sha1"
 import "std/encoding/base64"
@@ -862,6 +863,7 @@ func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
                     case Status.ERROR_EXPECT_FAILED:
                     case Status.ERROR_CONFLICTING_BODY_HEADERS:
                     case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
+                    case Status.ERROR_INVALID_CONTENT_LENGTH:
                     case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
                     case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION: {
                         this.sendBadRequest(session, status)

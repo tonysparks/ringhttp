@@ -239,6 +239,9 @@ internal func (this: *WorkerThread) sendBadRequest(
         case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
             response.body.append("Duplicate Content-Length headers with differing values\n")
             break
+        case Status.ERROR_INVALID_CONTENT_LENGTH:
+            response.body.append("Content-Length header value is not a valid integer\n")
+            break
         case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
             response.status = 501
             response.body.append("Method not implemented\n")
@@ -330,9 +333,7 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
 
     var httpRequest = &request.request
     var ok = parser.parse(input, httpRequest)
-    if(ok != ParseStatus.OK) {
-        return Status.ERROR_PARSING_HTTP_REQUEST
-    }
+        ?: return ok
 
     // RFC 7231 §4.1: unrecognised request method → 501 Not Implemented.
     if(httpRequest.method == HttpMethod.INVALID) {
@@ -376,11 +377,11 @@ internal func (this: *WorkerThread) handlePartialHttpRequest(
         httpRequest.bodyLength = 0
 
         var status = parser.parseChunk(readBuffer.toString().substring(request.headerIndex), httpRequest)
-        if(status == ParseStatus.CHUNK_INCOMPLETE) {
+        if(status == Status.ERROR_HTTP_PARSING_CHUNK_INCOMPLETE) {
             return Status.PARTIAL_REQUEST_DISPATCHING_READ
         }
-        if(status != ParseStatus.OK) {
-            return Status.ERROR_PARSING_HTTP_REQUEST
+        if(status != Status.OK) {
+            return status
         }
     }
     else if(httpRequest.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) {
@@ -437,8 +438,8 @@ internal func (this: *WorkerThread) handleHttpRequest(
     }
 
     var ok = parser.parseBody(input, httpRequest)
-    if(ok != ParseStatus.OK) {
-        return Status.ERROR_PARSING_HTTP_REQUEST
+    if(ok != Status.OK) {
+        return ok
     }
 
     // RFC 7230 §6.3: HTTP/1.0 is close-by-default; HTTP/1.1 is keep-alive-by-default.

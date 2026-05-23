@@ -6,6 +6,7 @@ import "std/array"
 import "std/assert"
 import "std/system"
 import "std/log"
+import "std/ssl/openssl"
 
 // posix specific
 import "std/net/posix_socket"
@@ -18,7 +19,6 @@ import "http_websocket"
 import "http_sse"
 import "http_server"
 import "http2_connection"
-import "openssl"
 
 @asStr
 internal enum SessionState {

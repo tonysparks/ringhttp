@@ -20,11 +20,11 @@ func assertBoundaryParsing(headerValue: *const char, expectedValue: *const char,
     var multipart = HttpMultipart{}
     var status = ParseMultipart(defaultAllocator, &request, &multipart)
     if(!success) {
-        assert(status == ParseStatus.ERROR_INVALID_MULTIPART_SECTION)
+        assert(status == Status.ERROR_HTTP_PARSING_INVALID_MULTIPART_SECTION)
         return;
     }
 
-    assert(status == ParseStatus.OK)
+    assert(status == Status.OK)
     assert(multipart.boundary.equalsString(expectedValue))
 }
 
