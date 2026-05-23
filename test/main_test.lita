@@ -180,7 +180,6 @@ func test_static_webpage() {
 
     var status = ReadFileFully("./static/index.html", &fileContents)
     assert(status == FileStatus.Ok)
-    printf("Status: %d body: %.*s\n", resp.statusCode, body.length, body.buffer)
     assert(resp.statusCode == 200)
     assert(fileContents.equals(resp.body))
 }

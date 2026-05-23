@@ -2,7 +2,6 @@ import "std/assert"
 import "std/string"
 import "std/string/builder"
 import "std/mem"
-import "std/libc"
 
 import "template"
 import "http_common"
@@ -51,6 +50,6 @@ func testTemplate() {
         """.toString(),
         output
     )
-    printf("Status: %s\n", StatusAsStr(status))
-    printf("%.*s\n", output.length, output.buffer)
+    assert(status == Status.OK)
+    assert(output.length > 0)
 }

@@ -2,7 +2,6 @@ import "std/assert"
 import "std/string"
 import "std/string/builder"
 import "std/string/buffer"
-import "std/libc"
 import "std/mem"
 
 import "http_encoding"
@@ -12,7 +11,6 @@ func testUrlEncoding(unencoded: *const char, expected: *const char) {
     defer result.free()
 
     UrlEncode(StringInit(unencoded), result)
-    printf("Encoded: %.*s\n", result.length, result.buffer)
 
     var encoded = result.toString()
     assert(encoded.equalsString(expected))
@@ -21,7 +19,6 @@ func testUrlEncoding(unencoded: *const char, expected: *const char) {
     defer result2.free()
 
     UrlDecode(encoded, result2)
-    printf("Decoded: %.*s\n", result2.length, result2.buffer)
     assert(result2.toString().equalsString(unencoded))
 }
 
@@ -30,7 +27,6 @@ func testFormUrlEncoding(unencoded: *const char, expected: *const char) {
     defer result.free()
 
     FormUrlEncode(StringInit(unencoded), result)
-    printf("Encoded: %.*s\n", result.length, result.buffer)
 
     var encoded = result.toString()
     assert(encoded.equalsString(expected))
@@ -39,7 +35,6 @@ func testFormUrlEncoding(unencoded: *const char, expected: *const char) {
     defer result2.free()
 
     FormUrlDecode(encoded, result2)
-    printf("Decoded: %.*s\n", result2.length, result2.buffer)
     assert(result2.toString().equalsString(unencoded))
 }
 

@@ -178,12 +178,10 @@ func HandleDirective(
 ) : Status {
     var block = *code;
     block = block.trim()
-    printf("Processing: '%.*s'\n", block.length, block.buffer)
 
     if(!block.startsWith($"$")) {
         return Status.OK
     }
-    printf("**********************\n")
     // load another template
     if(block.startsWith($"$load ")) {
         var index = block.endIndexOf($"$load ")
