@@ -50,9 +50,9 @@ public struct RequestHandler {
     }
 }
 
-internal const MAX_METHODS = 10
+public const MAX_METHODS = 10
 
-internal struct Router {
+public struct Router {
     methods: [MAX_METHODS]Array<Route>
 }
 
@@ -61,26 +61,26 @@ struct Route {
     handler: RequestHandler
 }
 
-internal func (this: *Router) init(allocator: *const Allocator) {
+public func (this: *Router) init(allocator: *const Allocator) {
     assert(allocator != null)
     for(var i = 0; i < MAX_METHODS; i+=1) {
         this.methods[i].init(128, allocator)
     }
 }
 
-internal func (this: *Router) free() {
+public func (this: *Router) free() {
     for(var i = 0; i < MAX_METHODS; i+=1) {
         this.methods[i].free()
     }
 }
 
-internal func (this: *Router) register(
+public func (this: *Router) register(
     method: HttpMethod,
     route: *const char,
     handler: RequestHandler) : bool {
 
     var template: HttpPathTemplate;
-    if(ParsePathTemplateStr(route, &template) != ParseStatus.OK) {
+    if(ParsePathTemplateStr(route, &template) != Status.OK) {
         return false
     }
 
@@ -95,7 +95,7 @@ internal func (this: *Router) register(
 
 // Returns a bitmask of HttpMethod values that have a route matching this path.
 // Used to distinguish 404 (path unknown) from 405 (path known, wrong method).
-internal func (this: *Router) allowedMethods(path: *String) : i32 {
+public func (this: *Router) allowedMethods(path: *String) : i32 {
     var allowed = 0
     for(var m = 1; m < MAX_METHODS; m += 1) {
         var routes = &this.methods[m]
@@ -110,7 +110,7 @@ internal func (this: *Router) allowedMethods(path: *String) : i32 {
     return allowed
 }
 
-internal func (this: *Router) match(
+public func (this: *Router) match(
     method: HttpMethod,
     path: *String,
     result: *RouteMatch
@@ -127,7 +127,7 @@ internal func (this: *Router) match(
             result.template = &route.template
             result.handler = route.handler
 
-            return ParsePathValues(&route.template, path, &result.values) == ParseStatus.OK
+            return ParsePathValues(&route.template, path, &result.values) == Status.OK
         }
     }
 
@@ -139,7 +139,7 @@ internal func (this: *Router) match(
             if(CheckMatch(&route.template, path)) {
                 result.template = &route.template
                 result.handler = route.handler
-                return ParsePathValues(&route.template, path, &result.values) == ParseStatus.OK
+                return ParsePathValues(&route.template, path, &result.values) == Status.OK
             }
         }
     }
@@ -147,7 +147,7 @@ internal func (this: *Router) match(
     return false
 }
 
-func CheckMatch(route: *HttpPathTemplate, path: *String) : bool {
+public func CheckMatch(route: *HttpPathTemplate, path: *String) : bool {
     var numberOfEntries = 0
     var index = 0
     var i = 0
@@ -203,23 +203,3 @@ func CheckMatch(route: *HttpPathTemplate, path: *String) : bool {
 }
 
 
-func assertCheckMatch(t: *const char, p: *const char, expected: bool) {
-    var template: HttpPathTemplate;
-    ParsePathTemplateStr(t, &template)
-
-    var path = StringInit(p)
-    assert(CheckMatch(&template, path) == expected)
-}
-
-@test
-func testCheckMatch() {
-    assertCheckMatch("/{id}/{a}", "/123/b", true)
-    assertCheckMatch("/{id}/{a}", "/123/", false)
-    assertCheckMatch("/{id}/", "/123/b", false)
-    assertCheckMatch("{id}/", "123/", true)
-    assertCheckMatch("{id}", "123", true)
-    assertCheckMatch("/{id}", "/123/b", false)
-    assertCheckMatch("/{id}", "/123", true)
-    assertCheckMatch("", "", true)
-    assertCheckMatch("", "/abc", false)
-}

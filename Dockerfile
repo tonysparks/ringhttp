@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         liburing-dev \
         libcurl4-openssl-dev \
+        libssl-dev \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

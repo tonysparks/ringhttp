@@ -1,10 +1,12 @@
 import "std/libc"
 import "std/mem"
 import "std/mem/linear_allocator"
+import "std/string/builder"
 import "std/array"
 import "std/assert"
 import "std/system"
 import "std/log"
+import "std/ssl/openssl"
 
 // posix specific
 import "std/net/posix_socket"
@@ -16,6 +18,7 @@ import "http_response"
 import "http_websocket"
 import "http_sse"
 import "http_server"
+import "http2_connection"
 
 @asStr
 internal enum SessionState {
@@ -32,6 +35,10 @@ internal enum SessionState {
 
     SSE_UPGRADED,
     SSE_OPERATION,
+
+    HTTP2_OPEN,         // HTTP/2 connection: framing layer active
+
+    TLS_HANDSHAKING,    // TLS handshake in progress (non-blocking SSL_accept)
 
     PREP_CLOSE,
     CLOSED,
@@ -65,6 +72,15 @@ internal struct SessionContext {
     bodyIndex: i32
     workerIndex: i32
 
+    // Protocol version detected on this connection
+    protocolVersion: ProtocolVersion
+
+    // HTTP/2 connection state — valid only when protocolVersion == HTTP2
+    http2: Http2Connection
+
+    // TLS session — non-null when the connection is TLS-wrapped
+    ssl: *SSL
+
     // Allocator for each request on this thread
     requestAllocator: LinearAllocator
 
@@ -84,6 +100,13 @@ internal struct SessionContext {
 
     // the last time we received a request from the client
     lastRequestTime: f64
+
+    // WebSocket message fragmentation state (RFC 6455 §5.4).
+    // Active when wsFragInProgress is true; wsFragOpcode holds the first
+    // fragment's opcode; wsFragBuf accumulates the reassembled payload.
+    wsFragInProgress: bool
+    wsFragOpcode:     i32
+    wsFragBuf:        StringBuilder
 }
 
 // begining of a HTTP request cycle
@@ -108,11 +131,19 @@ internal func (this: *SessionContext) begin(
     this.isWebSocket = false
     this.isSse = false
 
+    this.wsFragInProgress = false
+    this.wsFragOpcode     = 0
+    this.wsFragBuf.clear()
+
     this.submissions = 0
 
     this.requestLineIndex = 0
     this.headerIndex = 0
     this.bodyIndex = 0
+
+    this.protocolVersion = ProtocolVersion.UNKNOWN
+    memset(&this.http2, 0, sizeof(:Http2Connection))
+    this.ssl = null
 
     this.state = SessionState.CONNECTED
 
@@ -145,6 +176,9 @@ internal func (this: *SessionContext) finish(forceClose: bool = false) {
 
     this.isWebSocket = false
     this.isSse = false
+    this.wsFragInProgress = false
+    this.wsFragOpcode     = 0
+    this.wsFragBuf.clear()
     this.submissions = 0
 
     this.requestLineIndex = 0
@@ -173,6 +207,11 @@ internal func (this: *SessionContext) finish(forceClose: bool = false) {
     this.file = 0
 
     this.state = SessionState.UNKNOWN
+
+    if(this.ssl) {
+        SSL_free(this.ssl)  // also frees rbio/wbio BIOs (SSL_free owns them)
+        this.ssl = null
+    }
 
     this.connection.reset()
     this.response.reset()

@@ -77,6 +77,7 @@ public struct HttpConfig {
     maxHttpRequestLineSizeInBytes: usize = 8 * KiB
     maxHttpHeaderSizeInBytes: usize = 8 * KiB
     maxHttpBodySizeInBytes: usize = 2 * MiB // 0 for no limit
+    maxWsFragmentedMessageSizeInBytes: usize = 8 * MiB // 0 for no limit
 
     // max limit size for handling a request, including user-space
     maxRequestSizeInBytes: usize = 8 * MiB
@@ -110,6 +111,11 @@ public struct HttpConfig {
 
     // command line handling
     disableSignal: bool = false
+
+    // TLS — leave null to run plain-text (h1/h2c).
+    // Set both to enable TLS; ALPN will negotiate h2 or http/1.1.
+    tlsCertFile: *const char = null
+    tlsKeyFile:  *const char = null
 }
 
 

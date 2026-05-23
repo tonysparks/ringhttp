@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         liburing-dev \
         libcurl4-openssl-dev \
+        libssl-dev \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -46,4 +47,5 @@ COPY . .
 RUN litac install
 
 # Run the full test suite; non-zero exit fails the docker build/run.
+#CMD ["litac", "test", "-file", "test/main_test.lita", "-regex", "test static webpage retrieval"]
 CMD ["litac", "test"]

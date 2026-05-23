@@ -9,6 +9,7 @@ import "std/thread"
 import "std/io"
 import "std/mem"
 import "std/json"
+import "std/log"
 
 import "std/array"
 import "std/map"
@@ -22,6 +23,16 @@ import "test_webserver"
 // connect(2) is not exposed by std/net/posix_socket — declare it here.
 @foreign
 func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
+
+@raw("""
+#include <sys/socket.h>
+#include <sys/time.h>
+void _main_setRecvTimeout(int fd, int seconds) {
+    struct timeval tv = { seconds, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const void*)&tv, sizeof(tv));
+}
+""");
+@foreign func _main_setRecvTimeout(fd: i32, seconds: i32);
 
 /**
  * Open a raw TCP connection to localhost:port, send `request` verbatim, read
@@ -44,6 +55,7 @@ func rawHttpStatusCode(request: *const char, port: u16 = 8080_u16) : i32 {
     if (connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) < 0) {
         return -1
     }
+    _main_setRecvTimeout(fd, 10)
 
     var reqLen = strlen(request) as (usize)
     send(fd, request as (*void), reqLen, 0)
@@ -63,6 +75,9 @@ func rawHttpStatusCode(request: *const char, port: u16 = 8080_u16) : i32 {
     }
     var afterVersion = response.substring(spaceIdx + 1)
     var parsed = afterVersion.parseInt(10)
+    if(parsed.error != ParseError.NONE) {
+        return -1
+    }
     return parsed.value as (i32)
 }
 
@@ -87,6 +102,7 @@ func rawHttpHeader(request: *const char, headerName: *const char, port: u16 = 80
     if (connect(fd, (&addr) as (*sockaddr), sizeof(:sockaddr_in) as (socklen_t)) < 0) {
         return String{}
     }
+    _main_setRecvTimeout(fd, 10)
 
     var reqLen = strlen(request) as (usize)
     send(fd, request as (*void), reqLen, 0)
@@ -130,6 +146,7 @@ var defaultConfig = HttpConfig {
     .keepAliveTimeoutInSec = 5,
     .isLogEnabled = false,
     .logFilePath = null,
+    .logLevel = LogLevel.DEBUG,
     .fileServerPath = $"./static",
     .maxHttpBodySizeInBytes = 1_024,
 }
@@ -163,6 +180,7 @@ func test_static_webpage() {
 
     var status = ReadFileFully("./static/index.html", &fileContents)
     assert(status == FileStatus.Ok)
+    printf("Status: %d body: %.*s\n", resp.statusCode, body.length, body.buffer)
     assert(resp.statusCode == 200)
     assert(fileContents.equals(resp.body))
 }
@@ -521,11 +539,10 @@ func test_body_too_large() {
     assert(resp.statusCode == 413)
 }
 
-@test("test malformed form body returns 422")
+@test("test bare form body param (no =) is treated as name with empty value")
 func test_malformed_form_body() {
-    // Content-Type claims form-urlencoded but body has no '=' separator —
-    // the form param parser returns ERROR_INVALID_FORM_URLENCODED_PARAM
-    // which propagates as ERROR_PARSING_HTTP_REQUEST → 422.
+    // A form-urlencoded body with no '=' separator is a valid bare param
+    // (name with empty value), not an error.
     var headers = http::HeadersInit(32)
     headers.put($"Content-Type", $"application/x-www-form-urlencoded")
 
@@ -543,14 +560,12 @@ func test_malformed_form_body() {
         .headers = headers
     }
     assert(http.makeRequest(&req, &resp) == true)
-    assert(resp.statusCode == 422)
-    assert(resp.body.contains($"Unprocessable request body"))
+    assert(resp.statusCode == 200)
 }
 
-@test("test malformed form body on PUT returns 422")
+@test("test bare form body param on PUT (no =) is treated as name with empty value")
 func test_malformed_form_body_put() {
-    // Same parse failure triggered on a PUT — exercises the post-handler
-    // ERROR_PARSING_HTTP_REQUEST path in handleHttpRequest.
+    // Same bare-param behaviour on PUT.
     var headers = http::HeadersInit(32)
     headers.put($"Content-Type", $"application/x-www-form-urlencoded")
 
@@ -568,8 +583,7 @@ func test_malformed_form_body_put() {
         .headers = headers
     }
     assert(http.makeRequest(&req, &resp) == true)
-    assert(resp.statusCode == 422)
-    assert(resp.body.contains($"Unprocessable request body"))
+    assert(resp.statusCode == 200)
 }
 
 @test("test wrong method on GET-only route returns 405")
@@ -976,6 +990,7 @@ func test_expect_100_continue() {
     var spaceIdx = finalResp.indexOf($" ")
     assert(spaceIdx >= 0)
     var parsed = finalResp.substring(spaceIdx + 1).parseInt(10)
+    assert(parsed.error == ParseError.NONE)
     assert(parsed.value == 200)
 }
 

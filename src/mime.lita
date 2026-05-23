@@ -206,13 +206,3 @@ public func (this: *MimeDB) getMimeType(filePath: String) : String {
     return this.db.get(filePath.substring(lastIndex))
 }
 
-import "std/assert"
-@test
-func testGetMimeType() {
-    var db = MimeDB{}
-    db.init(defaultAllocator)
-    var type = db.getMimeType($"path/to/file.wasm")
-
-    var value = MimeTypeAsStr(MimeType.APPLICATION_WASM).toString()
-    assert(type.equals(value))
-}

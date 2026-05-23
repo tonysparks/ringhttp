@@ -19,9 +19,10 @@ import "std/log"
 
 // posix specific
 import "std/net/posix_socket"
-import "pipe_posix"
-
-import "liburing"
+import "std/os/linux/pipe"
+import "std/os/linux/io_uring"
+import "std/thread/barrier"
+import "std/ssl/openssl"
 
 import "http_connection"
 import "http_parser"
@@ -34,6 +35,7 @@ import "http_router"
 import "http_context"
 import "http_websocket"
 import "http_worker"
+import "http_tls"
 
 internal struct HttpRingEngine {
     config: using *HttpConfig
@@ -46,12 +48,15 @@ internal struct HttpRingEngine {
 
     distribution: u64
     workers: Array<WorkerThread>
-    barrier: pthread_barrier_t
+    barrier: Barrier
 
     clientAddr: sockaddr_in;
     clientAddrLen: socklen_t;
 
     server: *HttpServer
+
+    // Non-null when TLS is configured (tlsCertFile + tlsKeyFile in HttpConfig).
+    sslCtx: *SSL_CTX
 }
 
 internal func (this: *HttpRingEngine) init(
@@ -73,6 +78,11 @@ internal func (this: *HttpRingEngine) init(
     if(!this.config.disableSignal) {
         signal(SIGINT, signal_handler);
     }
+
+    this.ring.ring_fd = -1
+    // Prevent close(0) on first close() call — Socket zero-initializes to fd=0
+    // which would close stdin and cause io_uring to be allocated fd=0.
+    this.serverSocket.socket = -1
 }
 
 internal func (this: *HttpRingEngine) listen() : Status {
@@ -80,10 +90,12 @@ internal func (this: *HttpRingEngine) listen() : Status {
 
     this.isRunning.init(true)
 
+    // The engine ring must NOT use SINGLE_ISSUER or DEFER_TASKRUN: worker threads
+    // attach their WQs to this ring via IORING_SETUP_ATTACH_WQ, which causes the
+    // kernel to touch the engine ring's context from worker threads.  That violates
+    // the single-issuer constraint and makes io_uring_submit return -EEXIST.
     var params = io_uring_params {}
-    params.flags |= IORING_SETUP_SINGLE_ISSUER
     params.flags |= IORING_SETUP_COOP_TASKRUN
-    params.flags |= IORING_SETUP_DEFER_TASKRUN
     params.flags |= IORING_SETUP_SUBMIT_ALL
 
     var ioStatus = io_uring_queue_init_params(this.config.ioQueueDepth, &this.ring, &params)
@@ -91,22 +103,28 @@ internal func (this: *HttpRingEngine) listen() : Status {
         Panic("Error initializing the io_uring queue: %d\n", ioStatus)
     }
 
-    pthread_barrier_init(&this.barrier, null, this.config.numThreads + 1)
-    defer pthread_barrier_destroy(&this.barrier)
+    this.barrier.init(this.config.numThreads + 1)
+    defer this.barrier.destroy()
 
     var maxWorkers = MAX(this.config.numThreads, 1)
     for(var i = 0; i < maxWorkers; i+=1) {
         this.workers.add(WorkerThread{})
 
         var worker = this.workers.getPtr(i)
-        worker.init(this.server, i, &this.barrier, &this.isRunning, this.ring.ring_fd)
+        worker.init(this.server, i, &this.barrier, &this.isRunning, this.ring.enter_ring_fd)
     }
 
-    pthread_barrier_wait(&this.barrier)
+    this.barrier.wait()
 
     for(var i = 0; i < this.workers.length; i+=1) {
         var worker = this.workers.getPtr(i)
         Info("Initialized worker thread: %d with ringfd: %d\n", worker.thread.id(), worker.ring.ring_fd)
+    }
+
+    // TLS context setup — only when cert + key are configured.
+    this.sslCtx = setupSslCtx(this.config)
+    if(this.config.tlsCertFile && !this.sslCtx) {
+        return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
     }
 
     if(!this.serverSocket.create()) {
@@ -161,8 +179,14 @@ internal func (this: *HttpRingEngine) close() {
     this.serverSocket.close()
     this.safeAllocator.free()
 
-    if(this.ring.ring_fd > 0) {
+    if(this.ring.ring_fd >= 0) {
         io_uring_queue_exit(&this.ring)
+        this.ring.ring_fd = -1
+    }
+
+    if(this.sslCtx) {
+        SSL_CTX_free(this.sslCtx)
+        this.sslCtx = null
     }
 }
 
@@ -189,7 +213,11 @@ func (this: *HttpRingEngine) queueAcceptRequest(ring: *io_uring): Status {
     )
 
     io_uring_sqe_set_data64(sqe, makeOp(RingOpcode.ACCEPT, 0))
-    io_uring_submit(ring)
+    var submitResult = io_uring_submit(ring)
+    if(submitResult <= 0) {
+        Error("io_uring_submit failed for multishot accept: %d\n", submitResult)
+        goto error;
+    }
 
     return Status.OK;
 

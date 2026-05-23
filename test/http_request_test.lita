@@ -8,13 +8,14 @@ import "std/mem"
 
 import "http_request"
 import "http_parser"
+import "http_common"
 
 func testQueryParsingUrl(query: *const char, expected: *const char) {
     var request = HttpRequest {}
     request.query = query.toString()
 
     var result = HttpQueryInit(defaultAllocator)
-    assert(request.parseQuery(&result) == ParseStatus.OK)
+    assert(request.parseQuery(&result) == Status.OK)
 
     var sb = StringBuilderInit()
     for(var i = 0; i < result.params.size(); i+=1) {
@@ -234,8 +235,8 @@ func assertPathParsing(
     turl: *const char,
     url: *const char,
     expected: *const char,
-    templateStatus: ParseStatus = ParseStatus.OK,
-    valueStatus: ParseStatus = ParseStatus.OK
+    templateStatus: Status = Status.OK,
+    valueStatus: Status = Status.OK
 ) {
     var template = HttpPathTemplate{}
 
@@ -243,7 +244,7 @@ func assertPathParsing(
     var status = ParsePathTemplate(&pathTemplate, &template)
     assert(status == templateStatus)
 
-    if(templateStatus != ParseStatus.OK) {
+    if(templateStatus != Status.OK) {
         return;
     }
 
@@ -252,7 +253,7 @@ func assertPathParsing(
     status = ParsePathValues(&template, &path, &values)
     assert(status == valueStatus)
 
-    if(valueStatus != ParseStatus.OK) {
+    if(valueStatus != Status.OK) {
         return;
     }
 
@@ -327,24 +328,24 @@ func testPathParsing() {
         "/{userId}/resources/{resourceId}",
         "/",
         "",
-        ParseStatus.OK,
-        ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START
+        Status.OK,
+        Status.ERROR_HTTP_PARSING_INVALID_TEMPLATE_NAME_START
     )
 
     assertPathParsing(
         "/{userId/resources/{resourceId}",
         "/1234/resources/ABC",
         "",
-        ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START,
-        ParseStatus.OK
+        Status.ERROR_HTTP_PARSING_INVALID_TEMPLATE_NAME_START,
+        Status.OK
     )
 
     assertPathParsing(
         "/userId}/resources/{resourceId}",
         "/1234/resources/ABC",
         "",
-        ParseStatus.ERROR_INVALID_TEMPLATE_NAME_END,
-        ParseStatus.OK
+        Status.ERROR_HTTP_PARSING_INVALID_TEMPLATE_NAME_END,
+        Status.OK
     )
 
     assertPathParsing(
@@ -372,7 +373,7 @@ func testPathTemplateOverflow() {
     var status = ParsePathTemplate(&pathTemplate, &template)
 
     // Must not overflow the array — the 33rd entry must be rejected.
-    assert(status == ParseStatus.ERROR_INVALID_TEMPLATE_NAME_START)
+    assert(status == Status.ERROR_HTTP_PARSING_INVALID_TEMPLATE_NAME_START)
 
     // Exactly 32 parameters must still be accepted.
     var sb2 = StringBuilderInit(512)
@@ -384,6 +385,6 @@ func testPathTemplateOverflow() {
     var template2 = HttpPathTemplate{}
     var pathTemplate2 = sb2.toString()
     var status2 = ParsePathTemplate(&pathTemplate2, &template2)
-    assert(status2 == ParseStatus.OK)
+    assert(status2 == Status.OK)
     assert(template2.numberOfEntries == 32)
 }

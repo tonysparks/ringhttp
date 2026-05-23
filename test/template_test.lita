@@ -1,0 +1,56 @@
+import "std/assert"
+import "std/string"
+import "std/string/builder"
+import "std/mem"
+import "std/libc"
+
+import "template"
+import "http_common"
+
+// Bug fix: str.buffer[0] accessed without checking length first.
+// An empty string (or whitespace-only that trims to empty) must not crash.
+@test
+func testReadStringEmptyInput() {
+    var empty = ReadString(StringInit(""))
+    assert(empty.length == 0)
+
+    var whitespace = ReadString(StringInit("   "))
+    assert(whitespace.length == 0)
+
+    // Sanity-check: a well-formed quoted string still works.
+    var result = ReadString(StringInit("\"hello\""))
+    assert(result.equals($"hello"))
+
+    // Input that starts with a non-quote character should also return empty.
+    var noQuote = ReadString(StringInit("hello"))
+    assert(noQuote.length == 0)
+}
+
+@test
+func testTemplate() {
+    var output = StringBuilderInit(1024)
+    var status = GenerateFromTemplate(
+        defaultAllocator,
+        $"Tony",
+        """
+        <html>
+            <%@import "/title.lt" %>
+            <body>
+                <%
+                    for(var i = 0; i < input.length; i+=1) {
+                        var element = input.getPtr(i)
+                %>
+                        <li>
+                            <% out.append("%.*s", element.name.length, element.name.buffer) %>
+                        </li>
+                <%
+                    }
+                %>
+            </body>
+        </html>
+        """.toString(),
+        output
+    )
+    printf("Status: %s\n", StatusAsStr(status))
+    printf("%.*s\n", output.length, output.buffer)
+}
