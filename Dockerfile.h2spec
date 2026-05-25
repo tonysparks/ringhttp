@@ -38,7 +38,7 @@ COPY . .
 RUN litac install
 
 # Build the h2spec server (swap in the dedicated entry point)
-RUN cp src/h2spec_server_main.lita src/main.lita && litac build
+RUN cp test/h2spec_server_main.lita src/main.lita && litac build
 
 # Build h2spec from source — no ARM64 pre-built binary exists for v2.6.0.
 FROM golang:1.22-bookworm AS h2spec-builder
