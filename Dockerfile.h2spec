@@ -1,0 +1,68 @@
+# Build ringhttp and run h2spec (RFC 7540 conformance) against it.
+#
+#   docker build -f Dockerfile.h2spec -t ring-h2spec .
+#   docker run --rm --security-opt seccomp=unconfined ring-h2spec
+
+FROM ubuntu:24.04 AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc \
+        git \
+        curl \
+        liburing-dev \
+        libcurl4-openssl-dev \
+        libssl-dev \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Two-stage litac bootstrap (same as Dockerfile.test)
+RUN git clone https://github.com/tonysparks/litac-lang /opt/litac-lang
+
+RUN gcc -O2 -o /usr/local/bin/litac_bootstrap \
+        /opt/litac-lang/bootstrap/litac_linux.c \
+        -D_CRT_SECURE_NO_WARNINGS -D_DEFAULT_SOURCE \
+        -I/opt/litac-lang/include \
+        -I/opt/litac-lang/stdlib/std/http/libcurl/include \
+        -L/opt/litac-lang/lib \
+        -lm -lrt -lpthread -lcurl
+
+ENV LITAC_HOME=/opt/litac-lang
+
+RUN mkdir -p /opt/litac-lang/bin/output \
+    && cd /opt/litac-lang \
+    && litac_bootstrap build \
+    && cp /opt/litac-lang/bin/output/litac /usr/local/bin/litac
+
+WORKDIR /build
+COPY . .
+RUN litac install
+
+# Build the h2spec server (swap in the dedicated entry point)
+RUN cp src/h2spec_server_main.lita src/main.lita && litac build
+
+# Build h2spec from source — no ARM64 pre-built binary exists for v2.6.0.
+FROM golang:1.22-bookworm AS h2spec-builder
+RUN git clone --depth 1 --branch v2.6.0 https://github.com/summerwind/h2spec.git /tmp/h2spec \
+    && cd /tmp/h2spec \
+    && go build -o /usr/local/bin/h2spec ./cmd/h2spec \
+    && rm -rf /tmp/h2spec
+
+# ── runtime ──────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        liburing2 \
+        netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+EXPOSE 9090
+
+WORKDIR /app
+COPY --from=builder /build/bin/ring             ./ring
+COPY --from=h2spec-builder /usr/local/bin/h2spec  /usr/local/bin/h2spec
+COPY                h2spec_entrypoint.sh        ./entrypoint.sh
+RUN chmod +x ./ring ./entrypoint.sh
+
+# Default: run the ring server so testcontainers can start + exec into it.
+# For standalone use, override with: docker run ring-h2spec /app/entrypoint.sh
+CMD ["/app/ring"]
