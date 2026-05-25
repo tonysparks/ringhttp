@@ -843,7 +843,9 @@ public func (this: *Http2Connection) flushBlockedStreams(writeBuf: *StringBuilde
                 this.closeStream(i)
             }
         }
-        if(this.sendWindow <= 0) { break }
+        if(this.sendWindow <= 0) {
+            break
+        }
     }
 }
 
