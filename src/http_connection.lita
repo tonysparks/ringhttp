@@ -18,7 +18,7 @@ import "http_file"
 import "http_server"
 
 
-public const READ_BUFFER_SIZE = 16 * KiB as (i32)
+public const READ_BUFFER_SIZE = 32 * KiB as (i32)
 public const WRITE_BUFFER_SIZE = 8 * KiB as (i32)
 public const COMPRESSION_SIZE = 1 * KiB as (i32)
 

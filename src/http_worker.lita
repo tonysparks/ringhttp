@@ -848,16 +848,53 @@ internal func (this: *WorkerThread) tryDetectProtocol(
         readBuffer.length = totalSoFar
         return false
     }
-    if(readBuffer.buffer[0] == 'P' &&
-       readBuffer.buffer[1] == 'R' &&
-       readBuffer.buffer[2] == 'I'
-    ) {
+    var b0 = readBuffer.buffer[0] as (u8)
+    var b1 = readBuffer.buffer[1] as (u8)
+    var b2 = readBuffer.buffer[2] as (u8)
+    if(b0 == 'P' && b1 == 'R' && b2 == 'I') {
+        // HTTP/2 prior knowledge (RFC 7540 §3.5).
         session.protocolVersion = ProtocolVersion.HTTP2
         session.state = SessionState.HTTP2_OPEN
         session.http2.init(&session.requestAllocator.allocator)
         Debug("HTTP/2 connection detected on socket: %d\n", session.connection.handle())
-    } else {
+    } else if(b0 == 'G' || b0 == 'D' || b0 == 'H' || b0 == 'O' || b0 == 'T' || b0 == 'C' ||
+              (b0 == 'P' && b1 != 'R')) {
+        // Known HTTP/1.1 method first byte: GET, DELETE, HEAD, OPTIONS, TRACE, CONNECT, POST/PUT/PATCH.
         session.protocolVersion = ProtocolVersion.HTTP1
+    } else {
+        // Unknown first byte — sniff the URL to distinguish HTTP/1.1 from an invalid HTTP/2 preface.
+        // HTTP/1.1 request lines are "METHOD SP url SP version CRLF" where url starts with '/'.
+        // Buffer up to SNIFF bytes, then look for the first space followed by '/'.
+        const SNIFF = 20
+        var limit = totalSoFar
+        if(limit > SNIFF) { limit = SNIFF }
+
+        var spaceIdx = -1
+        for(var i = 0; i < limit - 1; i += 1) {
+            if(readBuffer.buffer[i] as (u8) == ' ' as (u8)) {
+                spaceIdx = i
+                break
+            }
+        }
+
+        if(spaceIdx < 0) {
+            // No space found yet; buffer and wait for more bytes (if under SNIFF limit).
+            if(totalSoFar < SNIFF) {
+                readBuffer.length = totalSoFar
+                return false
+            }
+            // Exceeds SNIFF without a space — not HTTP/1.1. Fall through to HTTP/2 path.
+        } else if(readBuffer.buffer[spaceIdx + 1] as (u8) == '/' as (u8)) {
+            // Space + slash matches "METHOD /path" — treat as HTTP/1.1.
+            session.protocolVersion = ProtocolVersion.HTTP1
+            return true
+        }
+        // Space found but URL doesn't start with '/', OR no space within SNIFF bytes —
+        // treat as invalid HTTP/2 connection preface (RFC 7540 §3.5): send GOAWAY.
+        session.protocolVersion = ProtocolVersion.HTTP2
+        session.state = SessionState.HTTP2_OPEN
+        session.http2.init(&session.requestAllocator.allocator)
+        Debug("Non-HTTP/1.1 connection prefix on socket: %d — treating as invalid HTTP/2\n", session.connection.handle())
     }
     return true
 }
@@ -946,6 +983,15 @@ internal func (this: *WorkerThread) http2DispatchStream(
         http2WriteRstStream(&session.connection.writeBuffer, streamId, HTTP2_ERR_PROTOCOL_ERROR)
         h2.closeStream(streamIdx)
         return Status.OK
+    }
+
+    // RFC 7540 §8.1.2.6: content-length MUST equal the sum of DATA frame payload lengths.
+    if((req.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) != 0) {
+        if(req.bodyLength != stream.bodyBuf.length) {
+            http2WriteRstStream(&session.connection.writeBuffer, streamId, HTTP2_ERR_PROTOCOL_ERROR)
+            h2.closeStream(streamIdx)
+            return Status.OK
+        }
     }
 
     // RFC 7540 §8.1.2.2: connection-specific header fields are forbidden in H2.

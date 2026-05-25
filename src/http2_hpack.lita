@@ -197,6 +197,7 @@ public struct Hpack {
     dynCount:     i32
     dynTableSize: i32
     dynMaxSize:   i32
+    maxAllowed:   i32   // SETTINGS_HEADER_TABLE_SIZE limit from our own SETTINGS
 
     allocator: *Allocator
 }
@@ -246,6 +247,7 @@ public func (this: *Hpack) init(allocator: *Allocator) {
     memset(this, 0, sizeof(:Hpack))
     this.allocator    = allocator
     this.dynMaxSize   = HPACK_INITIAL_TABLE_SIZE
+    this.maxAllowed   = HPACK_INITIAL_TABLE_SIZE
     this.buildTrie()
 }
 
@@ -371,6 +373,8 @@ func (this: *Hpack) huffDecode(
     out:      *StringBuilder
 ) : bool {
     var node: i32 = 0
+    var bitsAfterLastSymbol: i32 = 0
+    var sawZeroBit: bool = false
     for(var i = 0; i < inputLen; i += 1) {
         var byte = input[i] as (i32)
         for(var bit = 7; bit >= 0; bit -= 1) {
@@ -379,6 +383,8 @@ func (this: *Hpack) huffDecode(
             if(nxt < 0) {
                 return false
             }
+            bitsAfterLastSymbol += 1
+            if(b == 0) { sawZeroBit = true }
             var sym = this.huffTrie[nxt].symbol as (i32)
             if(sym >= 0) {
                 if(sym == 256) {
@@ -387,10 +393,17 @@ func (this: *Hpack) huffDecode(
                 var ch = sym as (char)
                 out.appendStrn(&ch, 1)
                 node = 0
+                bitsAfterLastSymbol = 0
+                sawZeroBit = false
             } else {
                 node = nxt
             }
         }
+    }
+    // RFC 7541 §5.2: padding bits MUST be ≤7 and MUST be the EOS prefix (all 1s).
+    if(node != 0) {
+        if(bitsAfterLastSymbol > 7) { return false }
+        if(sawZeroBit) { return false }
     }
     return true
 }
@@ -525,7 +538,6 @@ func pseudoBit(name: String) : i32 {
     if(name.equals($":method"))    { return PSEUDO_METHOD    }
     if(name.equals($":path"))      { return PSEUDO_PATH      }
     if(name.equals($":scheme"))    { return PSEUDO_SCHEME    }
-    if(name.equals($":status"))    { return PSEUDO_STATUS    }
     return 0
 }
 
@@ -544,8 +556,9 @@ public func (this: *Hpack) decode(
     pseudoError: *bool
 ) : Status {
     var pos         = 0
-    var seenPseudo  = 0     // bitmask of pseudo-headers seen so far
-    var seenRegular = false // true once we see a non-pseudo header
+    var seenPseudo  = 0
+    var seenRegular = false
+    var seenHeader  = false  // any indexed/literal field seen (table size updates must precede)
 
     while(pos < payloadLen) {
         var first = payload[pos] as (i32)
@@ -557,12 +570,19 @@ public func (this: *Hpack) decode(
             if(r.value < 1) {
                 return Status.ERROR_PARSING_HTTP_REQUEST
             }
+            // RFC 7541 §2.3.3: index beyond static+dynamic table is a decoding error.
+            if(r.value > 61 && (r.value - 62) >= this.dynCount) {
+                return Status.ERROR_PARSING_HTTP_REQUEST
+            }
             var name  = this.indexName(r.value)
             var value = this.indexValue(r.value)
+            seenHeader = true
             var bit   = pseudoBit(name)
             if(bit != 0) {
                 if(seenRegular || (seenPseudo & bit) != 0) { *pseudoError = true }
                 seenPseudo |= bit
+            } else if(name.length > 0 && name.buffer[0] == ':') {
+                *pseudoError = true   // response-only or unknown pseudo-header
             } else {
                 seenRegular = true
             }
@@ -574,6 +594,9 @@ public func (this: *Hpack) decode(
             pos = ri.newPos
             var name: String
             if(ri.value > 0) {
+                if(ri.value > 61 && (ri.value - 62) >= this.dynCount) {
+                    return Status.ERROR_PARSING_HTTP_REQUEST
+                }
                 name = this.indexName(ri.value)
             } else {
                 var rn = this.decodeString(payload, payloadLen, pos, allocator)
@@ -589,10 +612,13 @@ public func (this: *Hpack) decode(
             }
             pos = rv.newPos
             this.dynAdd(name, rv.value)
+            seenHeader = true
             var bit = pseudoBit(name)
             if(bit != 0) {
                 if(seenRegular || (seenPseudo & bit) != 0) { *pseudoError = true }
                 seenPseudo |= bit
+            } else if(name.length > 0 && name.buffer[0] == ':') {
+                *pseudoError = true
             } else {
                 seenRegular = true
             }
@@ -602,6 +628,14 @@ public func (this: *Hpack) decode(
             // §6.3 Dynamic Table Size Update
             var r = decodeInt(payload, payloadLen, pos + 1, 5, first)
             pos = r.newPos
+            // RFC 7541 §4.2: size updates MUST appear before any header field.
+            if(seenHeader) {
+                return Status.ERROR_PARSING_HTTP_REQUEST
+            }
+            // RFC 7541 §6.3: new size MUST NOT exceed SETTINGS_HEADER_TABLE_SIZE.
+            if(r.value > this.maxAllowed) {
+                return Status.ERROR_PARSING_HTTP_REQUEST
+            }
             this.updateMaxSize(r.value)
 
         } else {
@@ -610,6 +644,9 @@ public func (this: *Hpack) decode(
             pos = ri.newPos
             var name: String
             if(ri.value > 0) {
+                if(ri.value > 61 && (ri.value - 62) >= this.dynCount) {
+                    return Status.ERROR_PARSING_HTTP_REQUEST
+                }
                 name = this.indexName(ri.value)
             } else {
                 var rn = this.decodeString(payload, payloadLen, pos, allocator)
@@ -624,10 +661,13 @@ public func (this: *Hpack) decode(
                 return Status.ERROR_PARSING_HTTP_REQUEST
             }
             pos = rv.newPos
+            seenHeader = true
             var bit = pseudoBit(name)
             if(bit != 0) {
                 if(seenRegular || (seenPseudo & bit) != 0) { *pseudoError = true }
                 seenPseudo |= bit
+            } else if(name.length > 0 && name.buffer[0] == ':') {
+                *pseudoError = true
             } else {
                 seenRegular = true
             }

@@ -25,7 +25,6 @@ import "std/http/http" as stdhttp
 
 import "http_ring"
 
-@foreign func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
 
 // ---------------------------------------------------------------------------
 // Test server — TLS on port 9595

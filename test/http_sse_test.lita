@@ -12,9 +12,6 @@ import "std/net/posix_socket"
 import "http_ring"
 import "test_webserver"
 
-// connect() is not in posix_socket.lita, declare it here
-@foreign
-func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
 
 const SSE_TEST_PORT = 19083_u16
 

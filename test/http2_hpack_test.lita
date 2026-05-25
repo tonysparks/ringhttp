@@ -378,14 +378,10 @@ func testHpackDynamicTableSizeUpdateEvicts() {
     wire2[0] = 0x20_u8           // dynamic table size update → 0
     wire2[1] = (0x80 | 62) as (u8)  // index 62 (now empty table)
 
+    // After the table is cleared, index 62 is out of bounds — must be COMPRESSION_ERROR.
     var req2 = hpackRequest()
     var pe2 = false
-    hpackDecodeOk(&hpack, wire2 as (*const u8), 2, &req2, &pe2)
-
-    // The evicted entry "x-tag" must not appear as a header.
-    for(var i = 0; i < req2.headers.length; i += 1) {
-        assert(!req2.headers.get(i).name.equals($"x-tag"))
-    }
+    assert(hpack.decode(wire2 as (*const u8), 2, &req2, defaultAllocator as (*Allocator), &pe2) != Status.OK)
 }
 
 // ---------------------------------------------------------------------------
@@ -585,7 +581,8 @@ func testHpackEncodeResponseStaticNameRoundtrip() {
     hpack2.init(defaultAllocator as (*Allocator))
     var req = hpackRequest()
     var pe = false
+    // encodeResponse emits :status (response-only pseudo-header), so pe will fire
+    // when decoded through the request decoder — that's expected and harmless here.
     hpackDecodeOk(&hpack2, out.buffer as (*const u8), out.length, &req, &pe)
-    assert(!pe)
     assert(req.bodyLength == 42)
 }
