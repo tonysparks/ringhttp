@@ -20,9 +20,6 @@ import "std/time"
 import "http_ring"
 import "test_webserver"
 
-// connect(2) is not exposed by std/net/posix_socket — declare it here.
-@foreign
-func connect(sockfd: i32, addr: *sockaddr, addrlen: socklen_t) : i32;
 
 @raw("""
 #include <sys/socket.h>
