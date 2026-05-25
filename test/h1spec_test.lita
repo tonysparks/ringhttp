@@ -1,0 +1,108 @@
+// h1spec RFC 7230/7231 conformance test for ringhttp.
+//
+// Starts the ring server in-process (using the native I/O backend) and runs
+// h1spec_runner.py from the ring-h1spec Docker image against it.
+//
+// The ring-h1spec image must be built before running this test:
+//
+//   docker build -f Dockerfile.h1spec -t ring-h1spec .
+//
+// Run with:
+//   litac test -file test/h1spec_test.lita
+
+import "std/libc"
+import "std/string/builder"
+import "std/assert"
+import "std/thread"
+import "std/thread/barrier"
+import "std/mem"
+import "std/testcontainers/docker"
+import "http_ring"
+
+const H1SPEC_PORT: u16 = 9090_u16
+
+// ── Server ────────────────────────────────────────────────────────────────────
+
+func h1specRootHandler(ctx: *RequestHandlerContext) : i32 {
+    ctx.response.status = 200
+    ctx.response.type   = ResponseType.BODY
+    ctx.response.body.append("OK")
+    return 1
+}
+
+struct H1SpecServer {
+    config:  HttpConfig
+    barrier: Barrier
+}
+
+var gServer      = H1SpecServer{}
+var gServerReady = false
+
+func serverThread(arg: *void) : i32 {
+    var ts = arg as (*H1SpecServer)
+    var server = HttpServer{}
+    server.init(&ts.config)
+    server.addHttpController(HttpMethod.GET,  "/", null,
+        HttpController{.callback = h1specRootHandler})
+    server.addHttpController(HttpMethod.POST, "/", null,
+        HttpController{.callback = h1specRootHandler})
+    ts.barrier.wait()
+    server.start()
+    defer server.close()
+    return 0
+}
+
+func ensureServer() {
+    if(gServerReady) { return; }
+    gServer.config = HttpConfig{
+        .allocator             = defaultAllocator,
+        .port                  = H1SPEC_PORT,
+        .numThreads            = 2,
+        .maxPoolSize           = 32,
+        .keepAliveTimeoutInSec = 30,
+        .isLogEnabled          = false,
+    }
+    gServer.barrier.init(2)
+    var t = Thread{}
+    assert(t.create(serverThread, &gServer) == ThreadStatus.SUCCESS)
+    gServer.barrier.wait()
+    ThreadSleepMSec(200)
+    gServerReady = true
+}
+
+// ── Test ──────────────────────────────────────────────────────────────────────
+
+// Extracts exit code from POSIX waitpid() status (WEXITSTATUS).
+func wexitstatus(s: i32) : i32 {
+    return (s >> 8) & 0xFF
+}
+
+@test("h1spec_rfc7230_7231_conformance")
+func testH1SpecConformance() {
+    if(!DockerAvailable()) {
+        printf("SKIP h1spec: Docker not available\n")
+        return;
+    }
+
+    var checkCmd = StringBuilderInit(64)
+    defer checkCmd.free()
+    checkCmd.append("docker image inspect ring-h1spec > /dev/null 2>&1")
+    if(wexitstatus(system(checkCmd.cStr())) != 0) {
+        printf("SKIP h1spec: ring-h1spec image not built.\n")
+        printf("  Build:  docker build -f Dockerfile.h1spec -t ring-h1spec .\n")
+        return;
+    }
+
+    ensureServer()
+
+    // h1spec_runner.py runs inside the container; the ring server runs on the host.
+    // host.docker.internal resolves to the host IP inside Docker Desktop containers.
+    var runCmd = StringBuilderInit(256)
+    defer runCmd.free()
+    runCmd.append(
+        "docker run --rm ring-h1spec python3 /app/h1spec_runner.py --host host.docker.internal --port %d",
+        H1SPEC_PORT as (i32))
+
+    var exitCode = wexitstatus(system(runCmd.cStr()))
+    assert(exitCode == 0)
+}
