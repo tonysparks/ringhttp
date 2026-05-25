@@ -1,12 +1,5 @@
 // HTTP/2 connection-level state machine (RFC 7540 §3–6).
 //
-// Phase 2 scope (builds on Phase 1):
-//   - Full settings handshake (parses client SETTINGS payload)
-//   - HEADERS / CONTINUATION frame accumulation
-//   - DATA frame accumulation
-//   - RST_STREAM and WINDOW_UPDATE handling
-//   - Enqueues ready streams for concurrent dispatch
-//
 // All frame I/O is buffer-based: no socket calls inside this file.
 // Route dispatch is done by the worker after process() returns.
 
@@ -25,6 +18,20 @@ import "http2_hpack"
 import "http2_stream"
 import "http_common"
 import "http_request"
+
+// ---------------------------------------------------------------------------
+// Byte-order helpers
+// ---------------------------------------------------------------------------
+
+func beU32(p: *u8) : u32 {
+    return ((p[0] as (u32)) << 24) | ((p[1] as (u32)) << 16) |
+           ((p[2] as (u32)) << 8)  |  (p[3] as (u32))
+}
+
+// Like beU32 but strips the reserved high bit (stream-id / dependency fields).
+func beU31(p: *u8) : u32 {
+    return beU32(p) & 0x7fffffff_u32
+}
 
 // ---------------------------------------------------------------------------
 // SETTINGS parameter identifiers (RFC 7540 §6.5.2)
@@ -179,6 +186,7 @@ public func (this: *Http2Connection) process(
                   HTTP2_CLIENT_PREFACE.buffer as (*const void),
                   HTTP2_CLIENT_PREFACE.length as (usize)) != 0) {
             Debug("HTTP/2: invalid connection preface\n")
+            http2WriteGoaway(writeBuf, 0_u32, HTTP2_ERR_PROTOCOL_ERROR)
             return Status.ERROR_PARSING_HTTP_REQUEST
         }
 
@@ -204,8 +212,34 @@ public func (this: *Http2Connection) process(
             return Status.ERROR_PARSING_HTTP_REQUEST
         }
 
+        // RFC 7540 §4.2: reject frames exceeding our advertised limit.
+        // Checked before waiting for the full payload so oversized frames
+        // don't stall the connection waiting for data that may never arrive.
+        if(hdr.length > H2_DEFAULT_MAX_FRAME_SIZE as (u32)) {
+            // HEADERS/CONTINUATION carry a header block → always a connection error.
+            // Everything else on stream 0 → connection error.
+            // DATA on a non-zero stream → stream error (RST_STREAM).
+            if(hdr.type == HTTP2_FRAME_HEADERS    ||
+               hdr.type == HTTP2_FRAME_CONTINUATION ||
+               hdr.type == HTTP2_FRAME_PUSH_PROMISE ||
+               hdr.streamId == 0_u32
+            ) {
+                this.sendGoaway(writeBuf, HTTP2_ERR_FRAME_SIZE_ERROR)
+                return Status.ERROR_IO_ERROR
+            }
+            // Stream-level frame size error
+            http2WriteRstStream(writeBuf, hdr.streamId, HTTP2_ERR_FRAME_SIZE_ERROR)
+            // We can't skip the payload since we don't have it — close connection
+            this.sendGoaway(writeBuf, HTTP2_ERR_FRAME_SIZE_ERROR)
+            return Status.ERROR_IO_ERROR
+        }
+
         var totalLen = 9 + hdr.length as (i32)
         if(readBuf.length < totalLen) {
+            // Ensure the buffer has enough room for the rest of this frame.
+            if(readBuf.capacity < totalLen) {
+                readBuf.reserve(totalLen + 9)
+            }
             break  // partial frame — wait for more data
         }
 
@@ -237,8 +271,14 @@ func (this: *Http2Connection) processFrame(
     writeBuf: *StringBuilder
 ) : Status {
 
-    if(hdr.streamId > this.lastStreamId) {
-        this.lastStreamId = hdr.streamId
+    // RFC 7540 §6.10: while waiting for a CONTINUATION, ONLY a CONTINUATION
+    // frame (for the same stream) is permitted.  Anything else is a
+    // connection error of type PROTOCOL_ERROR.
+    if(this.pendingHeadersIdx >= 0) {
+        if(hdr.type != HTTP2_FRAME_CONTINUATION) {
+            this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+            return Status.ERROR_IO_ERROR
+        }
     }
 
     if(hdr.type == HTTP2_FRAME_SETTINGS) {
@@ -261,19 +301,24 @@ func (this: *Http2Connection) processFrame(
         return this.handleData(hdr, payload, writeBuf)
     }
     if(hdr.type == HTTP2_FRAME_RST_STREAM) {
-        return this.handleRstStream(hdr, writeBuf)
+        return this.handleRstStream(hdr, payload, writeBuf)
     }
     if(hdr.type == HTTP2_FRAME_WINDOW_UPDATE) {
         return this.handleWindowUpdate(hdr, payload, writeBuf)
     }
     if(hdr.type == HTTP2_FRAME_PRIORITY) {
-        // Advisory only — ignore (RFC 7540 §6.3)
-        return Status.OK
+        return this.handlePriority(hdr, payload, writeBuf)
+    }
+    if(hdr.type == HTTP2_FRAME_PUSH_PROMISE) {
+        // RFC 7540 §8.2.1: clients MUST NOT send PUSH_PROMISE frames.
+        this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+        return Status.ERROR_IO_ERROR
     }
 
-    // RFC 7540 §4.1: "Implementations MUST ignore and discard any frame that
-    // has a type that is unknown."  This applies to both stream-0 and all
-    // other streams — unknown types are never a protocol error.
+    // RFC 7540 §4.1: unknown frame types are ignored on stream-level; on
+    // stream 0 they're also ignored unless they change compression state.
+    // §5.5: unknown extension frames MUST NOT alter connection state.
+    // When no CONTINUATION is pending (guarded above), ignore silently.
     Debug("HTTP/2: ignoring unknown frame type 0x%02x on stream %u\n",
           hdr.type, hdr.streamId)
     return Status.OK
@@ -294,6 +339,11 @@ func (this: *Http2Connection) handleSettings(
     }
 
     if(hdr.flags & HTTP2_FLAG_ACK) {
+        // RFC 7540 §6.5: SETTINGS ACK MUST have an empty payload.
+        if(hdr.length != 0) {
+            this.sendGoaway(writeBuf, HTTP2_ERR_FRAME_SIZE_ERROR)
+            return Status.ERROR_IO_ERROR
+        }
         Debug("HTTP/2: received SETTINGS ACK from client\n")
         return Status.OK
     }
@@ -308,21 +358,34 @@ func (this: *Http2Connection) handleSettings(
     for(var i = 0; i < numParams; i += 1) {
         var p    = payload + i * 6
         var id   = ((p[0] as (i32)) << 8) | (p[1] as (i32))
-        var val  = (((p[2] as (u32)) << 24) | ((p[3] as (u32)) << 16) |
-                    ((p[4] as (u32)) << 8)  |  (p[5] as (u32))) as (i32)
+        var val  = beU32(p + 2) as (i32)
 
         if(id == H2_SETTINGS_HEADER_TABLE_SIZE) {
-            this.hpack.updateMaxSize(val)
+            // This is the client's decoding table size (our encoding limit).
+            // We don't use a dynamic table for encoding, so nothing to do.
+        } else if(id == H2_SETTINGS_ENABLE_PUSH) {
+            // RFC 7540 §6.5.2: value MUST be 0 or 1.
+            if(val != 0 && val != 1) {
+                this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+                return Status.ERROR_IO_ERROR
+            }
         } else if(id == H2_SETTINGS_INITIAL_WINDOW_SIZE) {
             if(val as (u32) > 0x7fffffff_u32) {
                 this.sendGoaway(writeBuf, HTTP2_ERR_FLOW_CONTROL_ERROR)
                 return Status.ERROR_IO_ERROR
             }
+            var delta = val - this.remoteInitialWindowSize
             this.remoteInitialWindowSize = val
-            // Update all open streams
+            // Update all open streams by the delta
             for(var s = 0; s < MAX_H2_STREAMS; s += 1) {
                 if(this.streams[s].state != Http2StreamState.IDLE) {
-                    this.streams[s].sendWindow = val
+                    var newWindow = this.streams[s].sendWindow + delta
+                    // RFC 7540 §6.9.2: overflow → FLOW_CONTROL_ERROR
+                    if(newWindow > 0x7fffffff || newWindow < -0x7fffffff) {
+                        this.sendGoaway(writeBuf, HTTP2_ERR_FLOW_CONTROL_ERROR)
+                        return Status.ERROR_IO_ERROR
+                    }
+                    this.streams[s].sendWindow = newWindow
                 }
             }
         } else if(id == H2_SETTINGS_MAX_CONCURRENT_STREAMS) {
@@ -334,7 +397,7 @@ func (this: *Http2Connection) handleSettings(
             }
             this.remoteMaxFrameSize = val
         }
-        // ENABLE_PUSH, MAX_HEADER_LIST_SIZE: noted but not enforced
+        // MAX_HEADER_LIST_SIZE: noted but not enforced
     }
 
     http2WriteSettingsAck(writeBuf)
@@ -373,6 +436,35 @@ func (this: *Http2Connection) handlePing(
 }
 
 // ---------------------------------------------------------------------------
+// PRIORITY
+// ---------------------------------------------------------------------------
+
+func (this: *Http2Connection) handlePriority(
+    hdr:      *Http2FrameHeader,
+    payload:  *u8,
+    writeBuf: *StringBuilder
+) : Status {
+    // RFC 7540 §6.3: PRIORITY on stream 0 is a connection error.
+    if(hdr.streamId == 0) {
+        this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+        return Status.ERROR_IO_ERROR
+    }
+    // RFC 7540 §6.3: PRIORITY length must be exactly 5 octets.
+    if(hdr.length != 5) {
+        http2WriteRstStream(writeBuf, hdr.streamId, HTTP2_ERR_FRAME_SIZE_ERROR)
+        return Status.OK
+    }
+    // RFC 7540 §5.3.1: a stream cannot depend on itself.
+    var dep = beU31(payload)
+    if(dep == hdr.streamId) {
+        http2WriteRstStream(writeBuf, hdr.streamId, HTTP2_ERR_PROTOCOL_ERROR)
+        return Status.OK
+    }
+    // Advisory — no other action needed.
+    return Status.OK
+}
+
+// ---------------------------------------------------------------------------
 // HEADERS
 // ---------------------------------------------------------------------------
 
@@ -386,11 +478,39 @@ func (this: *Http2Connection) handleHeaders(
         return Status.ERROR_IO_ERROR
     }
 
-    // RFC 7540 §5.1: new client-initiated stream IDs must be odd and increasing
-    if((hdr.streamId & 1_u32) == 0_u32 || hdr.streamId <= this.lastStreamId - 1_u32) {
-        // Could be a stream we already closed; send RST_STREAM
+    // RFC 7540 §5.1.1: client-initiated streams must use odd stream IDs.
+    if((hdr.streamId & 1_u32) == 0_u32) {
+        this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+        return Status.ERROR_IO_ERROR
+    }
+
+    // Check if a stream with this ID already exists in our table.
+    var existingIdx = this.findStream(hdr.streamId)
+    if(existingIdx >= 0) {
+        var existingStream = &this.streams[existingIdx]
+        if(existingStream.state == Http2StreamState.OPEN) {
+            if(hdr.flags & HTTP2_FLAG_END_STREAM) {
+                // Trailer HEADERS on an open stream: valid only if no pseudo-headers.
+                // We close the stream and enqueue for dispatch.
+                existingStream.state = Http2StreamState.HALF_CLOSED_REMOTE
+                this.enqueueReady(existingIdx)
+                return Status.OK
+            }
+            // Second HEADERS without END_STREAM on an open stream.
+            http2WriteRstStream(writeBuf, hdr.streamId, HTTP2_ERR_PROTOCOL_ERROR)
+            return Status.OK
+        }
+        // Stream is in another non-IDLE state → STREAM_CLOSED.
         http2WriteRstStream(writeBuf, hdr.streamId, HTTP2_ERR_STREAM_CLOSED)
         return Status.OK
+    }
+
+    // RFC 7540 §5.1.1: stream IDs must be strictly increasing.
+    // A HEADERS for a stream ID ≤ lastStreamId means reuse of a previously
+    // opened (now closed) stream — treat as a connection error (STREAM_CLOSED).
+    if(hdr.streamId <= this.lastStreamId) {
+        this.sendGoaway(writeBuf, HTTP2_ERR_STREAM_CLOSED)
+        return Status.ERROR_IO_ERROR
     }
 
     // Reject if we have no free slots
@@ -400,10 +520,14 @@ func (this: *Http2Connection) handleHeaders(
     }
 
     // HEADERS must not arrive while a previous stream's headers are incomplete
+    // (already checked in processFrame, but kept as a safety net)
     if(this.pendingHeadersIdx >= 0) {
         this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
         return Status.ERROR_IO_ERROR
     }
+
+    // Valid new stream — update lastStreamId
+    this.lastStreamId = hdr.streamId
 
     var idx = this.allocStream(hdr.streamId)
     if(idx < 0) {
@@ -431,11 +555,18 @@ func (this: *Http2Connection) handleHeaders(
         }
     }
 
-    // Strip PRIORITY prefix if set (RFC 7540 §6.2)
+    // Strip PRIORITY prefix if set (RFC 7540 §6.2) and check self-dependency
     if(hdr.flags & HTTP2_FLAG_PRIORITY_F) {
         if(dataLen < 5) {
             this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
             return Status.ERROR_IO_ERROR
+        }
+        var dep = beU31(data)
+        if(dep == hdr.streamId) {
+            // RFC 7540 §5.3.1: self-dependency is a stream error PROTOCOL_ERROR.
+            http2WriteRstStream(writeBuf, hdr.streamId, HTTP2_ERR_PROTOCOL_ERROR)
+            this.closeStream(idx)
+            return Status.OK
         }
         data    += 5
         dataLen -= 5
@@ -495,7 +626,6 @@ func (this: *Http2Connection) handleContinuation(
         this.pendingHeadersIdx  = -1
 
         // If the original HEADERS had END_STREAM (no body), dispatch now.
-        // Without this, a GET whose headers span CONTINUATION would never run.
         if(stream.endStream) {
             stream.state = Http2StreamState.HALF_CLOSED_REMOTE
             this.enqueueReady(this.findStream(hdr.streamId))
@@ -522,7 +652,13 @@ func (this: *Http2Connection) handleData(
 
     var idx = this.findStream(hdr.streamId)
     if(idx < 0) {
-        // Stream doesn't exist — RST_STREAM
+        // Stream not in our table.
+        if(hdr.streamId > this.lastStreamId) {
+            // Never opened — truly idle: RFC 7540 §5.1 says connection error PROTOCOL_ERROR.
+            this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+            return Status.ERROR_IO_ERROR
+        }
+        // Previously opened and closed — stream error STREAM_CLOSED.
         http2WriteRstStream(writeBuf, hdr.streamId, HTTP2_ERR_STREAM_CLOSED)
         return Status.OK
     }
@@ -576,6 +712,7 @@ func (this: *Http2Connection) handleData(
 
 func (this: *Http2Connection) handleRstStream(
     hdr:     *Http2FrameHeader,
+    payload: *u8,
     writeBuf: *StringBuilder
 ) : Status {
     if(hdr.streamId == 0) {
@@ -587,11 +724,16 @@ func (this: *Http2Connection) handleRstStream(
         return Status.ERROR_IO_ERROR
     }
     var idx = this.findStream(hdr.streamId)
-    if(idx >= 0) {
-        this.closeStream(idx)
-        // Any queued entry for this index will be skipped by the worker
-        // because closeStream sets state to IDLE.
+    if(idx < 0) {
+        if(hdr.streamId > this.lastStreamId) {
+            // RST_STREAM on truly idle stream — connection error PROTOCOL_ERROR.
+            this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+            return Status.ERROR_IO_ERROR
+        }
+        // Previously closed — ignore per RFC 7540 §6.4.
+        return Status.OK
     }
+    this.closeStream(idx)
     return Status.OK
 }
 
@@ -613,10 +755,7 @@ func (this: *Http2Connection) handleWindowUpdate(
         return Status.OK
     }
 
-    var increment = (((payload[0] as (u32)) << 24) |
-                     ((payload[1] as (u32)) << 16) |
-                     ((payload[2] as (u32)) << 8)  |
-                      (payload[3] as (u32))) & 0x7fffffff_u32
+    var increment = beU31(payload)
 
     if(increment == 0_u32) {
         if(hdr.streamId == 0) {
@@ -628,11 +767,26 @@ func (this: *Http2Connection) handleWindowUpdate(
     }
 
     if(hdr.streamId == 0) {
+        // RFC 7540 §6.9.1: connection-level window must not exceed 2^31-1.
+        if(this.sendWindow > (0x7fffffff - increment as (i32))) {
+            this.sendGoaway(writeBuf, HTTP2_ERR_FLOW_CONTROL_ERROR)
+            return Status.ERROR_IO_ERROR
+        }
         this.sendWindow += increment as (i32)
         this.flushBlockedStreams(writeBuf)
     } else {
+        // Check for idle stream (never opened).
+        if(this.findStream(hdr.streamId) < 0 && hdr.streamId > this.lastStreamId) {
+            this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+            return Status.ERROR_IO_ERROR
+        }
         var idx = this.findStream(hdr.streamId)
         if(idx >= 0) {
+            // RFC 7540 §6.9.1: stream-level window must not exceed 2^31-1.
+            if(this.streams[idx].sendWindow > (0x7fffffff - increment as (i32))) {
+                http2WriteRstStream(writeBuf, hdr.streamId, HTTP2_ERR_FLOW_CONTROL_ERROR)
+                return Status.OK
+            }
             this.streams[idx].sendWindow += increment as (i32)
             if(this.streams[idx].state == Http2StreamState.SEND_BLOCKED) {
                 if(this.flushPendingStream(&this.streams[idx], writeBuf)) {
@@ -675,7 +829,6 @@ public func (this: *Http2Connection) flushPendingStream(
 }
 
 // Scan all SEND_BLOCKED streams and flush whatever the windows now allow.
-// Called after any WINDOW_UPDATE is processed.
 public func (this: *Http2Connection) flushBlockedStreams(writeBuf: *StringBuilder) {
     for(var i = 0; i < MAX_H2_STREAMS; i += 1) {
         if(this.streams[i].state == Http2StreamState.SEND_BLOCKED) {
@@ -683,7 +836,6 @@ public func (this: *Http2Connection) flushBlockedStreams(writeBuf: *StringBuilde
                 this.closeStream(i)
             }
         }
-        // Stop if the connection window is exhausted
         if(this.sendWindow <= 0) { break }
     }
 }
