@@ -848,25 +848,53 @@ internal func (this: *WorkerThread) tryDetectProtocol(
         readBuffer.length = totalSoFar
         return false
     }
-    var b0 = readBuffer.buffer[0]
-    var b1 = readBuffer.buffer[1]
-    var b2 = readBuffer.buffer[2]
+    var b0 = readBuffer.buffer[0] as (u8)
+    var b1 = readBuffer.buffer[1] as (u8)
+    var b2 = readBuffer.buffer[2] as (u8)
     if(b0 == 'P' && b1 == 'R' && b2 == 'I') {
+        // HTTP/2 prior knowledge (RFC 7540 §3.5).
         session.protocolVersion = ProtocolVersion.HTTP2
         session.state = SessionState.HTTP2_OPEN
         session.http2.init(&session.requestAllocator.allocator)
         Debug("HTTP/2 connection detected on socket: %d\n", session.connection.handle())
     } else if(b0 == 'G' || b0 == 'D' || b0 == 'H' || b0 == 'O' || b0 == 'T' || b0 == 'C' ||
               (b0 == 'P' && b1 != 'R')) {
-        // Known HTTP/1.1 method starters: GET, DELETE, HEAD, OPTIONS, TRACE, CONNECT, POST/PUT/PATCH
+        // Known HTTP/1.1 method first byte: GET, DELETE, HEAD, OPTIONS, TRACE, CONNECT, POST/PUT/PATCH.
         session.protocolVersion = ProtocolVersion.HTTP1
     } else {
-        // Unknown prefix — treat as invalid HTTP/2 connection preface (RFC 3.5).
-        // The HTTP/2 state machine will detect the bad preface and send GOAWAY PROTOCOL_ERROR.
+        // Unknown first byte — sniff the URL to distinguish HTTP/1.1 from an invalid HTTP/2 preface.
+        // HTTP/1.1 request lines are "METHOD SP url SP version CRLF" where url starts with '/'.
+        // Buffer up to SNIFF bytes, then look for the first space followed by '/'.
+        const SNIFF = 20
+        var limit = totalSoFar
+        if(limit > SNIFF) { limit = SNIFF }
+
+        var spaceIdx = -1
+        for(var i = 0; i < limit - 1; i += 1) {
+            if(readBuffer.buffer[i] as (u8) == ' ' as (u8)) {
+                spaceIdx = i
+                break
+            }
+        }
+
+        if(spaceIdx < 0) {
+            // No space found yet; buffer and wait for more bytes (if under SNIFF limit).
+            if(totalSoFar < SNIFF) {
+                readBuffer.length = totalSoFar
+                return false
+            }
+            // Exceeds SNIFF without a space — not HTTP/1.1. Fall through to HTTP/2 path.
+        } else if(readBuffer.buffer[spaceIdx + 1] as (u8) == '/' as (u8)) {
+            // Space + slash matches "METHOD /path" — treat as HTTP/1.1.
+            session.protocolVersion = ProtocolVersion.HTTP1
+            return true
+        }
+        // Space found but URL doesn't start with '/', OR no space within SNIFF bytes —
+        // treat as invalid HTTP/2 connection preface (RFC 7540 §3.5): send GOAWAY.
         session.protocolVersion = ProtocolVersion.HTTP2
         session.state = SessionState.HTTP2_OPEN
         session.http2.init(&session.requestAllocator.allocator)
-        Debug("Unknown connection prefix on socket: %d — treating as invalid HTTP/2\n", session.connection.handle())
+        Debug("Non-HTTP/1.1 connection prefix on socket: %d — treating as invalid HTTP/2\n", session.connection.handle())
     }
     return true
 }

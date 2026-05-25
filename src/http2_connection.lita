@@ -178,16 +178,23 @@ public func (this: *Http2Connection) process(
     // Step 1: consume the client connection preface (first 24 bytes)
     // -----------------------------------------------------------------------
     if(this.state == Http2ConnState.PREFACE_PENDING) {
-        if(readBuf.length < HTTP2_CLIENT_PREFACE.length) {
-            return Status.PARTIAL_REQUEST_DISPATCHING_READ
+        // Validate as much of the preface as we have — fail fast on mismatch
+        // so a truncated invalid preface (e.g. "SM\r\n\r\n") gets GOAWAY immediately
+        // instead of waiting for the full 24 bytes.
+        var checkLen = readBuf.length
+        if(checkLen > HTTP2_CLIENT_PREFACE.length) {
+            checkLen = HTTP2_CLIENT_PREFACE.length
         }
-
         if(memcmp(readBuf.buffer as (*const void),
                   HTTP2_CLIENT_PREFACE.buffer as (*const void),
-                  HTTP2_CLIENT_PREFACE.length as (usize)) != 0) {
+                  checkLen as (usize)) != 0) {
             Debug("HTTP/2: invalid connection preface\n")
             http2WriteGoaway(writeBuf, 0_u32, HTTP2_ERR_PROTOCOL_ERROR)
             return Status.ERROR_PARSING_HTTP_REQUEST
+        }
+
+        if(readBuf.length < HTTP2_CLIENT_PREFACE.length) {
+            return Status.PARTIAL_REQUEST_DISPATCHING_READ
         }
 
         var consumed  = HTTP2_CLIENT_PREFACE.length

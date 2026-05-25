@@ -986,6 +986,7 @@ func testH2ErrorWindowUpdateZeroConnection() {
 // ---------------------------------------------------------------------------
 
 // HEADERS with even stream ID (RFC 7540 §5.1.1: client streams are odd).
+// This is a connection error (GOAWAY), not a stream error.
 @test("http2_e2e_error_even_stream_id")
 func testH2ErrorEvenStreamId() {
     ensureServer()
@@ -1003,18 +1004,11 @@ func testH2ErrorEvenStreamId() {
     assert(h2WriteAll(fd, hdr, 9))
     assert(h2WriteAll(fd, hpack.buffer, hpack.length))
 
-    var frame: H2Frame
-    assert(readNextFrame(fd, 0x03, &frame))  // expect RST_STREAM
-    assert(frame.streamId == 2_u32)
-
-    // processFrame() updates lastStreamId=2 before rejecting; next valid stream is 3.
-    // Connection still alive — make a valid request on stream 3.
-    assert(sendHeadersFrame(fd, 3_u32, &hpack, true))
-    assert(readNextFrame(fd, 0x01, &frame))
-    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+    assert(expectGoaway(fd))
 }
 
-// DATA arrives on a stream that was never opened.
+// DATA arrives on a stream that was never opened (idle state).
+// RFC 7540 §5.1: MUST treat as a connection error of type PROTOCOL_ERROR.
 @test("http2_e2e_error_data_unknown_stream")
 func testH2ErrorDataUnknownStream() {
     ensureServer()
@@ -1027,18 +1021,7 @@ func testH2ErrorDataUnknownStream() {
     const body = "hi"
     assert(sendRawFrame(fd, 2, 0x00, 0x01, 7_u32, body))
 
-    var frame: H2Frame
-    assert(readNextFrame(fd, 0x03, &frame))  // expect RST_STREAM
-    assert(frame.streamId == 7_u32)
-
-    // processFrame() updates lastStreamId=7 before rejecting; next valid stream is 9.
-    // Connection still alive.
-    var hpack = StringBuilderInit(64, defaultAllocator)
-    defer hpack.free()
-    buildGetHpack($"/hello", &hpack)
-    assert(sendHeadersFrame(fd, 9_u32, &hpack, true))
-    assert(readNextFrame(fd, 0x01, &frame))
-    assert(decodeResponseStatus(frame.payload, frame.length) == 200)
+    assert(expectGoaway(fd))
 }
 
 // Stream-level WINDOW_UPDATE with increment=0 (RFC 7540 §6.9.1: RST_STREAM PROTOCOL_ERROR).
