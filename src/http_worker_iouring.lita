@@ -1231,6 +1231,11 @@ func (this: *WorkerThread) handleCompletionRing(
                 if(session.response.status == 100) {
                     return this.queueNextRead(ring, session)
                 }
+                // RFC 7230 §6.6: close when Connection: close or HTTP/1.0 without keep-alive.
+                if(connection.disableKeepAlive) {
+                    this.closeSession(session)
+                    return Status.OK
+                }
                 Debug("Preparing connection for another HTTP request for socket: %d\n", connection.handle())
                 var savedSsl = session.ssl
                 session.begin(connection.handle())

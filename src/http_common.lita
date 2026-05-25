@@ -57,6 +57,7 @@ public enum Status {
 
     // HTTP/1.1 protocol requirements
     ERROR_MISSING_HOST_HEADER,
+    ERROR_DUPLICATE_HOST_HEADER,           // more than one Host header → 400
     ERROR_HTTP_VERSION_NOT_SUPPORTED,
     ERROR_CONFLICTING_BODY_HEADERS,       // both Transfer-Encoding and Content-Length → 400
     ERROR_CONFLICTING_CONTENT_LENGTH,     // duplicate Content-Length with different values → 400

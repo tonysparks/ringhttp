@@ -229,6 +229,9 @@ internal func (this: *WorkerThread) sendBadRequest(
         case Status.ERROR_MISSING_HOST_HEADER:
             response.body.append("HTTP/1.1 requests must include a Host header\n")
             break
+        case Status.ERROR_DUPLICATE_HOST_HEADER:
+            response.body.append("HTTP/1.1 requests must not send more than one Host header\n")
+            break
         case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
             response.status = 505
             response.body.append("HTTP Version Not Supported\n")

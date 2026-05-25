@@ -1116,9 +1116,7 @@ func testMultipartPartHeaderWithoutColon() {
 // Content-Length edge cases
 // ---------------------------------------------------------------------------
 
-// A non-numeric Content-Length value must be silently coerced to 0 — no error.
-// parseU64() returns 0 for non-numeric input; MAX(0, 0) = 0.
-// CONTENT_LENGTH_PROVIDED must still be set because the header was present.
+// RFC 7230 §3.3.2: a non-numeric Content-Length must be rejected with an error.
 @test
 func testNonNumericContentLength() {
     var parser = HttpParser{}
@@ -1126,9 +1124,7 @@ func testNonNumericContentLength() {
 
     var result: HttpRequest
     var input = StringInit("GET / HTTP/1.1\r\nContent-Length: abc\r\n\r\n")
-    assert(parser.parse(input, &result) == Status.OK)
-    assert(result.bodyLength == 0)
-    assert((result.flags & HttpFlags.CONTENT_LENGTH_PROVIDED) != 0)
+    assert(parser.parse(input, &result) == Status.ERROR_INVALID_CONTENT_LENGTH)
 }
 
 // A very large Content-Length that overflows i32 must be clamped to 0 by

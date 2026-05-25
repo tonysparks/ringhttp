@@ -47,11 +47,6 @@ jobs:
       - name: Run h2spec RFC 7540 conformance
         run: docker run --rm --security-opt seccomp=unconfined ring-h2spec /app/entrypoint.sh
 
-      - name: Build h1spec conformance image
-        run: docker build --no-cache -f Dockerfile.h1spec -t ring-h1spec .
-
-      - name: Run h1spec RFC 7230/7231 conformance
-        run: docker run --rm --security-opt seccomp=unconfined ring-h1spec /app/entrypoint.sh
 
   test-macos:
     name: Test (macOS)
