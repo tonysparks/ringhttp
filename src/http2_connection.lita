@@ -295,8 +295,15 @@ func (this: *Http2Connection) processFrame(
         return this.handlePing(hdr, payload, writeBuf)
     }
     if(hdr.type == HTTP2_FRAME_GOAWAY) {
+        // RFC 7540 §6.8: GOAWAY must be on stream 0.
+        if(hdr.streamId != 0) {
+            this.sendGoaway(writeBuf, HTTP2_ERR_PROTOCOL_ERROR)
+            return Status.ERROR_IO_ERROR
+        }
+        // Client is shutting down — keep processing existing frames (e.g. a PING
+        // sent in the same burst) so we respond gracefully rather than RST-ing.
         Debug("HTTP/2: received GOAWAY from client\n")
-        return Status.ERROR_IO_ERROR
+        return Status.OK
     }
     if(hdr.type == HTTP2_FRAME_HEADERS) {
         return this.handleHeaders(hdr, payload, writeBuf)
@@ -414,6 +421,10 @@ func (this: *Http2Connection) handleSettings(
         this.state = Http2ConnState.OPEN
         Debug("HTTP/2: connection OPEN\n")
     }
+
+    // Unblock any streams that were waiting for a larger flow-control window.
+    // SETTINGS_INITIAL_WINDOW_SIZE may have increased sendWindow for open streams.
+    this.flushBlockedStreams(writeBuf)
 
     return Status.OK
 }
