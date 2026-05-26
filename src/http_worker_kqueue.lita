@@ -873,7 +873,11 @@ func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
                     case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
                     case Status.ERROR_INVALID_CONTENT_LENGTH:
                     case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
-                    case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION: {
+                    case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION:
+                    case Status.ERROR_HTTP_PARSING_INVALID_REQUEST_LINE:
+                    case Status.ERROR_HTTP_PARSING_INVALID_HEADER_PARAM:
+                    case Status.ERROR_HTTP_PARSING_INVALID_CHUNK:
+                    case Status.ERROR_HTTP_PARSING_CHUNK_INCOMPLETE: {
                         this.sendBadRequest(session, status)
                         break
                     }

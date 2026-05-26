@@ -1107,13 +1107,18 @@ func (this: *WorkerThread) handleCompletionRing(
                     case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT:
                     case Status.ERROR_PARSING_HTTP_REQUEST:
                     case Status.ERROR_MISSING_HOST_HEADER:
+                    case Status.ERROR_DUPLICATE_HOST_HEADER:
                     case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
                     case Status.ERROR_EXPECT_FAILED:
                     case Status.ERROR_CONFLICTING_BODY_HEADERS:
                     case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
                     case Status.ERROR_INVALID_CONTENT_LENGTH:
                     case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
-                    case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION: {
+                    case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION:
+                    case Status.ERROR_HTTP_PARSING_INVALID_REQUEST_LINE:
+                    case Status.ERROR_HTTP_PARSING_INVALID_HEADER_PARAM:
+                    case Status.ERROR_HTTP_PARSING_INVALID_CHUNK:
+                    case Status.ERROR_HTTP_PARSING_CHUNK_INCOMPLETE: {
                         return this.sendBadRequest(session, status)
                     }
                     default: {

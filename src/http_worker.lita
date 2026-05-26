@@ -861,8 +861,9 @@ internal func (this: *WorkerThread) tryDetectProtocol(
         session.http2.init(&session.requestAllocator.allocator)
         Debug("HTTP/2 connection detected on socket: %d\n", session.connection.handle())
     } else if(b0 == 'G' || b0 == 'D' || b0 == 'H' || b0 == 'O' || b0 == 'T' || b0 == 'C' ||
-              (b0 == 'P' && b1 != 'R')) {
+              (b0 == 'P' && b1 != 'R') || b0 == '\r') {
         // Known HTTP/1.1 method first byte: GET, DELETE, HEAD, OPTIONS, TRACE, CONNECT, POST/PUT/PATCH.
+        // '\r' (CRLF) cannot start HTTP/2 (which begins "PRI "); route to HTTP/1.1 parser for 400.
         session.protocolVersion = ProtocolVersion.HTTP1
     } else {
         // Unknown first byte — sniff the URL to distinguish HTTP/1.1 from an invalid HTTP/2 preface.
