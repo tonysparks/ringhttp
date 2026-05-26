@@ -229,6 +229,18 @@ func h1HasHeader(resp: *H1Resp, needle: *const char) : bool {
     return headers.contains(StringInit(needle))
 }
 
+// Returns true if the named header line contains token anywhere on that line.
+func h1HeaderContains(resp: *H1Resp, header: *const char, token: *const char) : bool {
+    var headers = String{.buffer = resp.buf, .length = resp.headerLen}
+    var hi = headers.indexOf(StringInit(header))
+    if(hi < 0) { return false }
+    var lineStart = headers.substring(hi)
+    var lineEnd = lineStart.indexOf($"\r\n")
+    if(lineEnd < 0) { lineEnd = lineStart.length }
+    var line = lineStart.substring(0, lineEnd)
+    return line.contains(StringInit(token))
+}
+
 func h1BodyLen(resp: *H1Resp) : i32 {
     return resp.totalLen - resp.headerLen
 }
@@ -701,6 +713,287 @@ func testSizeLimits() {
     h1ReadFull(fd2, &resp2, false)
     check(&p, &f, "14.2  overlong header returns 431 or 400",
         resp2.statusCode == 431 || resp2.statusCode == 400)
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 15: Chunked request body (RFC 7230 §4.1) ─────────────────────────
+
+@test("h1spec_15_chunked_request_body")
+func testChunkedRequestBody() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 15: Chunked request body (RFC 7230 §4.1)\n")
+
+    // Single chunk
+    var c1 = h1OneShot("POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+    check(&p, &f, "15.1  single-chunk POST returns 2xx", c1 >= 200 && c1 < 300)
+
+    // Two chunks concatenated
+    var c2 = h1OneShot("POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n")
+    check(&p, &f, "15.2  two-chunk POST returns 2xx", c2 >= 200 && c2 < 300)
+
+    // Chunk extension — server must ignore "; name=value" after the size
+    var c3 = h1OneShot("POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5;ext=foo\r\nhello\r\n0\r\n\r\n")
+    check(&p, &f, "15.3  chunk extension ignored, returns 2xx", c3 >= 200 && c3 < 300)
+
+    // Zero-length body (only the terminator chunk)
+    var c4 = h1OneShot("POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n")
+    check(&p, &f, "15.4  empty chunked body returns 2xx", c4 >= 200 && c4 < 300)
+
+    // Trailing header after last chunk (RFC 7230 §4.1.2 — server must accept)
+    var c5 = h1OneShot("POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\nX-Checksum: abc\r\n\r\n")
+    check(&p, &f, "15.5  chunked with trailer header returns 2xx", c5 >= 200 && c5 < 300)
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 16: Absolute-form request target (RFC 7230 §5.3.2) ───────────────
+
+@test("h1spec_16_absolute_form_uri")
+func testAbsoluteFormUri() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 16: Absolute-form request target (RFC 7230 §5.3.2)\n")
+
+    // Full URI as request target — server must strip the authority
+    check(&p, &f, "16.1  GET http://localhost/ returns 200",
+        h1OneShot("GET http://localhost/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") == 200)
+
+    // With explicit port
+    check(&p, &f, "16.2  GET http://localhost:9191/ returns 200",
+        h1OneShot("GET http://localhost:9191/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") == 200)
+
+    // Unknown path via absolute form
+    check(&p, &f, "16.3  absolute-form unknown path returns 404",
+        h1OneShot("GET http://localhost/no-such-path HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") == 404)
+
+    // Large resource via absolute form
+    check(&p, &f, "16.4  absolute-form GET /large returns 200",
+        h1OneShot("GET http://localhost/large HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") == 200)
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 17: Method case sensitivity (RFC 7230 §3.1.1) ────────────────────
+
+@test("h1spec_17_method_case")
+func testMethodCase() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 17: Method case sensitivity (RFC 7230 §3.1.1)\n")
+
+    // RFC 7230 §3.1.1: method tokens are case-sensitive; lowercase must not match
+    var lower = h1OneShot("get / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    check(&p, &f, "17.1  lowercase 'get' returns 4xx or 5xx", lower >= 400)
+
+    var mixed = h1OneShot("Get / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    check(&p, &f, "17.2  mixed-case 'Get' returns 4xx or 5xx", mixed >= 400)
+
+    var upper = h1OneShot("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    check(&p, &f, "17.3  correct uppercase POST still returns 2xx", upper >= 200 && upper < 300)
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 18: Error response framing (RFC 7230 §3.3) ───────────────────────
+
+@test("h1spec_18_error_response_framing")
+func testErrorResponseFraming() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 18: Error response framing (RFC 7230 §3.3)\n")
+
+    // 400 — missing Host header
+    var fd1 = h1Connect(); assert(fd1 >= 0); defer close(fd1)
+    var r400: H1Resp
+    h1WriteAll(fd1, "GET / HTTP/1.1\r\n\r\n")
+    h1ReadFull(fd1, &r400, false)
+    check(&p, &f, "18.1  400 response has Content-Length or TE",
+        h1ContentLength(&r400) >= 0 || h1HasTE(&r400))
+    check(&p, &f, "18.2  400 Content-Length matches body",
+        h1ContentLength(&r400) < 0 || h1ContentLength(&r400) == h1BodyLen(&r400))
+
+    // 404 — unknown route
+    var fd2 = h1Connect(); assert(fd2 >= 0); defer close(fd2)
+    var r404: H1Resp
+    h1WriteAll(fd2, "GET /does-not-exist HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    h1ReadFull(fd2, &r404, false)
+    check(&p, &f, "18.3  404 response has Content-Length or TE",
+        h1ContentLength(&r404) >= 0 || h1HasTE(&r404))
+    check(&p, &f, "18.4  404 Content-Length matches body",
+        h1ContentLength(&r404) < 0 || h1ContentLength(&r404) == h1BodyLen(&r404))
+
+    // 501 — unregistered method
+    var fd3 = h1Connect(); assert(fd3 >= 0); defer close(fd3)
+    var r501: H1Resp
+    h1WriteAll(fd3, "PUT / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    h1ReadFull(fd3, &r501, false)
+    check(&p, &f, "18.5  501/405 response has Content-Length or TE",
+        h1ContentLength(&r501) >= 0 || h1HasTE(&r501))
+    check(&p, &f, "18.6  501/405 Content-Length matches body",
+        h1ContentLength(&r501) < 0 || h1ContentLength(&r501) == h1BodyLen(&r501))
+
+    // 505 — unsupported HTTP version
+    var fd4 = h1Connect(); assert(fd4 >= 0); defer close(fd4)
+    var r505: H1Resp
+    h1WriteAll(fd4, "GET / HTTP/2.0\r\nHost: localhost\r\n\r\n")
+    h1ReadFull(fd4, &r505, false)
+    check(&p, &f, "18.7  505 response has Content-Length or TE",
+        h1ContentLength(&r505) >= 0 || h1HasTE(&r505))
+    check(&p, &f, "18.8  505 Content-Length matches body",
+        h1ContentLength(&r505) < 0 || h1ContentLength(&r505) == h1BodyLen(&r505))
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 19: Query string routing (RFC 7230 §5.3.1) ───────────────────────
+
+@test("h1spec_19_query_string_routing")
+func testQueryStringRouting() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 19: Query string routing (RFC 7230 §5.3.1)\n")
+
+    // Query must be stripped before routing; /? still matches /
+    check(&p, &f, "19.1  GET /?key=value returns 200",
+        h1OneShot("GET /?key=value HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") == 200)
+
+    check(&p, &f, "19.2  GET /large?page=2 returns 200",
+        h1OneShot("GET /large?page=2 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") == 200)
+
+    // Unknown path with query is still 404
+    check(&p, &f, "19.3  GET /missing?x=y returns 404",
+        h1OneShot("GET /missing?x=y HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n") == 404)
+
+    // POST with query
+    var c4 = h1OneShot("POST /?debug=1 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\nConnection: close\r\n\r\nfoo")
+    check(&p, &f, "19.4  POST /?debug=1 returns 2xx", c4 >= 200 && c4 < 300)
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 20: OPTIONS method (RFC 7231 §4.3.7) ─────────────────────────────
+
+@test("h1spec_20_options_method")
+func testOptionsMethod() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 20: OPTIONS method (RFC 7231 §4.3.7)\n")
+
+    // OPTIONS on a registered path → 200 + Allow (auto-response)
+    var fd = h1Connect(); assert(fd >= 0); defer close(fd)
+    var resp: H1Resp
+    h1WriteAll(fd, "OPTIONS / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    h1ReadFull(fd, &resp, false)
+    check(&p, &f, "20.1  OPTIONS / returns 200",              resp.statusCode == 200)
+    check(&p, &f, "20.2  OPTIONS response includes Allow",    h1HasHeader(&resp, "Allow:"))
+    check(&p, &f, "20.3  Allow lists OPTIONS",                h1HeaderContains(&resp, "Allow:", "OPTIONS"))
+    check(&p, &f, "20.4  Allow lists GET",                    h1HeaderContains(&resp, "Allow:", "GET"))
+    check(&p, &f, "20.5  Allow lists POST",                   h1HeaderContains(&resp, "Allow:", "POST"))
+
+    // OPTIONS on an unknown path → server still auto-responds 200 (server-wide capabilities)
+    var fd2 = h1Connect(); assert(fd2 >= 0); defer close(fd2)
+    var r2: H1Resp
+    h1WriteAll(fd2, "OPTIONS /unknown HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    h1ReadFull(fd2, &r2, false)
+    check(&p, &f, "20.6  OPTIONS /unknown returns 200",          r2.statusCode == 200)
+    check(&p, &f, "20.7  OPTIONS /unknown still has Allow header", h1HasHeader(&r2, "Allow:"))
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 21: 405 Method Not Allowed + Allow header (RFC 7231 §6.5.5) ──────
+
+@test("h1spec_21_method_not_allowed")
+func testMethodNotAllowed() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 21: 405 Method Not Allowed (RFC 7231 §6.5.5)\n")
+
+    // PUT / — GET and POST are registered; PUT is not
+    var fd = h1Connect(); assert(fd >= 0); defer close(fd)
+    var resp: H1Resp
+    h1WriteAll(fd, "PUT / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    h1ReadFull(fd, &resp, false)
+    check(&p, &f, "21.1  PUT / returns 405",                  resp.statusCode == 405)
+    check(&p, &f, "21.2  405 includes Allow header",          h1HasHeader(&resp, "Allow:"))
+    check(&p, &f, "21.3  Allow includes GET",                 h1HeaderContains(&resp, "Allow:", "GET"))
+    check(&p, &f, "21.4  Allow includes POST",                h1HeaderContains(&resp, "Allow:", "POST"))
+    check(&p, &f, "21.5  405 has Content-Length or TE",
+        h1ContentLength(&resp) >= 0 || h1HasTE(&resp))
+    check(&p, &f, "21.6  405 Content-Length matches body",
+        h1ContentLength(&resp) < 0 || h1ContentLength(&resp) == h1BodyLen(&resp))
+
+    // DELETE / — also not registered
+    var fd2 = h1Connect(); assert(fd2 >= 0); defer close(fd2)
+    var r2: H1Resp
+    h1WriteAll(fd2, "DELETE / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+    h1ReadFull(fd2, &r2, false)
+    check(&p, &f, "21.7  DELETE / returns 405",               r2.statusCode == 405)
+    check(&p, &f, "21.8  DELETE 405 also includes Allow",     h1HasHeader(&r2, "Allow:"))
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 22: Body boundary in keep-alive (RFC 7230 §3.3) ──────────────────
+
+@test("h1spec_22_body_boundary")
+func testBodyBoundary() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 22: Body boundary in keep-alive (RFC 7230 §3.3)\n")
+
+    // POST body must not bleed into the next request on the same connection
+    var fd = h1Connect(); assert(fd >= 0); defer close(fd)
+    assert(h1WriteAll(fd, "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhello"))
+    var r1: H1Resp
+    assert(h1ReadFull(fd, &r1, false))
+    check(&p, &f, "22.1  POST with body returns 2xx", r1.statusCode >= 200 && r1.statusCode < 300)
+
+    assert(h1WriteAll(fd, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+    var r2: H1Resp
+    assert(h1ReadFull(fd, &r2, false))
+    check(&p, &f, "22.2  GET after POST returns 200", r2.statusCode == 200)
+
+    // Same test with a chunked POST
+    var fd2 = h1Connect(); assert(fd2 >= 0); defer close(fd2)
+    assert(h1WriteAll(fd2, "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"))
+    var r3: H1Resp
+    assert(h1ReadFull(fd2, &r3, false))
+    check(&p, &f, "22.3  chunked POST returns 2xx", r3.statusCode >= 200 && r3.statusCode < 300)
+
+    assert(h1WriteAll(fd2, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+    var r4: H1Resp
+    assert(h1ReadFull(fd2, &r4, false))
+    check(&p, &f, "22.4  GET after chunked POST returns 200", r4.statusCode == 200)
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 23: Header value edge cases (RFC 7230 §3.2) ──────────────────────
+
+@test("h1spec_23_header_value_edge_cases")
+func testHeaderValueEdgeCases() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 23: Header value edge cases (RFC 7230 §3.2)\n")
+
+    // Colon in value must not be treated as a second header separator
+    check(&p, &f, "23.1  header value with colons returns 200",
+        h1OneShot("GET / HTTP/1.1\r\nHost: localhost\r\nX-Token: scheme:name:extra\r\nConnection: close\r\n\r\n") == 200)
+
+    // Empty header value (valid per RFC 7230 §3.2)
+    check(&p, &f, "23.2  empty header value returns 200",
+        h1OneShot("GET / HTTP/1.1\r\nHost: localhost\r\nX-Empty:\r\nConnection: close\r\n\r\n") == 200)
+
+    // Multiple headers with the same non-Host name (server must not reject)
+    check(&p, &f, "23.3  duplicate non-Host headers accepted",
+        h1OneShot("GET / HTTP/1.1\r\nHost: localhost\r\nX-Tag: a\r\nX-Tag: b\r\nConnection: close\r\n\r\n") == 200)
+
+    // Complex Authorization value with colons and base64 padding
+    check(&p, &f, "23.4  Authorization with colons in value returns 200",
+        h1OneShot("GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Basic dXNlcjpwYXNz\r\nConnection: close\r\n\r\n") == 200)
 
     printf("  %d passed, %d failed\n", p, f); assert(f == 0)
 }
