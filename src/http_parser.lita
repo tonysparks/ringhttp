@@ -231,7 +231,7 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : St
             return Status.ERROR_HTTP_PARSING_INVALID_HEADER_PARAM
         }
 
-        currentHeader.name = header.substring(0, colonIndex).trim()
+        currentHeader.name   = header.substring(0, colonIndex).trim()
         currentHeader.values = header.substring(colonIndex + 1).trim()
 
         var status = this.checkHeader(&currentHeader, result)

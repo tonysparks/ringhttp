@@ -1345,3 +1345,123 @@ func testTraceConnect() {
 
     printf("  %d passed, %d failed\n", p, f); assert(f == 0)
 }
+
+// ── Section 38: Obs-fold (header continuation lines) (RFC 7230 §3.2.6) ────────
+
+@test("h1spec_38_obs_fold")
+func testObsFold() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 38: Obs-fold rejection (RFC 7230 §3.2.6)\n")
+
+    // SP at the start of a line → obsolete header folding → 400
+    check(&p, &f, "38.1  SP continuation line returns 400",
+        h1OneShot("GET / HTTP/1.1\r\nHost: local\r\n host\r\nConnection: close\r\n\r\n") == 400)
+
+    // HT at the start of a line → same
+    check(&p, &f, "38.2  HT continuation line returns 400",
+        h1OneShot("GET / HTTP/1.1\r\nHost: local\r\n\thost\r\nConnection: close\r\n\r\n") == 400)
+
+    // Normal multi-line request (no obs-fold) must still work
+    check(&p, &f, "38.3  normal headers without obs-fold are accepted",
+        h1OneShot("GET / HTTP/1.1\r\nHost: localhost\r\nX-A: 1\r\nX-B: 2\r\nConnection: close\r\n\r\n") == 200)
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 39: POST without body framing (RFC 7230 §3.3.3 / RFC 7231 §6.5.10)
+
+@test("h1spec_39_post_no_framing")
+func testPostNoFraming() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 39: POST without body framing (RFC 7230 §3.3.3)\n")
+
+    // POST with body data but no Content-Length or Transfer-Encoding → 411
+    check(&p, &f, "39.1  POST with body but no framing returns 411",
+        h1OneShot("POST / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\nhello") == 411)
+
+    // POST with no body and no Content-Length is treated as zero-length body → 200
+    var fd = h1Connect(); assert(fd >= 0); defer close(fd)
+    var resp: H1Resp
+    assert(h1WriteAll(fd, "POST / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+    assert(h1ReadFull(fd, &resp, false))
+    check(&p, &f, "39.2  POST with no body and no Content-Length returns 2xx",
+        resp.statusCode >= 200 && resp.statusCode < 300)
+
+    // 411 response has Content-Length framing
+    var fd2 = h1Connect(); assert(fd2 >= 0); defer close(fd2)
+    var r411: H1Resp
+    assert(h1WriteAll(fd2, "POST / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\nhello"))
+    assert(h1ReadFull(fd2, &r411, false))
+    check(&p, &f, "39.3  411 response has Content-Length or TE",
+        h1ContentLength(&r411) >= 0 || h1HasTE(&r411))
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 40: Connection header in response (RFC 7230 §6.1, §6.3) ───────────
+
+@test("h1spec_40_connection_response_header")
+func testConnectionResponseHeader() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 40: Connection header in response (RFC 7230 §6.1, §6.3)\n")
+
+    // Default (no Connection in request) → Connection: keep-alive
+    var fd = h1Connect(); assert(fd >= 0); defer close(fd)
+    var rKeep: H1Resp
+    assert(h1WriteAll(fd, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"))
+    assert(h1ReadFull(fd, &rKeep, false))
+    check(&p, &f, "40.1  response has Connection header",
+        h1HasHeader(&rKeep, "Connection:"))
+    check(&p, &f, "40.2  default 200 has Connection: keep-alive",
+        h1HeaderContains(&rKeep, "Connection:", "keep-alive"))
+    // Connection is still open — send a second request to confirm
+    assert(h1WriteAll(fd, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+    var rClose2: H1Resp
+    assert(h1ReadFull(fd, &rClose2, false))
+    check(&p, &f, "40.3  connection stayed open after keep-alive response",
+        rClose2.statusCode == 200)
+
+    // Connection: close → response has Connection: close
+    var fd2 = h1Connect(); assert(fd2 >= 0); defer close(fd2)
+    var rClose: H1Resp
+    assert(h1WriteAll(fd2, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+    assert(h1ReadFull(fd2, &rClose, false))
+    check(&p, &f, "40.4  Connection: close request → response has Connection: close",
+        h1HeaderContains(&rClose, "Connection:", "close"))
+
+    // 404 also carries Connection header
+    var fd3 = h1Connect(); assert(fd3 >= 0); defer close(fd3)
+    var r404: H1Resp
+    assert(h1WriteAll(fd3, "GET /nope HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+    assert(h1ReadFull(fd3, &r404, false))
+    check(&p, &f, "40.5  404 response has Connection header",
+        h1HasHeader(&r404, "Connection:"))
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
+
+// ── Section 41: Identical duplicate Content-Length (RFC 7230 §3.3.2) ──────────
+
+@test("h1spec_41_identical_duplicate_cl")
+func testIdenticalDuplicateCL() {
+    h1EnsureServer()
+    var p = 0; var f = 0
+    printf("\nSection 41: Identical duplicate Content-Length (RFC 7230 §3.3.2)\n")
+
+    // RFC 7230 §3.3.2: duplicate Content-Length with SAME value — server MAY accept or reject.
+    // Our server tolerates identical duplicates (keeps the first value).
+    var same = h1OneShot(
+        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+    check(&p, &f, "41.1  duplicate Content-Length with same value returns 2xx or 400",
+        same >= 200 && same < 300 || same == 400)
+
+    // Differing values must be rejected (already tested in §11, verify here too)
+    check(&p, &f, "41.2  duplicate Content-Length with different values returns 400",
+        h1OneShot(
+            "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nContent-Length: 6\r\nConnection: close\r\n\r\nhello") == 400)
+
+    printf("  %d passed, %d failed\n", p, f); assert(f == 0)
+}
