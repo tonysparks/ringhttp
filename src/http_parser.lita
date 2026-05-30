@@ -212,6 +212,7 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : St
     defer *input = input.substring(headerEndIndex + 2)
 
     result.headers.init(16, this.allocator)
+    result.flags &= ~HttpFlags.HOST_PROVIDED
 
     var headers = input.split($"\r\n")
     while(headers.hasNext()) {
@@ -230,7 +231,7 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : St
             return Status.ERROR_HTTP_PARSING_INVALID_HEADER_PARAM
         }
 
-        currentHeader.name = header.substring(0, colonIndex).trim()
+        currentHeader.name   = header.substring(0, colonIndex).trim()
         currentHeader.values = header.substring(colonIndex + 1).trim()
 
         var status = this.checkHeader(&currentHeader, result)
@@ -244,7 +245,13 @@ func (this: *HttpParser) parseHeaders(input: *String, result: *HttpRequest) : St
 
 func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) : Status {
     // TODO: Optimize case insensitivity
-    if (header.name.equalsIgnoreCase($"connection")) {
+    if (header.name.equalsIgnoreCase($"host")) {
+        if((result.flags & HttpFlags.HOST_PROVIDED) != 0) {
+            return Status.ERROR_DUPLICATE_HOST_HEADER
+        }
+        result.flags |= HttpFlags.HOST_PROVIDED
+    }
+    else if (header.name.equalsIgnoreCase($"connection")) {
         if (header.values.containsIgnoreCase($"close")) {
             result.flags |= HttpFlags.DISABLE_KEEP_ALIVE
         }
@@ -259,7 +266,7 @@ func (this: *HttpParser) checkHeader(header: *HttpHeader, result: *HttpRequest) 
     }
     else if (header.name.equalsIgnoreCase($"content-length")) {
         var parsed = header.values.parseU64()
-        if(parsed.error != ParseError.NONE) {
+        if(parsed.error != ParseError.NONE || parsed.len == 0 || parsed.len != header.values.length) {
             return Status.ERROR_INVALID_CONTENT_LENGTH
         }
         var newLen = MAX(0, parsed.value as (i32))

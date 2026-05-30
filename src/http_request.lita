@@ -58,6 +58,7 @@ public enum HttpFlags {
     KEEP_ALIVE_REQUESTED         = (1<<13),  // Connection: keep-alive was explicit (HTTP/1.0 opt-in)
     EXPECT_UNKNOWN               = (1<<14),  // Expect header present with unrecognised value → 417
     CONFLICTING_CONTENT_LENGTH   = (1<<15),  // duplicate Content-Length with differing values → 400
+    HOST_PROVIDED                = (1<<16),  // Host header seen; set again → 400
 }
 
 /**

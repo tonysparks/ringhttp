@@ -402,6 +402,13 @@ func (this: *WorkerThread) resetRequest(session: *SessionContext) {
 
     var connection = &session.connection
 
+    // RFC 7230 §6.6: close the TCP connection when Connection: close was requested
+    // or when the client spoke HTTP/1.0 without opting in to keep-alive.
+    if(connection.disableKeepAlive) {
+        this.closeSession(session)
+        return;
+    }
+
     // Preserve TLS state across session.begin() — begin() resets ssl to null, but a
     // keep-alive connection reuses the same SSL object for subsequent requests.
     var savedSsl   = session.ssl
@@ -859,13 +866,18 @@ func (this: *WorkerThread) handleReadReady(session: *SessionContext) {
                     case Status.ERROR_INVALID_BODY_EXCEEDED_LIMIT:
                     case Status.ERROR_PARSING_HTTP_REQUEST:
                     case Status.ERROR_MISSING_HOST_HEADER:
+                    case Status.ERROR_DUPLICATE_HOST_HEADER:
                     case Status.ERROR_HTTP_VERSION_NOT_SUPPORTED:
                     case Status.ERROR_EXPECT_FAILED:
                     case Status.ERROR_CONFLICTING_BODY_HEADERS:
                     case Status.ERROR_CONFLICTING_CONTENT_LENGTH:
                     case Status.ERROR_INVALID_CONTENT_LENGTH:
                     case Status.ERROR_UNSUPPORTED_REQUEST_METHOD:
-                    case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION: {
+                    case Status.ERROR_WEB_SOCKET_MISSING_CONNECTION:
+                    case Status.ERROR_HTTP_PARSING_INVALID_REQUEST_LINE:
+                    case Status.ERROR_HTTP_PARSING_INVALID_HEADER_PARAM:
+                    case Status.ERROR_HTTP_PARSING_INVALID_CHUNK:
+                    case Status.ERROR_HTTP_PARSING_CHUNK_INCOMPLETE: {
                         this.sendBadRequest(session, status)
                         break
                     }
