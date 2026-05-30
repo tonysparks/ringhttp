@@ -63,9 +63,7 @@ public func GenerateTemplates(
 }
 
 func GenerateDispatch(t: *Template, genOutputDir: *const char, output: *StringBuilder) {
-    output.appendStr("import \"http_response\"\n")
-    output.appendStr("import \"http_common\"\n")
-    output.appendStr("import \"std/string\"\n")
+    BaseImports(output)
     output.appendStr("\n")
 
     var typeImports = ArrayInit<String>(8, t.entries.getPtr(0).name.alloc)
@@ -280,11 +278,7 @@ public func GenerateFromTemplate(
     }
 
     var output = &entry.content
-
-    // Base imports always required
-    output.appendStr("import \"http_response\"\n")
-    output.appendStr("import \"http_common\"\n")
-    output.appendStr("import \"std/string/builder\"\n")
+    BaseImports(output)
 
     // Imports declared in the template via <% @import "..." %>
     // (the type module from @type is already added via addImport)
@@ -490,6 +484,16 @@ func BaseName(path: String) : String {
     }
     if(lastIdx < 0) { return path }
     return path.substring(lastIdx + 1)
+}
+
+func BaseImports(output: *StringBuilder) {
+    // Base imports always required
+    output.appendStr("import \"http_response\"\n")
+    output.appendStr("import \"http_request\"\n")
+    output.appendStr("import \"http_common\"\n")
+    output.appendStr("import \"std/string\"\n")
+    output.appendStr("import \"std/string/builder\"\n")
+    output.appendStr("import \"std/string/buffer\"\n")
 }
 
 // Not thread-safe — uses a @static buffer. Use result before calling again.
