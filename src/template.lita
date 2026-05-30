@@ -12,6 +12,130 @@ import "std/ascii"
 
 import "http_common"
 
+// Scans inputDir for .lt templates, generates .lita source files into outputDir.
+// Writes one tmpl_<name>.lita per template and a templates.lita dispatch file.
+public func GenerateTemplates(
+    inputDir: String,
+    outputDir: *const char,
+    allocator: *const Allocator
+) : Status {
+    var t: Template
+    t.init(allocator)
+
+    var status = t.build(inputDir)
+        ?: return status
+
+    if(t.entries.empty()) {
+        return Status.OK
+    }
+
+    Mkdir(outputDir)
+
+    for(var i = 0; i < t.entries.size(); i += 1) {
+        var entry = t.entries.getPtr(i)
+        var name    = entry.name.toString()
+        var content = entry.content.toString()
+
+        var temp:[MAX_PATH]char;
+        var filePath = StringBufferInit(temp, MAX_PATH, 0)
+        filePath.append("%s/tmpl_%.*s.lita", outputDir, name.length, name.buffer)
+
+        var fs = WriteFile(filePath.cStr(), content.buffer, content.length as (usize))
+        if(fs != FileStatus.Ok) {
+            return Status.ERROR_IO_ERROR
+        }
+    }
+
+    var dispatch = StringBuilderInit(4096, allocator)
+    defer dispatch.free()
+    GenerateDispatch(&t, outputDir, &dispatch)
+
+    var temp:[MAX_PATH]char;
+    var dispatchPath = StringBufferInit(temp, MAX_PATH, 0)
+    dispatchPath.append("%s/templates.lita", outputDir)
+
+    var ds = WriteFile(dispatchPath.cStr(), dispatch.cStr(), dispatch.length as (usize))
+    if(ds != FileStatus.Ok) {
+        return Status.ERROR_IO_ERROR
+    }
+
+    return Status.OK
+}
+
+func GenerateDispatch(t: *Template, genOutputDir: *const char, output: *StringBuilder) {
+    output.appendStr("import \"http_response\"\n")
+    output.appendStr("import \"http_common\"\n")
+    output.appendStr("import \"std/string\"\n")
+    output.appendStr("\n")
+
+    var typeImports = ArrayInit<String>(8, t.entries.getPtr(0).name.alloc)
+    defer typeImports.free()
+
+    for(var i = 0; i < t.entries.size(); i += 1) {
+        var entry = t.entries.getPtr(i)
+        var name = entry.name.toString()
+        output.append("import \"gen/tmpl_%.*s\"\n", name.length, name.buffer)
+
+        if(entry.typeModule.length > 0) {
+            var mod = entry.typeModule.toString()
+            var seen = false
+            for(var j = 0; j < typeImports.size(); j += 1) {
+                if(typeImports.get(j).equals(mod)) {
+                    seen = true
+                    break
+                }
+            }
+            if(!seen) {
+                typeImports.add(mod)
+                output.append("import \"%.*s\"\n", mod.length, mod.buffer)
+            }
+        }
+    }
+    output.appendStr("\n")
+
+    output.appendStr("public func (this: *HttpResponse) template(name: *const char, input: *void) : Status {\n")
+    for(var i = 0; i < t.entries.size(); i += 1) {
+        var entry = t.entries.getPtr(i)
+        var name = entry.name.toString()
+        if(entry.typeName.length > 0) {
+            var typeName = entry.typeName.toString()
+            output.append(
+                "    if(StringInit(name).equals($\"%.*s\")) { return %.*s_WriteTemplate(this, input as (*%.*s)) }\n",
+                name.length, name.buffer,
+                name.length, name.buffer,
+                typeName.length, typeName.buffer
+            )
+        } else {
+            output.append(
+                "    if(StringInit(name).equals($\"%.*s\")) { return %.*s_WriteTemplate(this, input) }\n",
+                name.length, name.buffer,
+                name.length, name.buffer
+            )
+        }
+    }
+    output.appendStr("    return Status.ERROR_TEMPLATE_NOT_FOUND\n}\n\n")
+
+    for(var i = 0; i < t.entries.size(); i += 1) {
+        var entry = t.entries.getPtr(i)
+        var name = entry.name.toString()
+        if(entry.typeName.length > 0) {
+            var typeName = entry.typeName.toString()
+            output.append(
+                "public func (this: *HttpResponse) tmpl_%.*s(input: *%.*s) : Status {\n    return %.*s_WriteTemplate(this, input)\n}\n\n",
+                name.length, name.buffer,
+                typeName.length, typeName.buffer,
+                name.length, name.buffer
+            )
+        } else {
+            output.append(
+                "public func (this: *HttpResponse) tmpl_%.*s(input: *void) : Status {\n    return %.*s_WriteTemplate(this, input)\n}\n\n",
+                name.length, name.buffer,
+                name.length, name.buffer
+            )
+        }
+    }
+}
+
 // Per-template generation context — tracks imports, @type info, and partial count
 struct GenContext {
     allocator: *const Allocator
@@ -122,7 +246,7 @@ func ScanDirectory(template: *Template, path: *StringBuffer) : Status {
 }
 
 // Generates a complete .lita source file for one template into entry.
-// GenerateBody runs first (may call SanitizeName for $load), then we
+// GenerateBody runs first (may call SanitizeName for @load), then we
 // sanitize the template name to avoid clobbering the @static buffer.
 public func GenerateFromTemplate(
     allocator: *const Allocator,

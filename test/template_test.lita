@@ -1,6 +1,7 @@
 import "std/assert"
 import "std/string"
 import "std/string/builder"
+import "std/string/buffer"
 import "std/mem"
 
 import "template"
@@ -104,9 +105,9 @@ func testGenerateBodyPartial() {
         defaultAllocator,
         $"page.html.lt",
         """<html>
-<% $load "templates/header.html.lt" %>
+<% @load "templates/header.html.lt" %>
 <body>
-<% $load "templates/card.html.lt" input.card %>
+<% @load "templates/card.html.lt" input.card %>
 </body>
 </html>
 """.toString(),
