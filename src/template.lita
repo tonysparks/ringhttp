@@ -325,9 +325,12 @@ public func GenerateBody(
 
         var extra = iter.remaining()
         if(!extra.empty()) {
-            // <%=expr%> shorthand — expression output
-            var isExpression = extra.startsWith($"=")
-            if(isExpression) {
+            // <%== expr %> raw output; <%= expr %> HTML-escaped output
+            var isRaw = extra.startsWith($"==")
+            var isExpression = !isRaw && extra.startsWith($"=")
+            if(isRaw) {
+                extra = extra.substring(2)
+            } else if(isExpression) {
                 extra = extra.substring(1)
             }
 
@@ -343,9 +346,12 @@ public func GenerateBody(
 
             var code = extra.substring(0, endIndex)
 
-            if(isExpression) {
+            if(isRaw) {
                 var expr = code.trim()
                 output.append("    out.appendString(%.*s)\n", expr.length, expr.buffer)
+            } else if(isExpression) {
+                var expr = code.trim()
+                output.append("    HtmlEscape(out, %.*s)\n", expr.length, expr.buffer)
             } else {
                 var dirStatus = HandleDirective(allocator, ctx, &code, output)
                     ?: return dirStatus
@@ -491,6 +497,7 @@ func BaseImports(output: *StringBuilder) {
     output.appendStr("import \"http_response\"\n")
     output.appendStr("import \"http_request\"\n")
     output.appendStr("import \"http_common\"\n")
+    output.appendStr("import \"std/html\"\n")
     output.appendStr("import \"std/string\"\n")
     output.appendStr("import \"std/string/builder\"\n")
     output.appendStr("import \"std/string/buffer\"\n")

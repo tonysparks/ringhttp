@@ -58,7 +58,7 @@ func testGenerateBodyVoid() {
     // untyped function takes *void
     assert(content.contains($"input: *void"))
     assert(content.contains($"page_html_lt_WriteTemplate"))
-    assert(content.contains($"out.appendString(data.title)"))
+    assert(content.contains($"HtmlEscape(out, data.title)"))
 }
 
 @test
@@ -91,7 +91,7 @@ func testGenerateBodyTyped() {
     // type module auto-imported
     assert(content.contains($"import \"models/user\""))
     // expression shorthand expanded
-    assert(content.contains($"out.appendString(input.name)"))
+    assert(content.contains($"HtmlEscape(out, input.name)"))
 }
 
 @test
@@ -121,4 +121,27 @@ func testGenerateBodyPartial() {
     assert(content.contains($"header_html_lt_WriteTemplate(resp, input)"))
     // partial with field — passes sub-field
     assert(content.contains($"card_html_lt_WriteTemplate(resp, input.card)"))
+}
+
+@test
+func testGenerateBodyRawOutput() {
+    var entry = TemplateEntry{
+        .name    = StringBuilderInit(64,   defaultAllocator),
+        .content = StringBuilderInit(1024, defaultAllocator)
+    }
+
+    var status = GenerateFromTemplate(
+        defaultAllocator,
+        $"page.html.lt",
+        """<p><%== rawHtml %></p>
+""".toString(),
+        &entry
+    )
+
+    assert(status == Status.OK)
+    var content = entry.content.toString()
+    // <%== %> bypasses escaping
+    assert(content.contains($"out.appendString(rawHtml)"))
+    // make sure it is NOT wrapped in HtmlEscape
+    assert(!content.contains($"HtmlEscape(out, rawHtml)"))
 }
