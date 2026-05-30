@@ -93,6 +93,7 @@ func GenerateDispatch(t: *Template, genOutputDir: *const char, output: *StringBu
     }
     output.appendStr("\n")
 
+    // String dispatch — takes *void; typed templates cast input to their concrete type
     output.appendStr("public func (this: *HttpResponse) template(name: *const char, input: *void) : Status {\n")
     for(var i = 0; i < t.entries.size(); i += 1) {
         var entry = t.entries.getPtr(i)
@@ -115,6 +116,7 @@ func GenerateDispatch(t: *Template, genOutputDir: *const char, output: *StringBu
     }
     output.appendStr("    return Status.ERROR_TEMPLATE_NOT_FOUND\n}\n\n")
 
+    // Named helpers per template — typed for @type templates, *void otherwise
     for(var i = 0; i < t.entries.size(); i += 1) {
         var entry = t.entries.getPtr(i)
         var name = entry.name.toString()

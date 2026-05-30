@@ -31,7 +31,7 @@ public func page_html_lt_WriteTemplate(resp: *HttpResponse, input: *void) : Stat
 You cast manually inside the template body:
 
 ```html
-<% var data = input as *PageData %>
+<% var data = input as (*PageData) %>
 <h1><%= data.title %></h1>
 ```
 
@@ -77,7 +77,7 @@ import "ring/template"
 import "ring/http_common"
 
 func main(len: i32, args: **char) : i32 {
-    var templateInputDir = "bin/static/templates"
+    var templateInputDir = "static/templates"
     if(len > 1) {
         templateInputDir = args[1]
     }
