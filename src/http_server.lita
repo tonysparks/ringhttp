@@ -94,6 +94,7 @@ public struct HttpConfig {
 
     // static file directory
     fileServerPath: String = $""            // the FileSystem path to look for static assets
+    templatePath: String = $""             // the FileSystem path to look for .lt template files
     publicServerPath: String = $"/static/"  // the URI path that denotes we're looking for static assets
 
     // the server side keep alive time in seconds
