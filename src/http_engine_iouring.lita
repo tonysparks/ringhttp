@@ -124,10 +124,12 @@ internal func (this: *HttpRingEngine) listen() : Status {
     // TLS context setup — only when cert + key are configured.
     this.sslCtx = setupSslCtx(this.config)
     if(this.config.tlsCertFile && !this.sslCtx) {
+        Error("Failed to initialize TLS context (cert: '%s')\n", this.config.tlsCertFile)
         return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
     }
 
     if(!this.serverSocket.create()) {
+        Error("Failed to create server socket\n")
         return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
     }
 
@@ -137,14 +139,17 @@ internal func (this: *HttpRingEngine) listen() : Status {
     this.serverSocket.setSocketOpt(SocketOption.SO_REUSEADDR, &enableReuse, sizeof(:i32))
 
     if(!FromPort(this.config.port, &this.serverSocket.address)) {
+        Error("Failed to create address for port %d\n", this.config.port)
         return Status.ERROR_CREATING_ADDRESS
     }
 
     if(!this.serverSocket.bind()) {
+        Error("Failed to bind to port %d (address already in use?)\n", this.config.port)
         return Status.ERROR_SOCKET_BIND
     }
 
     if(!this.serverSocket.listen()) {
+        Error("Failed to listen on port %d\n", this.config.port)
         return Status.ERROR_SOCKET_LISTEN
     }
 
