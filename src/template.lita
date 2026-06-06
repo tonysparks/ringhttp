@@ -9,6 +9,7 @@ import "std/array"
 import "std/mem"
 import "std/assert"
 import "std/ascii"
+import "std/time"
 
 import "http_common"
 
@@ -63,6 +64,7 @@ public func GenerateTemplates(
 }
 
 func GenerateDispatch(t: *Template, genOutputDir: *const char, output: *StringBuilder) {
+    WriteGeneratedHeader(output)
     BaseImports(output)
     output.appendStr("\n")
 
@@ -278,6 +280,7 @@ public func GenerateFromTemplate(
     }
 
     var output = &entry.content
+    WriteGeneratedHeader(output)
     BaseImports(output)
 
     // Imports declared in the template via <% @import "..." %>
@@ -319,8 +322,18 @@ public func GenerateBody(
         var s = iter.next()
 
         if(s.length > 0) {
-            // appendStrn avoids format-string injection from raw HTML text
-            output.append("    out.appendStrn(\"\"\"%.*s\"\"\", %d)\n", s.length, s.buffer, s.length)
+            // Strip trailing '"' chars — they produce """" which closes the triple-quote early
+            var trailingQuotes = 0
+            while(trailingQuotes < s.length && s.buffer[s.length - 1 - trailingQuotes] == '"') {
+                trailingQuotes += 1
+            }
+            var mainLen = s.length - trailingQuotes
+            if(mainLen > 0) {
+                output.append("    out.appendStrn(\"\"\"%.*s\"\"\", %d)\n", mainLen, s.buffer, mainLen)
+            }
+            for(var q = 0; q < trailingQuotes; q += 1) {
+                output.appendStr("    out.appendChar('\"')\n")
+            }
         }
 
         var extra = iter.remaining()
@@ -490,6 +503,14 @@ func BaseName(path: String) : String {
     }
     if(lastIdx < 0) { return path }
     return path.substring(lastIdx + 1)
+}
+
+func WriteGeneratedHeader(output: *StringBuilder) {
+    var now = DateTimeNow()
+    var temp:[64]char;
+    var buf = StringBufferInit(temp, 64, 0)
+    now.isoFormat(&buf)
+    output.append("// Generated: %s\n", buf.cStr())
 }
 
 func BaseImports(output: *StringBuilder) {
