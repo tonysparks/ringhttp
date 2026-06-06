@@ -141,6 +141,12 @@ public func (this: *HttpResponse) addHeaderStr(name: *const char, value: *const 
     this.addHeader(StringInit(name), StringInit(value))
 }
 
+public func (this: *HttpResponse) redirectTo(path: *const char) {
+    this.status = 302
+    this.type = ResponseType.BODY
+    this.addHeaderStr("Location", path)
+}
+
 public func (this: *HttpResponse) asStream(stream: Stream) {
     this.stream = stream
     this.type = ResponseType.STREAM

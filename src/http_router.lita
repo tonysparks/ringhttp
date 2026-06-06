@@ -18,6 +18,9 @@ public struct RequestHandlerContext {
     response: *HttpResponse
     userData: *void
 
+    // Slot for filter middleware to pass data to the downstream route handler.
+    filterData: *void
+
     match: *RouteMatch
 
     // wall-clock time (ms) when this request started — set by the worker

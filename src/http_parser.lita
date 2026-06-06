@@ -10,7 +10,7 @@ import "std/fmt"
 
 import "http_request"
 import "http_common"
-import "http_encoding"
+import "std/url/encoding"
 
 
 

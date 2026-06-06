@@ -128,7 +128,7 @@ func GenerateDispatch(t: *Template, genOutputDir: *const char, output: *StringBu
             )
         } else {
             output.append(
-                "public func (this: *HttpResponse) tmpl_%.*s(input: *void) : Status {\n    return %.*s_WriteTemplate(this, input)\n}\n\n",
+                "public func (this: *HttpResponse) tmpl_%.*s(input: *void = null) : Status {\n    return %.*s_WriteTemplate(this, input)\n}\n\n",
                 name.length, name.buffer,
                 name.length, name.buffer
             )

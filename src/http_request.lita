@@ -288,6 +288,17 @@ public func HttpQueryInit(allocator: *const Allocator) : HttpQuery {
     return query
 }
 
+// Returns the value of the first query param matching name, or an empty String.
+public func (this: *HttpQuery) get(name: String) : String {
+    for(var i = 0; i < this.params.size(); i += 1) {
+        var p = this.params.getPtr(i)
+        if(p.name.equals(name)) {
+            return p.value
+        }
+    }
+    return String{}
+}
+
 public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : Status {
     if(this.query.empty()) {
         return Status.OK;
@@ -312,6 +323,61 @@ public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : Status {
         }
 
         result.params.add(queryParam)
+    }
+
+    return Status.OK
+}
+
+public struct HttpCookie {
+    name: String
+    value: String
+}
+
+public struct HttpCookies {
+    entries: Array<HttpCookie>
+}
+
+public func HttpCookiesInit(allocator: *const Allocator) : HttpCookies {
+    var cookies = HttpCookies{}
+    cookies.entries.init(8, allocator)
+    return cookies
+}
+
+// Returns the value of the cookie with the given name, or an empty String.
+public func (this: *HttpCookies) get(name: String) : String {
+    for(var i = 0; i < this.entries.size(); i += 1) {
+        var e = this.entries.getPtr(i)
+        if(e.name.equals(name)) {
+            return e.value
+        }
+    }
+    return String{}
+}
+
+// Parses the Cookie request header into individual name=value pairs.
+public func (this: *HttpRequest) parseCookies(result: *HttpCookies) : Status {
+    var cookieHeader = this.getHeaderValue($"Cookie")
+    if(cookieHeader.empty()) {
+        return Status.OK
+    }
+
+    var parts = cookieHeader.split($";")
+    while(parts.hasNext()) {
+        var part = parts.next().trim()
+        if(part.empty()) {
+            continue
+        }
+
+        var eqIdx = part.endIndexOf($"=")
+        if(eqIdx < 0) {
+            continue
+        }
+
+        var cookie = HttpCookie {
+            .name  = part.substring(0, eqIdx - 1),
+            .value = part.substring(eqIdx)
+        }
+        result.entries.add(cookie)
     }
 
     return Status.OK
