@@ -39,7 +39,7 @@ var wsConfig = HttpConfig {
     .maxPoolSize = 32,
     .keepAliveTimeoutInSec = 5,
     .isLogEnabled = false,
-    .logFilePath = null,
+    .logFilePath = $"",
     .fileServerPath = $"./static",
 }
 
@@ -52,7 +52,7 @@ var wsLimitConfig = HttpConfig {
     .maxPoolSize = 32,
     .keepAliveTimeoutInSec = 5,
     .isLogEnabled = false,
-    .logFilePath = null,
+    .logFilePath = $"",
     .fileServerPath = $"./static",
     .maxWsFragmentedMessageSizeInBytes = 8,
 }

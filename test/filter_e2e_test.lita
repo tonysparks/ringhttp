@@ -21,7 +21,7 @@ var filterServerConfig = HttpConfig {
     .maxPoolSize             = 32,
     .keepAliveTimeoutInSec   = 5,
     .isLogEnabled            = false,
-    .logFilePath             = null,
+    .logFilePath = $"",
 }
 
 var filterServer = FilterTestServer{}

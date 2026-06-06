@@ -124,8 +124,8 @@ internal func (this: *HttpRingEngine) listen() : Status {
 
     // TLS context setup — only when cert + key are configured.
     this.sslCtx = setupSslCtx(this.config)
-    if(this.config.tlsCertFile && !this.sslCtx) {
-        Error("Failed to initialize TLS context (cert: '%s')\n", this.config.tlsCertFile)
+    if(!this.config.tlsCertFile.empty() && !this.sslCtx) {
+        Error("Failed to initialize TLS context (cert: '%.*s')\n", this.config.tlsCertFile.length, this.config.tlsCertFile.buffer)
         return Status.ERROR_UNABLE_TO_CREATE_SERVER_SOCKET
     }
 

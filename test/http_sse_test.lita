@@ -24,7 +24,7 @@ var sseConfig = HttpConfig {
     .maxPoolSize = 32,
     .keepAliveTimeoutInSec = 5,
     .isLogEnabled = false,
-    .logFilePath = null,
+    .logFilePath = $"",
     .fileServerPath = $"./static",
 }
 

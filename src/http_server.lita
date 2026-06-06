@@ -106,7 +106,7 @@ public struct HttpConfig {
     ioQueueDepth: i32 = 32
 
     // logging
-    logFilePath: *const char = "./ring.log"
+    logFilePath: String = $"./ring.log"
     isLogEnabled: bool = true
     logLevel: LogLevel = LogLevel.INFO
 
@@ -115,8 +115,8 @@ public struct HttpConfig {
 
     // TLS — leave null to run plain-text (h1/h2c).
     // Set both to enable TLS; ALPN will negotiate h2 or http/1.1.
-    tlsCertFile: *const char = null
-    tlsKeyFile:  *const char = null
+    tlsCertFile: String
+    tlsKeyFile:  String
 }
 
 

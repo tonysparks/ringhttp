@@ -1,5 +1,7 @@
 import "std/log"
+import "std/string"
 import "std/ssl/openssl"
+import "std/system"
 import "http_server"
 
 // Wire-format ALPN server preference list: \x02h2\x08http/1.1
@@ -41,9 +43,14 @@ public func alpnSelectCallback(
 // setupSslCtx: creates and configures a server SSL_CTX from HttpConfig.
 // Returns null when TLS is not configured or on failure (error already logged).
 public func setupSslCtx(config: *HttpConfig) : *SSL_CTX {
-    if(!config.tlsCertFile || !config.tlsKeyFile) {
+    if(config.tlsCertFile.empty() || config.tlsKeyFile.empty()) {
         return null
     }
+
+    var certBuf: [MAX_PATH]char
+    var keyBuf:  [MAX_PATH]char
+    config.tlsCertFile.copyTo(certBuf, MAX_PATH - 1)
+    config.tlsKeyFile.copyTo(keyBuf, MAX_PATH - 1)
 
     var ctx = SSL_CTX_new(TLS_server_method())
     if(!ctx) {
@@ -51,14 +58,14 @@ public func setupSslCtx(config: *HttpConfig) : *SSL_CTX {
         return null
     }
 
-    if(SSL_CTX_use_certificate_file(ctx, config.tlsCertFile, SSL_FILETYPE_PEM) <= 0) {
-        Error("TLS: failed to load certificate: %s\n", config.tlsCertFile)
+    if(SSL_CTX_use_certificate_file(ctx, certBuf, SSL_FILETYPE_PEM) <= 0) {
+        Error("TLS: failed to load certificate: %.*s\n", config.tlsCertFile.length, config.tlsCertFile.buffer)
         SSL_CTX_free(ctx)
         return null
     }
 
-    if(SSL_CTX_use_PrivateKey_file(ctx, config.tlsKeyFile, SSL_FILETYPE_PEM) <= 0) {
-        Error("TLS: failed to load private key: %s\n", config.tlsKeyFile)
+    if(SSL_CTX_use_PrivateKey_file(ctx, keyBuf, SSL_FILETYPE_PEM) <= 0) {
+        Error("TLS: failed to load private key: %.*s\n", config.tlsKeyFile.length, config.tlsKeyFile.buffer)
         SSL_CTX_free(ctx)
         return null
     }
@@ -71,6 +78,6 @@ public func setupSslCtx(config: *HttpConfig) : *SSL_CTX {
 
     SSL_CTX_set_alpn_select_cb(ctx, (&alpnSelectCallback) as (AlpnSelectCallback), null)
 
-    Info("TLS enabled (cert=%s)\n", config.tlsCertFile)
+    Info("TLS enabled (cert=%.*s)\n", config.tlsCertFile.length, config.tlsCertFile.buffer)
     return ctx
 }

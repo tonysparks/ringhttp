@@ -511,7 +511,7 @@ var defaultConfig = HttpConfig {
     .maxPoolSize = 32,
     .keepAliveTimeoutInSec = 5,
     .isLogEnabled = true,
-    .logFilePath = null,
+    .logFilePath = $"",
     .fileServerPath = $"static",
 }
 
@@ -551,7 +551,7 @@ func testExample() {
         .numThreads = 8,
         .ioQueueDepth = 32,
         .isLogEnabled = true,
-        .logFilePath = null,
+        .logFilePath = $"",
         .maxPoolSize = 512,
         .keepAliveTimeoutInSec = 5,
         .fileServerPath = $"./static/",
