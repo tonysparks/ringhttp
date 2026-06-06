@@ -231,6 +231,162 @@ func testQueryParams() {
     }
 }
 
+@test
+func testQueryRawValues() {
+    // parseQuery stores raw (still percent-encoded) values — no allocation, no decoding
+    var query = HttpQueryInit(defaultAllocator)
+    var request = HttpRequest{}
+    request.query = StringInit("code=4%2F0AXBk-abc&state=deadbeef")
+    request.parseQuery(&query)
+    assert(query.params.size() == 2)
+    // Raw values are stored as-is
+    assert(query.params.get(0).name.equalsString("code"))
+    assert(query.params.get(0).value.equalsString("4%2F0AXBk-abc"))
+    assert(query.params.get(1).name.equalsString("state"))
+    assert(query.params.get(1).value.equalsString("deadbeef"))
+    // get() also returns the raw value
+    assert(query.get($"code").equalsString("4%2F0AXBk-abc"))
+    assert(query.get($"state").equalsString("deadbeef"))
+    // Missing key returns empty String
+    assert(query.get($"nope").length == 0)
+}
+
+@test
+func testQueryDecodedValue() {
+    // getDecodedValue decodes on demand into a caller-supplied StringBuilder
+    {
+        var query = HttpQueryInit(defaultAllocator)
+        var request = HttpRequest{}
+        request.query = StringInit("code=4%2F0AXBk-abc&state=deadbeef")
+        request.parseQuery(&query)
+
+        var codeSb = StringBuilderInit(256)
+        defer codeSb.free()
+        var codeParam = query.getParam($"code")
+        assert(codeParam != null)
+        codeParam.getDecodedValue(&codeSb)
+        assert(codeSb.toString().equalsString("4/0AXBk-abc"))
+
+        // Plain value (no encoding) is returned unchanged
+        var stateSb = StringBuilderInit(64)
+        defer stateSb.free()
+        var stateParam = query.getParam($"state")
+        assert(stateParam != null)
+        stateParam.getDecodedValue(&stateSb)
+        assert(stateSb.toString().equalsString("deadbeef"))
+    }
+
+    // Spaces (%20) and slash (%2F) decoded
+    {
+        var query = HttpQueryInit(defaultAllocator)
+        var request = HttpRequest{}
+        request.query = StringInit("q=hello%20world&redirect%5Furi=http%3A%2F%2Flocalhost")
+        request.parseQuery(&query)
+
+        var qSb = StringBuilderInit(64)
+        defer qSb.free()
+        query.getParam($"q").getDecodedValue(&qSb)
+        assert(qSb.toString().equalsString("hello world"))
+
+        // Encoded name: raw is "redirect%5Furi", decoded name is "redirect_uri"
+        var rawName = query.params.get(1).name
+        assert(rawName.equalsString("redirect%5Furi"))
+
+        var nameSb = StringBuilderInit(64)
+        defer nameSb.free()
+        query.params.getPtr(1).getDecodedName(&nameSb)
+        assert(nameSb.toString().equalsString("redirect_uri"))
+    }
+
+    // getParam returns null for missing key
+    {
+        var query = HttpQueryInit(defaultAllocator)
+        var request = HttpRequest{}
+        request.query = StringInit("a=1")
+        request.parseQuery(&query)
+        assert(query.getParam($"missing") == null)
+    }
+}
+
+@test
+func testCookieParsing() {
+    // Basic single cookie
+    {
+        var request = HttpRequest{}
+        request.headers.init(4, defaultAllocator)
+        var header = HttpHeader { .name = $"Cookie", .values = $"session=abc123" }
+        request.headers.add(header)
+
+        var cookies = HttpCookiesInit(defaultAllocator)
+        assert(request.parseCookies(&cookies) == Status.OK)
+        assert(cookies.entries.size() == 1)
+        assert(cookies.entries.get(0).name.equalsString("session"))
+        assert(cookies.entries.get(0).value.equalsString("abc123"))
+    }
+
+    // Multiple cookies
+    {
+        var request = HttpRequest{}
+        request.headers.init(4, defaultAllocator)
+        var header = HttpHeader { .name = $"Cookie", .values = $"a=1; b=2; c=3" }
+        request.headers.add(header)
+
+        var cookies = HttpCookiesInit(defaultAllocator)
+        assert(request.parseCookies(&cookies) == Status.OK)
+        assert(cookies.entries.size() == 3)
+        assert(cookies.entries.get(0).name.equalsString("a"))
+        assert(cookies.entries.get(0).value.equalsString("1"))
+        assert(cookies.entries.get(1).name.equalsString("b"))
+        assert(cookies.entries.get(1).value.equalsString("2"))
+        assert(cookies.entries.get(2).name.equalsString("c"))
+        assert(cookies.entries.get(2).value.equalsString("3"))
+    }
+
+    // No Cookie header — empty result, no error
+    {
+        var request = HttpRequest{}
+        request.headers.init(4, defaultAllocator)
+
+        var cookies = HttpCookiesInit(defaultAllocator)
+        assert(request.parseCookies(&cookies) == Status.OK)
+        assert(cookies.entries.empty())
+    }
+
+    // Cookie with no value (name only)
+    {
+        var request = HttpRequest{}
+        request.headers.init(4, defaultAllocator)
+        var header = HttpHeader { .name = $"Cookie", .values = $"token; other=x" }
+        request.headers.add(header)
+
+        var cookies = HttpCookiesInit(defaultAllocator)
+        request.parseCookies(&cookies)
+        // "token" has no '=' so it's skipped; "other=x" is kept
+        assert(cookies.entries.size() == 1)
+        assert(cookies.entries.get(0).name.equalsString("other"))
+        assert(cookies.entries.get(0).value.equalsString("x"))
+    }
+}
+
+@test
+func testCookieGet() {
+    var request = HttpRequest{}
+    request.headers.init(4, defaultAllocator)
+    var header = HttpHeader { .name = $"Cookie", .values = $"session=xyz; theme=dark; lang=en" }
+    request.headers.add(header)
+
+    var cookies = HttpCookiesInit(defaultAllocator)
+    request.parseCookies(&cookies)
+
+    assert(cookies.get($"session").equalsString("xyz"))
+    assert(cookies.get($"theme").equalsString("dark"))
+    assert(cookies.get($"lang").equalsString("en"))
+
+    // Missing cookie returns empty String
+    var missing = cookies.get($"nope")
+    assert(missing.length == 0)
+}
+
 func assertPathParsing(
     turl: *const char,
     url: *const char,

@@ -76,7 +76,8 @@ internal func (this: *HttpRingEngine) init(
     )
 
     if(!this.config.disableSignal) {
-        signal(SIGINT, signal_handler);
+        signal(SIGINT,  signal_handler)
+        signal(SIGTERM, signal_handler)
     }
 
     this.ring.ring_fd = -1
@@ -301,9 +302,8 @@ func (this: *HttpRingEngine) handleCompletionRing(
 }
 
 func signal_handler(signo: i32) {
-    Info("Caught signal SIGPIPE for %d\n", signo)
-    if(signo == SIGINT) {
-        Info("Signal for shutdown received\n")
-        exit(0)
-    }
+    // Only async-signal-safe calls here — no mutexes (Info/printf are not safe).
+    const msg = "Shutdown signal received, exiting...\n"
+    write(2, msg as (*const void), 38_usize)
+    exit(0)
 }

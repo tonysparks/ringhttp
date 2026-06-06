@@ -5,6 +5,7 @@ import "std/libc"
 import "std/assert"
 import "std/mem"
 import "std/json"
+import "std/url/encoding"
 // import "std/json/from_json"
 // import "std/json/to_json"
 
@@ -288,7 +289,7 @@ public func HttpQueryInit(allocator: *const Allocator) : HttpQuery {
     return query
 }
 
-// Returns the value of the first query param matching name, or an empty String.
+// Returns the raw (still percent-encoded) value of the first param matching name.
 public func (this: *HttpQuery) get(name: String) : String {
     for(var i = 0; i < this.params.size(); i += 1) {
         var p = this.params.getPtr(i)
@@ -297,6 +298,18 @@ public func (this: *HttpQuery) get(name: String) : String {
         }
     }
     return String{}
+}
+
+// Returns a pointer to the first param matching name, or null if not found.
+// Use the returned QueryParam's getDecodedValue/getDecodedName when the value is percent-encoded.
+public func (this: *HttpQuery) getParam(name: String) : *QueryParam {
+    for(var i = 0; i < this.params.size(); i += 1) {
+        var p = this.params.getPtr(i)
+        if(p.name.equals(name)) {
+            return p
+        }
+    }
+    return null
 }
 
 public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : Status {
@@ -314,11 +327,10 @@ public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : Status {
         var valueIndex = entry.endIndexOf($"=")
 
         var queryParam = QueryParam{}
-        if(valueIndex  < 0) {
+        if(valueIndex < 0) {
             queryParam.name = entry
-        }
-        else {
-            queryParam.name = entry.substring(0, valueIndex - 1)
+        } else {
+            queryParam.name  = entry.substring(0, valueIndex - 1)
             queryParam.value = entry.substring(valueIndex)
         }
 
@@ -326,6 +338,16 @@ public func (this: *HttpRequest) parseQuery(result: *HttpQuery) : Status {
     }
 
     return Status.OK
+}
+
+// Decodes the percent-encoded name into out.
+public func (this: *QueryParam) getDecodedName(out: *StringBuilder) {
+    UrlDecode(this.name, out)
+}
+
+// Decodes the percent-encoded value into out.
+public func (this: *QueryParam) getDecodedValue(out: *StringBuilder) {
+    UrlDecode(this.value, out)
 }
 
 public struct HttpCookie {

@@ -505,7 +505,7 @@ public struct TestServer {
 
 var defaultConfig = HttpConfig {
     .allocator = null,
-    .port = 8080_u16,
+    .port = 9091_u16,
     .numThreads = 4,
     .ioQueueDepth = 16,
     .maxPoolSize = 32,
@@ -547,7 +547,7 @@ public func launch(testServer: *TestServer) {
 func testExample() {
     var config = HttpConfig {
         .allocator = defaultAllocator,
-        .port = 8080_u16,
+        .port = 9091_u16,
         .numThreads = 8,
         .ioQueueDepth = 32,
         .isLogEnabled = true,
