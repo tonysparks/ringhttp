@@ -49,8 +49,8 @@ public func setupSslCtx(config: *HttpConfig) : *SSL_CTX {
 
     var certBuf: [MAX_PATH]char
     var keyBuf:  [MAX_PATH]char
-    config.tlsCertFile.copyTo(certBuf, MAX_PATH - 1)
-    config.tlsKeyFile.copyTo(keyBuf, MAX_PATH - 1)
+    config.tlsCertFile.copyTo(certBuf, MAX_PATH)
+    config.tlsKeyFile.copyTo(keyBuf, MAX_PATH)
 
     var ctx = SSL_CTX_new(TLS_server_method())
     if(!ctx) {

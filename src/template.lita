@@ -37,8 +37,8 @@ public func GenerateTemplates(
         var name    = entry.name.toString()
         var content = entry.content.toString()
 
-        var temp:[MAX_PATH]char;
-        var filePath = StringBufferInit(temp, MAX_PATH, 0)
+        var temp: PathBuf;
+        var filePath = temp.toStringBuffer()
         filePath.append("%s/tmpl_%.*s.lita", outputDir, name.length, name.buffer)
 
         var fs = WriteFile(filePath.cStr(), content.buffer, content.length as (usize))
@@ -51,8 +51,8 @@ public func GenerateTemplates(
     defer dispatch.free()
     GenerateDispatch(&t, outputDir, &dispatch)
 
-    var temp:[MAX_PATH]char;
-    var dispatchPath = StringBufferInit(temp, MAX_PATH, 0)
+    var temp: PathBuf;
+    var dispatchPath = temp.toStringBuffer()
     dispatchPath.append("%s/templates.lita", outputDir)
 
     var ds = WriteFile(dispatchPath.cStr(), dispatch.cStr(), dispatch.length as (usize))
@@ -193,8 +193,8 @@ public func (this: *Template) build(assetPath: String) : Status {
 }
 
 func ScanForTemplates(template: *Template, assetPath: String) : Status {
-    var temp:[MAX_PATH]char;
-    var path = StringBufferInit(temp, MAX_PATH, 0)
+    var temp: PathBuf;
+    var path = temp.toStringBuffer()
     path.append("%.*s", assetPath.length, assetPath.buffer)
     return ScanDirectory(template, path)
 }
@@ -527,9 +527,9 @@ func BaseImports(output: *StringBuilder) {
 // Not thread-safe — uses a @static buffer. Use result before calling again.
 public func SanitizeName(name: String) : String {
     @static
-    var buffer:[MAX_PATH]char;
+    var buffer: PathBuf;
 
-    var str = StringBufferInit(buffer, MAX_PATH, 0)
+    var str = buffer.toStringBuffer()
     for(var i = 0; i < name.length; i += 1) {
         var c = name.buffer[i]
         if(!c.isAlphanumeric()) {
