@@ -226,7 +226,7 @@ func ScanDirectory(template: *Template, path: *StringBuffer) : Status {
             }
 
             template.fileBuffer.clear()
-            var status = ReadFileFully(path.cStr(), template.fileBuffer)
+            var status = ReadFileFully(path.toString(), template.fileBuffer)
                 ?: return Status.ERROR_FILE_NOT_FOUND
 
             var entry = TemplateEntry{
